@@ -4,6 +4,7 @@
   "release_line": "v0.2-error-knowledge",
   "required_paths": [
     ".env.example",
+    ".gitattributes",
     ".gitignore",
     ".github/workflows/ci.yml",
     "CHANGELOG.md",
@@ -12,6 +13,7 @@
     "LICENSING.en.md",
     "LICENSING.md",
     "NOTICE",
+    "pyproject.toml",
     "README.en.md",
     "README.md",
     "SECURITY.md",

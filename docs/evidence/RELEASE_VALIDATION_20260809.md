@@ -10,7 +10,7 @@ that a private production installation has deployed this candidate.
 | Gate | Command or evidence | Result |
 | --- | --- | --- |
 | Full release tests | `python -m pytest -q` | 316 passed |
-| Public Python lint | `python -m ruff check neural-memory examples scripts` | clean |
+| Public Python lint | Ruff `0.15.7`: `python -m ruff check neural-memory examples scripts` | clean |
 | Release isolation | `python scripts/prerelease_scan.py --strict .` | clean |
 | Syntax compilation | in-memory `compile()` over shipped and repository 3CAN Python | 157 files |
 | Repository governance | six repository `tests/test_3can_*.py` modules | 62 passed |
