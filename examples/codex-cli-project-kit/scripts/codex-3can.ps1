@@ -645,7 +645,7 @@ switch ($Action) {
     }
 
     'clear' {
-        & $Wrapper clear-state -BaseUrl $BaseUrl
+        & $Wrapper clear-state -AgentId $AgentId -BaseUrl $BaseUrl
     }
 
     'pr-check' {

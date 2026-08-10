@@ -344,6 +344,9 @@ def test_packaged_wrapper_partitions_state_and_compact_never_loads_it_implicitly
     assert "latest.json" not in wrapper_source
     assert "$StatePath" not in wrapper_source
 
+    clear_block = outer_source.split("'clear' {", 1)[1].split("'pr-check' {", 1)[0]
+    assert "& $Wrapper clear-state -AgentId $AgentId -BaseUrl $BaseUrl" in clear_block
+
     compact_block = wrapper_source.split("'before-compact' {", 1)[1].split(
         "'check-ticket' {", 1
     )[0]
