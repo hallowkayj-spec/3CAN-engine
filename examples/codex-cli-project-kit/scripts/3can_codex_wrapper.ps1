@@ -69,9 +69,13 @@ function Get-3CanSha256Text {
 
 function Resolve-3CanWorktreeRoot {
     if (Get-Command git -ErrorAction SilentlyContinue) {
-        $gitRoot = & git -C $ProjectRoot rev-parse --show-toplevel 2>$null
-        if ($LASTEXITCODE -eq 0 -and $gitRoot) {
-            return [System.IO.Path]::GetFullPath([string]($gitRoot | Select-Object -First 1))
+        try {
+            $gitRoot = & git -C $ProjectRoot rev-parse --show-toplevel 2>$null
+            if ($LASTEXITCODE -eq 0 -and $gitRoot) {
+                return [System.IO.Path]::GetFullPath([string]($gitRoot | Select-Object -First 1))
+            }
+        } catch {
+            # A non-Git project safely falls back to its project root below.
         }
     }
     return [System.IO.Path]::GetFullPath($ProjectRoot)

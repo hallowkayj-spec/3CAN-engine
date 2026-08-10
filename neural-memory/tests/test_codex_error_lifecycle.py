@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -358,6 +359,49 @@ def test_packaged_wrapper_partitions_state_and_compact_never_loads_it_implicitly
         "Invoke-HelperJson $args"
     )
     assert "$expectedPaths.Count -eq 0 -and -not $ExpectedTicketId" in wrapper_source
+
+
+def test_packaged_outer_compact_preserves_explicit_target_files(tmp_path):
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell, "PowerShell is required to test the packaged wrapper contract"
+
+    scripts_dir = tmp_path / "project" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(CODEX_POWERSHELL_PATH, scripts_dir / "codex-3can.ps1")
+    shutil.copy2(CODEX_WRAPPER_PATH, scripts_dir / "3can_codex_wrapper.ps1")
+    (scripts_dir / "3can_codex.py").write_text(
+        "import json, sys\nprint(json.dumps({'argv': sys.argv[1:]}))\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(scripts_dir / "codex-3can.ps1"),
+            "compact",
+            "-AgentId",
+            "codex-test-compact-W1",
+            "-TaskSummary",
+            "durable continuation delta",
+            "-TargetFiles",
+            "README.md,scripts/tool.py,README.md",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    argv = payload["argv"]
+    compact_files = [argv[index + 1] for index, item in enumerate(argv) if item == "--file"]
+
+    assert compact_files == ["README.md", "scripts/tool.py"]
+    assert payload["compact_scope_files"] == compact_files
+    assert payload["compact_scope_selection"] == "explicit_files_only"
 
 
 def test_agent_api_projects_stale_heartbeats_without_mutating_registry():
