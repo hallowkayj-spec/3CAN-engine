@@ -59,11 +59,14 @@ same worktree; compact never imports files from implicit state.
 
 ### Step 1. Agent checkin
 
+Choose one readable unique AgentId for this serious session/workorder and reuse
+it for the related calls; choose a new ID for the next session/workorder.
+
 ```bash
 curl -X POST http://localhost:9700/api/agents/checkin \
   -H "Content-Type: application/json" \
   -d '{
-    "agent_id": "codex-cli-main",
+    "agent_id": "codex-cli-frontend-W1",
     "name": "Codex CLI (GPT-5.4)",
     "role": "coding agent",
     "current_task": "frontend scaffold from INTF contracts",
@@ -81,7 +84,7 @@ curl -X POST http://localhost:9700/api/route \
   -d '{
     "task": "create_node API schema 强制字段",
     "max_nodes": 5,
-    "agent_id": "codex-cli-main",
+    "agent_id": "codex-cli-frontend-W1",
     "mode": "full"
   }' | jq '.activated_nodes[] | select(.id | startswith("INTF-"))'
 ```
@@ -96,7 +99,7 @@ curl -X POST http://localhost:9700/api/route \
 curl -X POST http://localhost:9700/api/agents/checkin \
   -H "Content-Type: application/json" \
   -d '{
-    "agent_id": "codex-cli-main",
+    "agent_id": "codex-cli-frontend-W1",
     "current_task": "wait / next task",
     "meta": {"last_completed": "frontend scaffold for INTF-db-node_weights"}
   }'
@@ -111,7 +114,7 @@ curl -X POST http://localhost:9700/api/agents/checkin \
 TICKET=$(curl -X POST http://localhost:9700/api/route/ticket \
   -H "Content-Type: application/json" \
   -d '{
-    "agent_id": "codex-cli-main",
+    "agent_id": "codex-cli-frontend-W1",
     "task_description": "write frontend form for create_node",
     "target_files": ["frontend/src/NodeCreateForm.tsx"]
   }' | jq -r '.ticket_id')
@@ -137,7 +140,10 @@ Codex 作 **前端 / schema 对接** 场景:
 - Claude Code 建 INTF-* 节点描述后端契约
 - Codex 查 INTF → 生成前端 type 定义 + API 客户端
 - 不需要 Claude Code 把完整后端代码传给 Codex
-- Token 省 95%+ (INTF full mode ~600 tokens vs 后端代码 10K+)
+- One historical dogfood payload comparison observed approximately 600 tokens
+  for an INTF full response versus 10K+ tokens of source context. These are
+  approximate context payload sizes, not total token savings and not a
+  cross-tool benchmark.
 
 **实测**: S62c-era Codex-CLI (GPT-5.4) 通过纯 HTTP API 完成跨模块开发. 12 次 route 全部命中 INTF. **Caveat**: 单次 session 手记, 非 benchmark 协议, 无 baseline 对照. 见 EVIDENCE.md §7.
 
@@ -150,7 +156,8 @@ Codex 作 **前端 / schema 对接** 场景:
 
 **Codex 没带 agent_id 调 /api/route**
 - activity_log 会记 `agent_id: unknown`, 审计链损失可追溯性
-- 每次 route 都应带 `agent_id: codex-cli-main`
+- 每次 route 都应带本 session/workorder 的唯一 AgentId，例如
+  `agent_id: codex-cli-frontend-W1`
 
 **多 Codex session 冲突**
 - 每个 session/workorder 使用唯一 agent_id，例如

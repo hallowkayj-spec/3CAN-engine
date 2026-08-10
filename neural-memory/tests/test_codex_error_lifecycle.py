@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -402,6 +403,67 @@ def test_packaged_outer_compact_preserves_explicit_target_files(tmp_path):
     assert compact_files == ["README.md", "scripts/tool.py"]
     assert payload["compact_scope_files"] == compact_files
     assert payload["compact_scope_selection"] == "explicit_files_only"
+
+
+def test_packaged_workspace_key_uses_host_case_semantics_and_non_git_fallback(request):
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell, "PowerShell is required to test the packaged wrapper contract"
+    tmp_path = Path(tempfile.mkdtemp(prefix="3can-workspace-case-"))
+    request.addfinalizer(lambda: shutil.rmtree(tmp_path, ignore_errors=True))
+
+    def install(project: Path) -> Path:
+        scripts_dir = project / "scripts"
+        scripts_dir.mkdir(parents=True)
+        wrapper = scripts_dir / "3can_codex_wrapper.ps1"
+        shutil.copy2(CODEX_WRAPPER_PATH, wrapper)
+        (scripts_dir / "3can_codex.py").write_text(
+            "import json\n"
+            "print(json.dumps({'ticket_id': 'rt_case', 'issued_at': "
+            "'2026-08-10T00:00:00+00:00', 'ttl_sec': 900}))\n",
+            encoding="utf-8",
+        )
+        return wrapper
+
+    def workspace_key(wrapper: Path, project: Path) -> str:
+        result = subprocess.run(
+            [
+                shell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(wrapper),
+                "before-edit",
+                "-AgentId",
+                "codex-workspace-case-W1",
+                "-TaskDescription",
+                "verify worktree identity",
+                "-TargetFiles",
+                "README.md",
+                "-ScopeKeywords",
+                "workspace-identity",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        state_path = Path(json.loads(result.stdout)["wrapper_state_path"])
+        assert state_path.resolve().is_relative_to(project.resolve())
+        return json.loads(state_path.read_text(encoding="utf-8-sig"))["workspace_key"]
+
+    if os.name == "nt":
+        project = tmp_path / "CaseProject"
+        wrapper = install(project)
+        assert workspace_key(wrapper, project) == workspace_key(
+            Path(str(wrapper).swapcase()), project
+        )
+    else:
+        upper_project = tmp_path / "CaseProject"
+        lower_project = tmp_path / "caseproject"
+        assert workspace_key(install(upper_project), upper_project) != workspace_key(
+            install(lower_project), lower_project
+        )
 
 
 def test_agent_api_projects_stale_heartbeats_without_mutating_registry():

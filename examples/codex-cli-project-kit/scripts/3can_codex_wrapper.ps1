@@ -81,8 +81,17 @@ function Resolve-3CanWorktreeRoot {
     return [System.IO.Path]::GetFullPath($ProjectRoot)
 }
 
+function Normalize-3CanWorktreeRoot {
+    param([string]$Path)
+    $normalized = [System.IO.Path]::GetFullPath($Path).Replace('\', '/').TrimEnd('/')
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        return $normalized.ToLowerInvariant()
+    }
+    return $normalized
+}
+
 $WorktreeRoot = Resolve-3CanWorktreeRoot
-$NormalizedWorktreeRoot = $WorktreeRoot.Replace('\', '/').TrimEnd('/').ToLowerInvariant()
+$NormalizedWorktreeRoot = Normalize-3CanWorktreeRoot $WorktreeRoot
 $WorktreeRootSha256 = Get-3CanSha256Text $NormalizedWorktreeRoot
 $WorkspaceKey = $WorktreeRootSha256.Substring(0, 16)
 $AgentStateKey = if ($AgentId) {
