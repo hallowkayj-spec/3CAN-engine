@@ -1,0 +1,107 @@
+# 3CAN root .gitignore (to be renamed to .gitignore when 3CAN is split into its own repo)
+
+# ----- Secrets and API keys -----
+secrets.json
+*.env
+.env
+.env.*
+!.env.example
+# user-level secrets must never be committed
+**/.claude/secrets.json
+**/.claude/logs/
+**/.claude/cache/
+
+# ----- 3CAN graph data (user-specific, not release content) -----
+graph/nodes/
+graph/embeddings.npz
+graph/edges.json
+graph/agents.json
+graph/activity_log.json
+graph/click_log.json
+graph/pending_keywords.json
+graph/archive/
+graph/backups/
+graph/route_feedback.json
+# Runtime graph state is deny-by-default, including migration backups,
+# archives, journals, locks, ledgers, embeddings, and future state formats.
+neural-memory/graph/**
+!neural-memory/graph/README.md
+!neural-memory/graph/.gitkeep
+neural-memory/.3can-locks/
+# Runtime state created while exercising the bundled Codex project kit.
+examples/codex-cli-project-kit/data/_3can_pending_writeback/
+examples/codex-cli-project-kit/data/_3can_runtime/
+examples/codex-cli-project-kit/test-results/3can/
+proxy_state.json
+# Sentinel (never commit)
+3can-gate-bootstrap
+
+# ----- Benchmark outputs (run-specific) -----
+benchmark/_longmemeval/
+benchmark/_substrate/
+benchmark/_harness/
+benchmark/_wave2/
+benchmark/_wave*
+benchmark/__*.py
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+
+# ----- IDE / editor -----
+.idea/
+.vscode/
+*.swp
+*.swo
+*.bak
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----- Logs and temp -----
+*.log
+*.log.*
+*.tmp
+*.temp
+
+# ----- Local databases -----
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.db-wal
+*.db-shm
+*.db-journal
+
+# ----- Model caches (user-specific, large) -----
+models/
+.cache/
+
+# ----- Docker -----
+.docker/
+
+# ----- Archive (historical snapshots, not for source-available shipping) -----
+docs/specs/_archive/
+_archive/
