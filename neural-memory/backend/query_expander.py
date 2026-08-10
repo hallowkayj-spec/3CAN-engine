@@ -11,9 +11,8 @@ merchant / 商户端 SaaS"这类近义查询召回一致. 核心不依赖, 用�
 不破坏原行为: 若 config.query_expansion.enabled=false 或 adapter 全不可用,
 返回只含原 query 的列表 — 跟现在 baseline 等价.
 
-TODO (下一步接入 /api/route): 对每个 expanded query 独立跑 engine.route,
-用 RRF 合并 top-k. 现仅提供 expand() 接口, 接入留下一步 (需在 app.py 的 /api/
-route 前置, 约 30 行).
+当前接入: GraphEngine.route() 在 embedding/keyword/RRF 主链路前调用 expand(),
+并以有界 weighted query 集合参与现有融合；没有第二套路由器。
 
 Config (config.json):
 {

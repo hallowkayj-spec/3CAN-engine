@@ -10,9 +10,19 @@
 - [edge.schema.json](./schemas/edge.schema.json) — Edge 边
 - [activity.schema.json](./schemas/activity.schema.json) — ActivityEntry 事件
 
-## 2. 节点 ID 前缀约定 (语义分类)
+## 2. 运行时类型与语义 ID family
 
-| 前缀 | 语义 | 类型 | 例 |
+这两个维度不得混用：
+
+- `Node.type` 是粗粒度的存储/行为分类，例如 `knowledge`、`process`、
+  `session`、`decision`。它决定运行时如何处理节点。
+- 节点 ID 的首段是项目语义角色，例如 `INTF`、`PROC`、`DEC`、`SES`、
+  `HO`。需要语义角色时统一调用 `models.semantic_id_family(node_id)`。
+
+一个语义 family 可以映射到多个 runtime type；现有节点无需迁移，也不新增
+第二个 type 字段。下表的“常见 runtime type”只是惯例，不是等价关系。
+
+| 前缀 | 语义 | 常见 runtime type | 例 |
 |---|---|---|---|
 | DEC | 架构决策 | decision | DEC-3can-route-opt-s66c |
 | DOC | 文档 / 项目文档 | reference / knowledge | DOC-3can-routing-dimensions-s66d |
@@ -33,6 +43,33 @@
 | AGT | agent 关联记录 | knowledge | AGT-opus-brain-main |
 | TASK | 任务列表节点 | process | TASK-s66-project-roadmap |
 | PRO | 协议/流程 | process | PRO-3can-protocol |
+
+## 2.1 项目现实与执行绑定
+
+Durable project identity 由 tracked `.agents/project.json` 的
+`normalized Git repository + project_id + project_namespace` 构成。
+Git common-dir hash 只标识本机 clone/worktree family；physical worktree hash
+只绑定当前 writer。两者组合为不含绝对路径的 `workspace_id`，不能代替跨机器
+项目身份。
+
+Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 WorkorderId
+才传播；不存在时保持缺失，ticket ledger 的兼容投影可显示 `unspecified`，但不
+制造一个历史 Workorder。Endpoint 由 `THREECAN_URL` 等运行环境配置提供，
+不写入 tracked project capsule。
+
+## 2.2 当前现实、历史与 supersession
+
+- current/canonical/owner/path 查询优先 durable semantic families，并后置
+  `SES`/`HO`；普通 history/continuation/handoff 查询保持原行为。历史查询若明确
+  要求 evidence/source/boundary，则先给 durable source pointer，再保留历史叙述。
+- `status=deprecated`、`content.extra.invalidated_by/superseded_by/replaced_by`
+  或被 `new --supersedes--> old` 指向的节点，不再参与当前现实竞争。
+- project-scoped Core Memory 只有在 metadata 证明 project/namespace 匹配时
+  才可 `must_consume`；未知适用性退回可选语义召回。
+- Git branch、worktree、PR、CI、Agent 与 Workorder 是外部可变事实。3CAN 可
+  返回 source pointer，但必须同时声明需要实时外部核验。
+- 历史 ErrorKnowledge 继续通过 explicit-error intent 精确召回，不进入普通
+  current route 或 hot-topology 权重。
 
 ## 3. 节点状态机
 
@@ -136,6 +173,16 @@ Agent 接入 3CAN 最低要求:
 | bug 修复 | PATCH | ✅ |
 
 当前版本 **v9.4** (2026-04-18 稳定).
+
+## 8.1 Readiness 的两种证据
+
+`physical_integrity` 继续由 immutable runtime identity、graph/engine hash、
+embedding 对齐与 deep readiness 决定，并且是 `production_ready` 的唯一输入。
+
+`effective_project_reality` 是只读诊断投影，分别报告 raw graph、historical
+archive、ordinary hot nodes、durable-current candidates、SES/HO 与 hot/history
+relations。它的 semantic quality 在有固定 gold 的真实查询基准完成前保持
+`validating`，不是生产 hard gate，也不能用节点数量冒充项目理解质量。
 
 ## 9. 错误码语义
 

@@ -35,7 +35,7 @@ from models import (
     ActivityEntry, AgentInfo, AgentStatus,
     Edge, EdgeCreate, GraphStats, Node, NodeContent, NodeCreate,
     NodeStatus, NodeUpdate, RoutingRequest, RoutingResponse,
-    validate_node_identifier,
+    semantic_id_family, validate_node_identifier,
 )
 
 import os as _os
@@ -759,6 +759,43 @@ class GraphEngine:
     _TEMPORAL_ROUTE_MAX_BOOST = 0.006
     _CANONICAL_ERROR_CASE_CAP_BOOST = 0.002
     _TEMPORAL_ROUTE_MAX_PENALTY = 0.006
+    _CURRENT_REALITY_TRIGGER = re.compile(
+        r"\bcurrent\b|\bcanonical\b|\bowner\b|\bactive now\b|\bverified capability\b|"
+        r"\bsource[- ]of[- ]truth\b|\bcurrent path\b|\bcurrent contract\b|"
+        r"\bstill\b|"
+        r"\bhow (?:do|should) (?:we|i) (?:call|use)\b|"
+        r"当前|目前|现行|现在|是否仍|规范路径|权威来源|真相来源|业务真相|"
+        r"当前负责人|当前契约|已验证能力|"
+        r"怎么(?:调用|使用)|如何(?:调用|使用)",
+        re.IGNORECASE,
+    )
+    _HISTORY_ROUTE_TRIGGER = re.compile(
+        r"\bhistory\b|\bhistorical\b|\bprevious(?:ly)?\b|\bformerly\b|\bwhy\b|"
+        r"\bhandoff\b|\bcontinuation\b|\barchaeology\b|"
+        r"历史|以前|过去|曾经|为什么|交接|续接|考古|旧契约|由什么替代",
+        re.IGNORECASE,
+    )
+    _DURABLE_EVIDENCE_TRIGGER = re.compile(
+        r"\bevidence\b|\bsource\b|\bsource pointer\b|\bboundary\b|"
+        r"\bknown[- ]good\b|\bverified (?:path|recovery|outcome)\b|"
+        r"证据|来源|源文件|边界|已验证(?:路径|恢复|结果)|成熟链路",
+        re.IGNORECASE,
+    )
+    _EXTERNAL_TRUTH_TRIGGER = re.compile(
+        r"\bbranch\b|\bworktree\b|\bpull request\b|\bPR\b|\bCI\b|\bworkorder\b|"
+        r"\bagent\b|分支|工作树|拉取请求|当前任务|当前代理",
+        re.IGNORECASE,
+    )
+    _CURRENT_SEDIMENT_FAMILIES = frozenset({"SES", "HO"})
+    _CURRENT_DURABLE_FAMILIES = frozenset(
+        {"INTF", "PROC", "DEC", "PRJ", "DOC", "ENV", "MEM", "MOD", "PRO", "RUL", "SEC"}
+    )
+    _CURRENT_DURABLE_BOOST = 0.004
+    _CURRENT_SEDIMENT_PENALTY = 0.008
+    _CURRENT_UNPROVEN_CORE_PENALTY = 0.010
+    _PROJECT_SCOPED_CORE_LANES = frozenset(
+        {"environment_constraints", "project_constitution", "project_file_system"}
+    )
 
     def __init__(self) -> None:
         self._graph_runtime_lease: GraphRuntimeLease | None = (
@@ -2395,6 +2432,250 @@ class GraphEngine:
             "top_penalties": penalties[:12],
         }
 
+    @staticmethod
+    def _node_extra(node: Node | None) -> dict[str, Any]:
+        extra = getattr(getattr(node, "content", None), "extra", None)
+        return extra if isinstance(extra, dict) else {}
+
+    def _node_project_values(self, node: Node | None) -> tuple[str, str]:
+        """Project applicability projected from existing node metadata."""
+
+        extra = self._node_extra(node)
+        nested = extra.get("project_identity")
+        nested = nested if isinstance(nested, dict) else {}
+        applicability = extra.get("applicability")
+        applicability = applicability if isinstance(applicability, dict) else {}
+        error_case = extra.get("error_case")
+        error_case = error_case if isinstance(error_case, dict) else {}
+        project_id = (
+            extra.get("project_id")
+            or nested.get("project_id")
+            or applicability.get("project_id")
+            or error_case.get("project_id")
+            or ""
+        )
+        namespace = (
+            extra.get("project_namespace")
+            or nested.get("project_namespace")
+            or applicability.get("project_namespace")
+            or error_case.get("project_namespace")
+            or ""
+        )
+        return (
+            str(project_id).strip().casefold(),
+            str(namespace).strip().casefold(),
+        )
+
+    def _superseded_node_ids(self) -> set[str]:
+        return {
+            edge.target
+            for edge in self.edges
+            if self._edge_type_value(edge.type) == "supersedes"
+        }
+
+    def _node_is_superseded(
+        self,
+        node_id: str,
+        node: Node | None,
+        superseded_ids: set[str] | None = None,
+    ) -> bool:
+        if not node:
+            return False
+        if node.status == NodeStatus.deprecated:
+            return True
+        if node_id in (superseded_ids if superseded_ids is not None else self._superseded_node_ids()):
+            return True
+        extra = self._node_extra(node)
+        return bool(
+            extra.get("invalidated_by")
+            or extra.get("superseded_by")
+            or extra.get("replaced_by")
+        )
+
+    def _core_project_scoped_node_ids(self) -> set[str]:
+        manifest, _ = self._core_manifest_payload()
+        lanes = self._normalize_lane_map(
+            manifest.get("memory_lanes") or manifest.get("lanes")
+        )
+        return {
+            node_id
+            for lane in self._PROJECT_SCOPED_CORE_LANES
+            for node_id in lanes.get(lane, [])
+        }
+
+    def _current_reality_policy(
+        self,
+        req: RoutingRequest,
+        expanded_task: str,
+        *,
+        explicit_error: bool,
+        exact_code: bool,
+    ) -> dict[str, Any]:
+        # Governance intent is user-authored.  Retrieval expansion may contain
+        # words such as "handoff" or "current" from old graph records and must
+        # not change the current/history contract.
+        text = req.task or ""
+        current = bool(self._CURRENT_REALITY_TRIGGER.search(text))
+        historical = bool(self._HISTORY_ROUTE_TRIGGER.search(text))
+        durable_evidence = bool(self._DURABLE_EVIDENCE_TRIGGER.search(text))
+        enabled = bool(
+            (current or durable_evidence)
+            and (not historical or durable_evidence)
+            and not explicit_error
+            and not exact_code
+        )
+        return {
+            "enabled": enabled,
+            "intent": (
+                "durable_source_evidence"
+                if enabled and durable_evidence and historical
+                else "current_project_reality"
+                if enabled
+                else "history_or_specialized" if historical or explicit_error or exact_code else "ordinary"
+            ),
+            "durable_evidence_requested": durable_evidence,
+            "project_id": str(req.project_id or "").casefold(),
+            "project_namespace": str(req.project_namespace or "").casefold(),
+            "external_verification_required": bool(
+                enabled and self._EXTERNAL_TRUTH_TRIGGER.search(text)
+            ),
+            "sediment_families": sorted(self._CURRENT_SEDIMENT_FAMILIES),
+        }
+
+    def _apply_current_reality_policy(
+        self,
+        rrf_scores: dict[str, float],
+        policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not policy.get("enabled"):
+            return {
+                **policy,
+                "excluded_superseded_node_ids": [],
+                "excluded_project_mismatch_node_ids": [],
+                "demoted_sediment_node_ids": [],
+                "demoted_unproven_core_node_ids": [],
+                "boosted_durable_node_ids": [],
+            }
+
+        requested_project = str(policy.get("project_id") or "").casefold()
+        requested_namespace = str(policy.get("project_namespace") or "").casefold()
+        superseded_ids = self._superseded_node_ids()
+        scoped_core_ids = self._core_project_scoped_node_ids()
+        excluded_superseded: list[str] = []
+        excluded_mismatch: list[str] = []
+        demoted_sediment: list[str] = []
+        demoted_unproven: list[str] = []
+        boosted_durable: list[str] = []
+
+        for node_id in list(rrf_scores):
+            node = self.nodes.get(node_id)
+            if not node:
+                continue
+            if self._node_is_superseded(node_id, node, superseded_ids):
+                excluded_superseded.append(node_id)
+                rrf_scores.pop(node_id, None)
+                continue
+
+            node_project, node_namespace = self._node_project_values(node)
+            project_mismatch = bool(
+                requested_project
+                and node_project
+                and node_project != requested_project
+            )
+            namespace_mismatch = bool(
+                requested_namespace
+                and node_namespace
+                and node_namespace != requested_namespace
+            )
+            if project_mismatch or namespace_mismatch:
+                excluded_mismatch.append(node_id)
+                rrf_scores.pop(node_id, None)
+                continue
+
+            family = semantic_id_family(node_id)
+            if family in self._CURRENT_SEDIMENT_FAMILIES:
+                rrf_scores[node_id] = round(
+                    rrf_scores[node_id] - self._CURRENT_SEDIMENT_PENALTY,
+                    6,
+                )
+                demoted_sediment.append(node_id)
+            elif (
+                node_id in scoped_core_ids
+                and requested_project
+                and not node_project
+            ):
+                rrf_scores[node_id] = round(
+                    rrf_scores[node_id] - self._CURRENT_UNPROVEN_CORE_PENALTY,
+                    6,
+                )
+                demoted_unproven.append(node_id)
+            elif family in self._CURRENT_DURABLE_FAMILIES:
+                rrf_scores[node_id] = round(
+                    rrf_scores[node_id] + self._CURRENT_DURABLE_BOOST,
+                    6,
+                )
+                boosted_durable.append(node_id)
+
+        return {
+            **policy,
+            "excluded_superseded_node_ids": sorted(excluded_superseded)[:20],
+            "excluded_project_mismatch_node_ids": sorted(excluded_mismatch)[:20],
+            "demoted_sediment_node_ids": sorted(demoted_sediment)[:20],
+            "demoted_unproven_core_node_ids": sorted(demoted_unproven)[:20],
+            "boosted_durable_node_ids": sorted(boosted_durable)[:20],
+            "excluded_superseded_count": len(excluded_superseded),
+            "excluded_project_mismatch_count": len(excluded_mismatch),
+            "demoted_sediment_count": len(demoted_sediment),
+            "demoted_unproven_core_count": len(demoted_unproven),
+            "boosted_durable_count": len(boosted_durable),
+        }
+
+    def _prioritize_current_reality(
+        self,
+        node_ids: list[str],
+        policy: dict[str, Any],
+    ) -> list[str]:
+        """Stable policy ordering after an optional cross-encoder rerank."""
+
+        if not policy.get("enabled"):
+            return node_ids
+        scoped_core_ids = self._core_project_scoped_node_ids()
+
+        def group(node_id: str) -> int:
+            family = semantic_id_family(node_id)
+            if family in self._CURRENT_SEDIMENT_FAMILIES:
+                return 2
+            node = self.nodes.get(node_id)
+            project_id, _ = self._node_project_values(node)
+            if node_id in scoped_core_ids and not project_id:
+                return 1
+            return 0 if family in self._CURRENT_DURABLE_FAMILIES else 1
+
+        return sorted(node_ids, key=group)
+
+    def _current_reality_node_allowed(
+        self,
+        node_id: str,
+        policy: dict[str, Any],
+    ) -> bool:
+        if not policy.get("enabled"):
+            return True
+        node = self.nodes.get(node_id)
+        if not node or self._node_is_superseded(node_id, node):
+            return False
+        requested_project = str(policy.get("project_id") or "").casefold()
+        requested_namespace = str(policy.get("project_namespace") or "").casefold()
+        node_project, node_namespace = self._node_project_values(node)
+        return not (
+            requested_project
+            and node_project
+            and requested_project != node_project
+        ) and not (
+            requested_namespace
+            and node_namespace
+            and requested_namespace != node_namespace
+        )
+
     def _core_node_topics(self, node_id: str, node: Node | None) -> set[str]:
         if node_id in self._CORE_NODE_TOPIC_HINTS:
             return set(self._CORE_NODE_TOPIC_HINTS[node_id])
@@ -3132,7 +3413,7 @@ class GraphEngine:
         term_hits = sum(1 for term in task_terms if term in node_text)
         priority_weight = self._NODE_EXEC_PRIORITY.get(self._node_priority_value(node), 50.0) if node else 0.0
         activation = int(node.activation_count or 0) if node else 0
-        edge_count = self._node_edge_count(node_id)
+        edge_count = self._node_edge_count(node_id, hot_only=True)
         stable_bias = (
             1
             if lane == "error_warnings"
@@ -3191,6 +3472,35 @@ class GraphEngine:
         ]
         fallback_selected = fallback[:1] if fallback else existing[:1]
         return self._limit_core_lane_nodes(lane, fallback_selected, task, task_topics)
+
+    def _core_node_applicability(
+        self,
+        node_id: str,
+        lane: str,
+        *,
+        project_id: str,
+        project_namespace: str,
+        superseded_ids: set[str],
+    ) -> tuple[bool, str]:
+        node = self.nodes.get(node_id)
+        if not node:
+            return False, "missing"
+        if self._node_is_superseded(node_id, node, superseded_ids):
+            return False, "deprecated_or_superseded"
+        if lane not in self._PROJECT_SCOPED_CORE_LANES:
+            return True, "global_or_query_scoped"
+
+        node_project, node_namespace = self._node_project_values(node)
+        if not project_id or not node_project:
+            return False, "project_applicability_unproven"
+        if node_project != project_id.casefold():
+            return False, "project_mismatch"
+        if project_namespace:
+            if not node_namespace:
+                return False, "project_namespace_unproven"
+            if node_namespace != project_namespace.casefold():
+                return False, "project_namespace_mismatch"
+        return True, "project_match"
 
     def _core_dynamic_edge_node_relevant(
         self,
@@ -3266,15 +3576,49 @@ class GraphEngine:
     def _node_type_value(self, node: Node) -> str:
         return str(getattr(node.type, "value", node.type))
 
-    def _node_edge_count(self, node_id: str) -> int:
-        return sum(1 for e in self.edges if e.source == node_id or e.target == node_id)
+    def _node_is_hot_route_candidate(
+        self,
+        node_id: str,
+        superseded_ids: set[str] | None = None,
+    ) -> bool:
+        nodes = getattr(self, "nodes", None)
+        if nodes is None:
+            # Some callers score a supplied edge/rank fixture without loading
+            # node storage.  There is no historical/deprecated evidence to
+            # filter in that mode.
+            return True
+        node = nodes.get(node_id)
+        if not node or node.status == NodeStatus.dormant:
+            return False
+        if self._node_is_superseded(node_id, node, superseded_ids):
+            return False
+        return self._error_node_allowed_for_route(
+            node_id,
+            node,
+            explicit_error=False,
+        )
+
+    def _node_edge_count(self, node_id: str, *, hot_only: bool = False) -> int:
+        if not hot_only:
+            return sum(
+                1 for edge in self.edges
+                if edge.source == node_id or edge.target == node_id
+            )
+        superseded_ids = self._superseded_node_ids()
+        return sum(
+            1
+            for edge in self.edges
+            if (edge.source == node_id or edge.target == node_id)
+            and self._node_is_hot_route_candidate(edge.source, superseded_ids)
+            and self._node_is_hot_route_candidate(edge.target, superseded_ids)
+        )
 
     def _core_node_execution_weight(self, node: Node, lanes: list[str], lane_weights: dict[str, float]) -> float:
         lane_base = max((lane_weights.get(lane, 50.0) for lane in lanes), default=50.0)
         priority_weight = self._NODE_EXEC_PRIORITY.get(self._node_priority_value(node), 50.0)
         type_bonus = self._NODE_EXEC_TYPE_BONUS.get(self._node_type_value(node), 0.0)
         heat = min(int(node.activation_count or 0) * 1.5, 8.0)
-        edge_bonus = min(self._node_edge_count(node.id) * 2.0, 8.0)
+        edge_bonus = min(self._node_edge_count(node.id, hot_only=True) * 2.0, 8.0)
         raw = lane_base * 0.55 + priority_weight * 0.35 + type_bonus + heat + edge_bonus
         factor = self._NODE_EXEC_STATUS_FACTOR.get(self._node_status_value(node), 0.5)
         return round(max(0.0, min(100.0, raw * factor)), 2)
@@ -3303,6 +3647,8 @@ class GraphEngine:
         self,
         rrf_scores: dict[str, float],
         top_set: set[str],
+        *,
+        include_historical: bool = False,
     ) -> dict[str, Any]:
         boost_by_node: dict[str, float] = defaultdict(float)
         edge_evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -3317,7 +3663,13 @@ class GraphEngine:
             anchor_floor - self._EDGE_ROUTE_RANK_EPSILON,
         )
 
+        superseded_ids = self._superseded_node_ids()
         for edge in self.edges:
+            if not include_historical and not (
+                self._node_is_hot_route_candidate(edge.source, superseded_ids)
+                and self._node_is_hot_route_candidate(edge.target, superseded_ids)
+            ):
+                continue
             routes = (
                 (edge.source, edge.target, False),
                 (edge.target, edge.source, True),
@@ -3378,7 +3730,14 @@ class GraphEngine:
             "top_boosts": top_boosts[:12],
         }
 
-    def _build_core_memory_route_graph(self, task: str, selected_ids: list[str]) -> dict[str, Any]:
+    def _build_core_memory_route_graph(
+        self,
+        task: str,
+        selected_ids: list[str],
+        *,
+        project_id: str = "",
+        project_namespace: str = "",
+    ) -> dict[str, Any]:
         manifest, registry_source = self._core_manifest_payload()
         lanes = self._normalize_lane_map(manifest.get("memory_lanes") or manifest.get("lanes"))
         lane_weights = self._normalize_lane_weights(manifest.get("lane_weights") or manifest.get("memory_lane_weights"))
@@ -3416,12 +3775,29 @@ class GraphEngine:
         lanes = self._augment_core_lanes_from_edges(lanes, task, task_topics)
         node_to_lanes: dict[str, list[str]] = {}
         lane_selected_nodes: dict[str, list[str]] = {}
+        optional_nodes: list[dict[str, str]] = []
+        superseded_ids = self._superseded_node_ids()
+
+        def _applicable(node_id: str, lane: str) -> bool:
+            allowed, reason = self._core_node_applicability(
+                node_id,
+                lane,
+                project_id=project_id,
+                project_namespace=project_namespace,
+                superseded_ids=superseded_ids,
+            )
+            if not allowed:
+                optional_nodes.append(
+                    {"node_id": node_id, "lane": lane, "reason": reason}
+                )
+            return allowed
+
         for lane in required_lanes:
             selected_lane_nodes = self._select_core_lane_nodes(lane, lanes.get(lane, []), task, task_topics)
             selected_lane_nodes = [
                 node_id
                 for node_id in selected_lane_nodes
-                if _core_error_visible(node_id)
+                if _core_error_visible(node_id) and _applicable(node_id, lane)
             ]
             lane_selected_nodes[lane] = selected_lane_nodes
             for node_id in selected_lane_nodes:
@@ -3435,6 +3811,14 @@ class GraphEngine:
             if self._core_required_edge_relevant(edge, selected_core_ids, task_topics)
             and _core_error_visible(str(edge.get("source") or ""))
             and _core_error_visible(str(edge.get("target") or ""))
+            and all(
+                node_id == self._CORE_MEMORY_REGISTRY_NODE_ID
+                or node_id in selected_core_ids
+                for node_id in (
+                    str(edge.get("source") or ""),
+                    str(edge.get("target") or ""),
+                )
+            )
         ]
         for edge in required_edges:
             if edge not in relevant_required_edges:
@@ -3468,7 +3852,7 @@ class GraphEngine:
                 "status": self._node_status_value(node),
                 "type": self._node_type_value(node),
                 "activation_count": node.activation_count,
-                "edge_count": self._node_edge_count(node_id),
+                "edge_count": self._node_edge_count(node_id, hot_only=True),
             })
         node_weights.sort(key=lambda item: (-float(item["execution_weight"]), item["id"]))
 
@@ -3507,6 +3891,15 @@ class GraphEngine:
             "task_topics": sorted(task_topics),
             "required_lanes": required_lanes,
             "lane_selected_nodes": lane_selected_nodes,
+            "optional_semantic_nodes": sorted(
+                {json.dumps(item, sort_keys=True): item for item in optional_nodes}.values(),
+                key=lambda item: (item["lane"], item["node_id"], item["reason"]),
+            ),
+            "project_scope": {
+                "project_id": project_id or None,
+                "project_namespace": project_namespace or None,
+                "policy": "project_scoped_lanes_require_proven_applicability",
+            },
             "lane_weights": lane_weights,
             "node_weights": node_weights[:20],
             "must_consume_node_ids": must_consume,
@@ -3780,6 +4173,12 @@ class GraphEngine:
 
         raw = req.task.strip()
         is_short_code = bool(re.fullmatch(r"[A-Za-z]+\d+[A-Za-z0-9]*", raw)) and len(raw) <= 8
+        current_reality_policy = self._current_reality_policy(
+            req,
+            expanded_task,
+            explicit_error=explicit_error_route,
+            exact_code=is_short_code,
+        )
         K_RRF = 60  # RRF常数, Elasticsearch标准值
 
         # ── Step 0.5: 短代码解析 (结果注入RRF第4信号, 不再bypass) ──
@@ -3991,6 +4390,10 @@ class GraphEngine:
             temporal_policy,
             eligible_node_ids=temporal_eligible,
         )
+        current_reality_policy = self._apply_current_reality_policy(
+            rrf_scores,
+            current_reality_policy,
+        )
 
         # ── Step 3: Graph Traversal Boost ──
         pre_sorted = sorted(
@@ -3998,7 +4401,11 @@ class GraphEngine:
             key=lambda node_id: (-rrf_scores[node_id], node_id),
         )[:req.max_nodes * 3]
         top_set = set(pre_sorted[:max(3, req.max_nodes // 2)])
-        graph_traversal_boost = self._apply_graph_traversal_boost(rrf_scores, top_set)
+        graph_traversal_boost = self._apply_graph_traversal_boost(
+            rrf_scores,
+            top_set,
+            include_historical=explicit_error_route,
+        )
 
         # ── Step 3.5 v9.2 Path 2: Leiden Community Boost ──
         # 同 community 的兄弟节点 +0.002 (主要涨 R@3 — 让 query 的目标集群一起浮出)
@@ -4085,6 +4492,11 @@ class GraphEngine:
                 if str(_fl_err) != "__3can_reranker_disabled__":
                     logging.getLogger("3can").warning(f"FlashRank also failed: {_fl_err}")
 
+        reranked = self._prioritize_current_reality(
+            reranked,
+            current_reality_policy,
+        )
+
         # ── Step 5: 取top-K, 合并分数 ──
         prioritized_error_cases = list(
             dict.fromkeys(
@@ -4120,7 +4532,12 @@ class GraphEngine:
         semantic_result_ids = list(sorted_ids)
         # 分数用RRF值（re-ranking改变了顺序但RRF分数仍用于展示）
         scores = {nid: rrf_scores.get(nid, 0.0) for nid in sorted_ids}
-        core_memory_graph = self._build_core_memory_route_graph(req.task, sorted_ids)
+        core_memory_graph = self._build_core_memory_route_graph(
+            req.task,
+            sorted_ids,
+            project_id=req.project_id or "",
+            project_namespace=req.project_namespace or "",
+        )
         sorted_ids = self._attach_core_memory_nodes(
             sorted_ids,
             scores,
@@ -4158,6 +4575,10 @@ class GraphEngine:
             dormant_pool = {nid: hybrid_ranks.get(nid, 0) for nid, n in self.nodes.items()
                            if n.status == NodeStatus.dormant
                            and nid not in used
+                           and self._current_reality_node_allowed(
+                               nid,
+                               current_reality_policy,
+                           )
                            and self._error_node_allowed_for_route(
                                nid,
                                n,
@@ -4179,6 +4600,10 @@ class GraphEngine:
                     for n in self.nodes.values()
                     if not n.id.startswith("INTF-")
                     and n.status == NodeStatus.active
+                    and self._current_reality_node_allowed(
+                        n.id,
+                        current_reality_policy,
+                    )
                     and self._error_node_allowed_for_route(
                         n.id,
                         n,
@@ -4234,8 +4659,19 @@ class GraphEngine:
             "legacy_hybrid_vote": "disabled_correlated_signal",
             "expanded_query_changed": expanded_task != req.task,
             "temporal_route_policy": temporal_route_boost,
+            "current_reality_policy": current_reality_policy,
             "graph_traversal_boost": graph_traversal_boost,
             "core_memory_graph": core_memory_graph,
+            "execution_context": {
+                key: value
+                for key, value in {
+                    "project_id": req.project_id,
+                    "project_namespace": req.project_namespace,
+                    "workspace_id": req.workspace_id,
+                    "workorder_id": req.workorder_id,
+                }.items()
+                if value is not None
+            },
             "error_route_policy": {
                 "explicit_error_requested": explicit_error_route,
                 "historical_repeated_default": "excluded",
@@ -4278,7 +4714,12 @@ class GraphEngine:
 
     # ── 自动回写（session结束时调用） ──
 
-    def session_writeback(self, changes: list[dict], agent_id: str = "unknown") -> list[str]:
+    def session_writeback(
+        self,
+        changes: list[dict],
+        agent_id: str = "unknown",
+        execution_context: dict[str, str] | None = None,
+    ) -> list[str]:
         """自动审计并回写节点变更。
 
         changes = [
@@ -4290,6 +4731,18 @@ class GraphEngine:
         """
         if not isinstance(changes, list):
             raise ValueError("writeback_changes_must_be_list")
+        context = {
+            key: str(value).strip()
+            for key, value in (execution_context or {}).items()
+            if key in {
+                "project_id",
+                "project_namespace",
+                "workspace_id",
+                "workorder_id",
+            }
+            and str(value).strip()
+            and str(value).strip().casefold() != "unspecified"
+        }
 
         # Validate the whole batch before the first durable mutation.  Older
         # behavior silently counted unknown fields and missing nodes as
@@ -4314,7 +4767,8 @@ class GraphEngine:
                     name=change.get("name", "unnamed"),
                     cluster=change.get("cluster", "业务逻辑"),
                     content=NodeContent(
-                        description=change.get("description", "")
+                        description=change.get("description", ""),
+                        extra=dict(context),
                     ),
                     activation_keywords=keywords,
                 )
@@ -4326,6 +4780,21 @@ class GraphEngine:
             node = self.nodes.get(nid)
             if node is None:
                 raise ValueError(f"writeback_node_not_found:{nid}")
+
+            if semantic_id_family(nid) in {"INTF", "PROC", "DEC", "PRJ"}:
+                node_project, node_namespace = self._node_project_values(node)
+                incoming_project = str(context.get("project_id") or "").casefold()
+                incoming_namespace = str(
+                    context.get("project_namespace") or ""
+                ).casefold()
+                if node_project and incoming_project and node_project != incoming_project:
+                    raise ValueError(f"writeback_project_id_mismatch:{nid}")
+                if (
+                    node_namespace
+                    and incoming_namespace
+                    and node_namespace != incoming_namespace
+                ):
+                    raise ValueError(f"writeback_project_namespace_mismatch:{nid}")
 
             field = change.get("field")
             if field not in _SESSION_WRITEBACK_FIELDS:
@@ -4420,6 +4889,11 @@ class GraphEngine:
 
             if not changed:
                 continue
+
+            if semantic_id_family(nid) in {"INTF", "PROC", "DEC", "PRJ"}:
+                for key in ("project_id", "project_namespace"):
+                    if context.get(key) and not node.content.extra.get(key):
+                        node.content.extra[key] = context[key]
 
             node.updated_at = now
             writer = change.get("updated_by", agent_id or "auto-writeback")
@@ -4540,6 +5014,65 @@ class GraphEngine:
             most_connected=mc_list,
             last_updated=max((n.updated_at for n in self.nodes.values()), default=""),
         )
+
+    def project_reality_diagnostics(self) -> dict[str, Any]:
+        """Logical hot/history projection; diagnostic only, never readiness."""
+
+        superseded_ids = self._superseded_node_ids()
+        historical_ids = {
+            node_id
+            for node_id, node in self.nodes.items()
+            if self._is_historical_error_node(node)
+        }
+        hot_ids = {
+            node_id
+            for node_id in self.nodes
+            if self._node_is_hot_route_candidate(node_id, superseded_ids)
+        }
+        durable_ids = {
+            node_id
+            for node_id in hot_ids
+            if semantic_id_family(node_id) in self._CURRENT_DURABLE_FAMILIES
+        }
+        sediment_ids = {
+            node_id
+            for node_id in self.nodes
+            if semantic_id_family(node_id) in self._CURRENT_SEDIMENT_FAMILIES
+        }
+        hot_relations = sum(
+            1
+            for edge in self.edges
+            if edge.source in hot_ids and edge.target in hot_ids
+        )
+        historical_archive_relations = sum(
+            1
+            for edge in self.edges
+            if edge.source in historical_ids or edge.target in historical_ids
+        )
+        historical_only_relations = sum(
+            1
+            for edge in self.edges
+            if edge.source in historical_ids and edge.target in historical_ids
+        )
+        return {
+            "schema": "3can.effective-project-reality/v1",
+            "status": "observed",
+            "hard_gate": False,
+            "raw_node_count": len(self.nodes),
+            "raw_edge_count": len(self.edges),
+            "historical_archive_node_count": len(historical_ids),
+            "hot_route_eligible_node_count": len(hot_ids),
+            "durable_current_candidate_count": len(durable_ids),
+            "session_handoff_count": len(sediment_ids),
+            "hot_relation_count": hot_relations,
+            "non_hot_relation_count": len(self.edges) - hot_relations,
+            "historical_archive_relation_count": historical_archive_relations,
+            "historical_only_relation_count": historical_only_relations,
+            "semantic_quality": {
+                "status": "validating",
+                "criteria_source": "real-query benchmark required",
+            },
+        }
 
     # ═══════════════════════════════════════════════
     # FEATURE 5: 节点生命周期管理

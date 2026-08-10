@@ -539,12 +539,30 @@ def _make_core_memory_engine(tmp_path: Path, monkeypatch, repeated_nodes: list[d
     }
     _write_route_node(nodes_dir, registry_id, content=registry_content, type="knowledge", priority="critical")
     _write_route_node(nodes_dir, "USR-PUBLIC-preferences", type="knowledge", priority="critical")
-    _write_route_node(nodes_dir, "ENV-PUBLIC-runtime", type="config", priority="critical")
+    _write_route_node(
+        nodes_dir,
+        "ENV-PUBLIC-runtime",
+        content={
+            "description": "public demo runtime",
+            "extra": {
+                "project_id": "public-demo",
+                "project_namespace": "public-demo",
+            },
+        },
+        type="config",
+        priority="critical",
+    )
     _write_route_node(nodes_dir, "ERR-PUBLIC-policy", type="feedback", priority="critical")
     _write_route_node(
         nodes_dir,
         "PRJ-PUBLIC-constitution",
-        content={"description": "demo SaaS project constitution"},
+        content={
+            "description": "demo SaaS project constitution",
+            "extra": {
+                "project_id": "public-demo",
+                "project_namespace": "public-demo",
+            },
+        },
         activation_keywords=["demo-product", "saas", "project"],
         type="knowledge",
         priority="critical",
@@ -552,7 +570,13 @@ def _make_core_memory_engine(tmp_path: Path, monkeypatch, repeated_nodes: list[d
     _write_route_node(
         nodes_dir,
         "DOC-PUBLIC-file-system-contract",
-        content={"description": "Project file-system contract for Desktop media artifacts archive quarantine"},
+        content={
+            "description": "Project file-system contract for Desktop media artifacts archive quarantine",
+            "extra": {
+                "project_id": "public-demo",
+                "project_namespace": "public-demo",
+            },
+        },
         activation_keywords=["project-file-system", "Desktop", "artifact", "archive", "quarantine", "project_fs_guard"],
         type="knowledge",
         priority="high",
@@ -601,6 +625,8 @@ def test_core_memory_product_route_does_not_pull_unrelated_repeated_errors(tmp_p
     graph = engine._build_core_memory_route_graph(
         "current demo-product SaaS project constitution and product brief",
         ["PRJ-PUBLIC-constitution"],
+        project_id="public-demo",
+        project_namespace="public-demo",
     )
 
     repeated = [node_id for node_id in graph["must_consume_node_ids"] if node_id.startswith("ERR-repeated-")]
@@ -644,6 +670,8 @@ def test_core_memory_file_system_route_requires_contract_lane(tmp_path, monkeypa
     graph = engine._build_core_memory_route_graph(
         "Desktop video export pollution project file-system guard generated artifacts archive quarantine",
         [],
+        project_id="public-demo",
+        project_namespace="public-demo",
     )
 
     assert "project_file_system" in graph["required_lanes"]
@@ -657,6 +685,8 @@ def test_core_memory_attach_is_bounded_when_must_consume_exceeds_route_limit(tmp
     graph = engine._build_core_memory_route_graph(
         "3CAN Desktop file-system memory graph node edge weight guard",
         selected,
+        project_id="public-demo",
+        project_namespace="public-demo",
     )
 
     scores = {node_id: 1.0 for node_id in selected}
@@ -671,6 +701,433 @@ def test_core_memory_attach_is_bounded_when_must_consume_exceeds_route_limit(tmp
     assert graph["injection_policy"]["mode"] == "bounded_must_consume"
     assert graph["injection_policy"]["hard_gate_overrode_max_nodes"] is False
     assert len(packed) <= 3
+
+
+def test_core_memory_project_mismatch_falls_back_to_optional_semantic_retrieval(
+    tmp_path,
+    monkeypatch,
+):
+    engine = _make_core_memory_engine(tmp_path, monkeypatch, [])
+    stale = engine.nodes["ENV-PUBLIC-runtime"]
+    stale.content.extra["project_id"] = "legacy-project"
+    stale.content.extra["project_namespace"] = "legacy-project"
+
+    graph = engine._build_core_memory_route_graph(
+        "current runtime and project environment",
+        ["ENV-PUBLIC-runtime"],
+        project_id="public-demo",
+        project_namespace="public-demo",
+    )
+
+    assert "ENV-PUBLIC-runtime" not in graph["must_consume_node_ids"]
+    assert graph["lane_selected_nodes"]["environment_constraints"] == []
+    assert {
+        "node_id": "ENV-PUBLIC-runtime",
+        "lane": "environment_constraints",
+        "reason": "project_mismatch",
+    } in graph["optional_semantic_nodes"]
+
+
+def _make_current_reality_engine(tmp_path: Path, monkeypatch):
+    graph_dir = tmp_path / "current-reality-graph"
+    nodes_dir = graph_dir / "nodes"
+    nodes_dir.mkdir(parents=True)
+    common = {
+        "activation_keywords": ["runninghub", "canonical", "path", "owner"],
+        "priority": "high",
+        "activation_count": 2,
+    }
+    _write_route_node(
+        nodes_dir,
+        "INTF-PUBLIC-current",
+        content={
+            "description": "Current canonical RunningHub interface and owner path",
+            "extra": {
+                "project_id": "public-demo",
+                "project_namespace": "public-demo",
+            },
+        },
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "SES-PUBLIC-old",
+        content={"description": "Old session narrative about RunningHub path"},
+        type="session",
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "HO-PUBLIC-old",
+        content={"description": "Old handoff narrative about RunningHub owner"},
+        type="session",
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "DEC-PUBLIC-old",
+        content={
+            "description": "Old canonical decision",
+            "extra": {"project_id": "public-demo", "project_namespace": "public-demo"},
+        },
+        type="decision",
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "DEC-PUBLIC-new",
+        content={
+            "description": "Current canonical decision",
+            "extra": {"project_id": "public-demo", "project_namespace": "public-demo"},
+        },
+        type="decision",
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "PRJ-OTHER-current",
+        content={
+            "description": "Current path for a different project",
+            "extra": {"project_id": "other-project", "project_namespace": "other-project"},
+        },
+        **common,
+    )
+    (graph_dir / "edges.json").write_text(
+        json.dumps(
+            [
+                {
+                    "source": "DEC-PUBLIC-new",
+                    "target": "DEC-PUBLIC-old",
+                    "type": "supersedes",
+                    "weight": 1.0,
+                    "description": "verified replacement",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("THREECAN_GRAPH_DIR", str(graph_dir))
+    monkeypatch.setenv("THREECAN_RERANKER_MODE", "off")
+    graph_engine = load_graph_engine()
+    graph_engine._embed_model = graph_engine._HashingEmbeddingModel()
+    return graph_engine, graph_engine.GraphEngine()
+
+
+def test_current_reality_prefers_durable_facts_and_excludes_stale_or_wrong_project(
+    tmp_path,
+    monkeypatch,
+):
+    graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+
+    response = engine.route(
+        graph_engine.RoutingRequest(
+            task="current canonical RunningHub path and owner",
+            max_nodes=5,
+            agent_id="PUBLIC-agent",
+            mode="skeleton",
+            project_id="public-demo",
+            project_namespace="public-demo",
+            workspace_id="git-family-worktree",
+        )
+    )
+    ids = [node.id for node in response.activated_nodes]
+    policy = response.route_meta["current_reality_policy"]
+
+    assert ids[0] == "INTF-PUBLIC-current"
+    assert "DEC-PUBLIC-old" not in ids
+    assert "PRJ-OTHER-current" not in ids
+    assert ids.index("INTF-PUBLIC-current") < min(
+        ids.index(node_id)
+        for node_id in ids
+        if node_id.startswith(("SES-", "HO-"))
+    )
+    assert policy["enabled"] is True
+    assert policy["excluded_superseded_count"] == 1
+    assert policy["excluded_project_mismatch_count"] == 1
+
+    history = engine._current_reality_policy(
+        graph_engine.RoutingRequest(task="RunningHub history and handoff continuation"),
+        "RunningHub history and handoff continuation",
+        explicit_error=False,
+        exact_code=False,
+    )
+    assert history["enabled"] is False
+
+    history_with_evidence = engine._current_reality_policy(
+        graph_engine.RoutingRequest(
+            task="以前如何验证成功，证据和边界是什么？"
+        ),
+        "以前如何验证成功，证据和边界是什么？",
+        explicit_error=False,
+        exact_code=False,
+    )
+    assert history_with_evidence["enabled"] is True
+    assert history_with_evidence["intent"] == "durable_source_evidence"
+
+    for held_out in (
+        "目前默认能力是什么？",
+        "这个分支是否仍是 Draft PR？",
+        "哪个系统拥有业务真相？",
+    ):
+        held_out_policy = engine._current_reality_policy(
+            graph_engine.RoutingRequest(task=held_out),
+            held_out,
+            explicit_error=False,
+            exact_code=False,
+        )
+        assert held_out_policy["enabled"] is True
+
+    expansion_cannot_override = engine._current_reality_policy(
+        graph_engine.RoutingRequest(task="current canonical owner"),
+        "current canonical owner plus old handoff history",
+        explicit_error=False,
+        exact_code=False,
+    )
+    expansion_cannot_enable = engine._current_reality_policy(
+        graph_engine.RoutingRequest(task="ordinary module question"),
+        "current canonical owner",
+        explicit_error=False,
+        exact_code=False,
+    )
+    assert expansion_cannot_override["enabled"] is True
+    assert expansion_cannot_enable["enabled"] is False
+
+
+def test_project_reality_diagnostics_separate_raw_hot_and_history(
+    tmp_path,
+    monkeypatch,
+):
+    _graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+    historical = engine.nodes["SES-PUBLIC-old"]
+    historical.content.extra.update(
+        {"knowledge_tier": "historical", "route_visibility": "explicit_error_only"}
+    )
+
+    diagnostics = engine.project_reality_diagnostics()
+
+    assert diagnostics["status"] == "observed"
+    assert diagnostics["hard_gate"] is False
+    assert diagnostics["raw_node_count"] == 6
+    assert diagnostics["raw_edge_count"] == 1
+    assert diagnostics["historical_archive_node_count"] == 1
+    assert diagnostics["hot_route_eligible_node_count"] < diagnostics["raw_node_count"]
+    assert diagnostics["raw_edge_count"] == (
+        diagnostics["hot_relation_count"] + diagnostics["non_hot_relation_count"]
+    )
+    assert diagnostics["historical_only_relation_count"] == 0
+    assert diagnostics["semantic_quality"]["status"] == "validating"
+
+
+def test_durable_writeback_inherits_known_project_identity(tmp_path, monkeypatch):
+    graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+
+    updated = engine.session_writeback(
+        [
+            {
+                "node_id": "INTF-PUBLIC-current",
+                "field": "current_state",
+                "action": "set",
+                "value": "verified current",
+            }
+        ],
+        agent_id="PUBLIC-agent",
+        execution_context={
+            "project_id": "public-demo",
+            "project_namespace": "public-demo",
+            "workspace_id": "git-family-worktree",
+        },
+    )
+
+    assert updated == ["INTF-PUBLIC-current"]
+    assert engine.nodes["INTF-PUBLIC-current"].content.extra["project_id"] == "public-demo"
+    assert "workorder_id" not in engine.nodes["INTF-PUBLIC-current"].content.extra
+
+
+def test_durable_writeback_rejects_project_identity_takeover(tmp_path, monkeypatch):
+    _graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+    before = engine.nodes["INTF-PUBLIC-current"].content.current_state
+
+    with pytest.raises(ValueError, match="writeback_project_id_mismatch"):
+        engine.session_writeback(
+            [
+                {
+                    "node_id": "INTF-PUBLIC-current",
+                    "field": "current_state",
+                    "action": "set",
+                    "value": "wrong project takeover",
+                }
+            ],
+            agent_id="OTHER-agent",
+            execution_context={
+                "project_id": "other-project",
+                "project_namespace": "other-project",
+                "workspace_id": "git-other-worktree",
+            },
+        )
+
+    assert engine.nodes["INTF-PUBLIC-current"].content.current_state == before
+    assert engine.nodes["INTF-PUBLIC-current"].content.extra["project_id"] == "public-demo"
+
+
+def test_handoff_context_edge_uses_existing_informs_contract(monkeypatch):
+    app = load_app()
+    created_edges = []
+
+    class FakeHandoffEngine:
+        nodes = {"DOC-PUBLIC-context": object()}
+
+        @staticmethod
+        def create_node(req):
+            return type(
+                "CreatedNode",
+                (),
+                {"model_dump": lambda self: {"id": req.id}},
+            )()
+
+        @staticmethod
+        def create_edge(req, *, internal_owner=None):
+            created_edges.append((req, internal_owner))
+            return req
+
+    async def discard(_message):
+        return None
+
+    monkeypatch.setattr(app, "engine", FakeHandoffEngine())
+    monkeypatch.setattr(app.manager, "broadcast", discard)
+
+    asyncio.run(
+        app.handoff_create(
+            {
+                "from_agent": "PUBLIC-agent",
+                "to_agent": "PUBLIC-next",
+                "context_node_ids": ["DOC-PUBLIC-context"],
+                "project_id": "public-demo",
+                "project_namespace": "public-demo",
+                "workspace_id": "git-family-worktree",
+            }
+        )
+    )
+
+    assert len(created_edges) == 1
+    assert created_edges[0][0].type == app.EdgeType.informs
+    assert created_edges[0][1] is None
+
+
+def test_handoff_rejects_reserved_context_before_writing(monkeypatch):
+    app = load_app()
+    created_nodes = []
+    created_edges = []
+
+    class FakeHandoffEngine:
+        nodes = {"DOC-PUBLIC-context": object(), "ERR-PUBLIC-context": object()}
+
+        @staticmethod
+        def create_node(req):
+            created_nodes.append(req)
+
+        @staticmethod
+        def create_edge(req, *, internal_owner=None):
+            created_edges.append((req, internal_owner))
+
+    monkeypatch.setattr(app, "engine", FakeHandoffEngine())
+
+    with pytest.raises(app.HTTPException) as exc:
+        asyncio.run(
+            app.handoff_create(
+                {
+                    "from_agent": "PUBLIC-agent",
+                    "to_agent": "PUBLIC-next",
+                    "context_node_ids": [
+                        "DOC-PUBLIC-context",
+                        "ERR-PUBLIC-context",
+                    ],
+                }
+            )
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == {
+        "error": "handoff_reserved_context_not_allowed",
+        "node_ids": ["ERR-PUBLIC-context"],
+    }
+    assert created_nodes == []
+    assert created_edges == []
+
+
+def test_ticketed_error_binding_replays_complete_project_identity(monkeypatch):
+    app = load_app()
+    captured = {}
+
+    def capture_digest(target_files, **identity):
+        captured["target_files"] = target_files
+        captured["identity"] = identity
+        return "a" * 64
+
+    def stop_after_digest(_ticket):
+        raise RuntimeError("digest verified")
+
+    monkeypatch.setattr(app, "_target_digest", capture_digest)
+    monkeypatch.setattr(app, "_ticketed_error_target_path", stop_after_digest)
+    ticket = {
+        "target_digest": "a" * 64,
+        "scope_digest": "b" * 64,
+        "project_id": "public-demo",
+        "project_namespace": "public-demo",
+        "workspace_id": "git-family-worktree",
+        "scope": {"target_files": ["C:/work/codex-error-event.json"]},
+    }
+
+    with pytest.raises(RuntimeError, match="digest verified"):
+        app._ticketed_error_spool_binding(
+            {"target_digest": "a" * 64, "scope_digest": "b" * 64},
+            ticket,
+            {},
+        )
+
+    assert captured == {
+        "target_files": ["C:/work/codex-error-event.json"],
+        "identity": {
+            "project_id": "public-demo",
+            "project_namespace": "public-demo",
+            "workspace_id": "git-family-worktree",
+        },
+    }
+
+
+def test_ticketed_error_binding_preserves_legacy_unbound_identity(monkeypatch):
+    app = load_app()
+    captured = {}
+
+    def capture_digest(_target_files, **identity):
+        captured.update(identity)
+        return "a" * 64
+
+    def stop_after_digest(_ticket):
+        raise RuntimeError("digest verified")
+
+    monkeypatch.setattr(app, "_target_digest", capture_digest)
+    monkeypatch.setattr(app, "_ticketed_error_target_path", stop_after_digest)
+    ticket = {
+        "target_digest": "a" * 64,
+        "scope_digest": "b" * 64,
+        "project_id": "unspecified",
+        "project_namespace": "unspecified",
+        "workspace_id": "unspecified",
+        "scope": {"target_files": ["C:/work/codex-error-event.json"]},
+    }
+
+    with pytest.raises(RuntimeError, match="digest verified"):
+        app._ticketed_error_spool_binding(
+            {"target_digest": "a" * 64, "scope_digest": "b" * 64},
+            ticket,
+            {},
+        )
+
+    assert captured == {
+        "project_id": "",
+        "project_namespace": "",
+        "workspace_id": "",
+    }
 
 
 def _make_error_solution_engine(tmp_path: Path, monkeypatch):

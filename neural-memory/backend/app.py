@@ -15,12 +15,14 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -408,6 +410,30 @@ def _stats_snapshot(
     stats["healthy"] = readiness["production_ready"]
     stats["runtime_identity"] = identity
     stats["embedding"] = embedding
+    integrity_status = "not_ready"
+    if readiness["production_ready"]:
+        integrity_status = "verified_production"
+    elif readiness.get("development_ready"):
+        integrity_status = "verified_development"
+    stats["physical_integrity"] = {
+        "status": integrity_status,
+        "production_ready": readiness["production_ready"],
+        "development_ready": readiness.get("development_ready", False),
+        "source": "existing deep readiness contract",
+    }
+    project_reality_diagnostics = getattr(
+        active_engine,
+        "project_reality_diagnostics",
+        None,
+    )
+    stats["effective_project_reality"] = (
+        project_reality_diagnostics()
+        if callable(project_reality_diagnostics)
+        else {
+            "status": "unavailable",
+            "reason": "project_reality_diagnostics_not_supported",
+        }
+    )
     return stats
 
 
@@ -1349,6 +1375,24 @@ def _compact_route_meta_for_budget(
         }
         if compact_temporal:
             compact["temporal_route_policy"] = compact_temporal
+    current_policy = route_meta.get("current_reality_policy")
+    if isinstance(current_policy, dict):
+        compact_current = {
+            key: current_policy[key]
+            for key in (
+                "enabled",
+                "intent",
+                "external_verification_required",
+                "excluded_superseded_count",
+                "excluded_project_mismatch_count",
+                "demoted_sediment_count",
+                "demoted_unproven_core_count",
+                "boosted_durable_count",
+            )
+            if key in current_policy
+        }
+        if compact_current:
+            compact["current_reality_policy"] = compact_current
     for key in ("policy_version", "route_policy_version"):
         if route_meta.get(key):
             compact[key] = route_meta[key]
@@ -2068,6 +2112,35 @@ def _identity_value(payload: Mapping[str, Any], name: str, env_name: str) -> str
     return re.sub(r"\s+", " ", value)[:200]
 
 
+def _execution_identity_context(payload: Mapping[str, Any]) -> dict[str, str]:
+    context: dict[str, str] = {}
+    for field, env_name in (
+        ("project_id", "THREECAN_PROJECT_ID"),
+        ("project_namespace", "THREECAN_PROJECT_NAMESPACE"),
+        ("workspace_id", "THREECAN_WORKSPACE_ID"),
+        ("workorder_id", "THREECAN_WORKORDER_ID"),
+    ):
+        value = str(payload.get(field) or os.environ.get(env_name) or "").strip()
+        if not value:
+            continue
+        try:
+            context[field] = validate_routing_context_identifier(
+                value,
+                field_name=field,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                400,
+                detail={"error": str(exc)},
+            ) from exc
+    return context
+
+
+def _specified_identity(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return "" if normalized.casefold() == "unspecified" else normalized
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -2102,7 +2175,139 @@ def _target_root_for(path: Path, roots: list[Path]) -> Path | None:
     )
 
 
-def _target_state_manifest(target_files: Any) -> list[dict[str, Any]]:
+def _git_value(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+    )
+    if result.returncode:
+        raise ValueError("git_identity_unavailable")
+    return result.stdout.strip()
+
+
+def _repository_key(remote: str) -> str:
+    value = str(remote or "").strip()
+    scp_match = re.fullmatch(r"(?:[^@]+@)?([^:]+):(.+)", value)
+    if scp_match and "://" not in value:
+        host, path = scp_match.groups()
+    else:
+        parsed = urlparse(value)
+        if not parsed.scheme or not parsed.hostname:
+            raise ValueError("git_remote_invalid")
+        host, path = parsed.hostname, parsed.path
+    path = path.strip("/")
+    if path.casefold().endswith(".git"):
+        path = path[:-4]
+    if not host or not path:
+        raise ValueError("git_remote_invalid")
+    return f"{host.casefold()}/{path.casefold()}"
+
+
+def _canonical_physical_path(value: str | Path) -> str:
+    normalized = str(value).replace("\\", "/")
+    wsl_drive = re.fullmatch(r"/mnt/([A-Za-z])(?:/(.*))?", normalized)
+    if wsl_drive:
+        drive, tail = wsl_drive.groups()
+        normalized = f"{drive}:/{tail or ''}"
+    if re.match(r"^[A-Za-z]:/", normalized):
+        normalized = normalized.casefold()
+    return normalized.rstrip("/") or "/"
+
+
+def _local_path_sha256(path: Path) -> str:
+    value = _canonical_physical_path(path.resolve())
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _wire_target_path(value: str) -> Path:
+    """Accept the canonical Windows spelling emitted by Windows or WSL clients."""
+
+    normalized = _canonical_physical_path(value)
+    return Path(normalized)
+
+
+def _verified_project_target_root(
+    target: Path,
+    *,
+    project_id: str,
+    project_namespace: str,
+    workspace_id: str,
+) -> Path | None:
+    """Verify an out-of-allowlist target against Git plus its tracked capsule."""
+
+    if not project_id or not workspace_id:
+        return None
+    probe = target if target.is_dir() else target.parent
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        root = Path(_git_value(probe, "rev-parse", "--show-toplevel")).resolve()
+        if target != root and root not in target.parents:
+            raise ValueError("target_not_in_worktree")
+        capsule_path = root / ".agents" / "project.json"
+        capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
+        if not isinstance(capsule, dict):
+            raise ValueError("project_capsule_invalid")
+        capsule_project = validate_routing_context_identifier(
+            str(capsule.get("project_id") or "").strip(),
+            field_name="project_id",
+        )
+        capsule_namespace = validate_routing_context_identifier(
+            str(capsule.get("project_namespace") or "").strip(),
+            field_name="project_namespace",
+        )
+        if capsule_project.casefold() != project_id.casefold():
+            raise ValueError("project_id_mismatch")
+        if (
+            project_namespace
+            and capsule_namespace.casefold() != project_namespace.casefold()
+        ):
+            raise ValueError("project_namespace_mismatch")
+        configured_root = root / str(capsule.get("project_root") or ".")
+        if configured_root.resolve() != root:
+            raise ValueError("project_root_mismatch")
+        expected_repository = str(capsule.get("git_repository") or "").strip().casefold()
+        actual_repository = _repository_key(
+            _git_value(root, "remote", "get-url", "origin")
+        )
+        if not expected_repository or expected_repository != actual_repository:
+            raise ValueError("git_repository_mismatch")
+        common_dir = Path(
+            _git_value(
+                root,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            )
+        )
+        if not common_dir.is_absolute():
+            common_dir = root / common_dir
+        expected_workspace = (
+            f"git-{_local_path_sha256(common_dir)[:12]}-"
+            f"{_local_path_sha256(root)[:12]}"
+        )
+        if expected_workspace.casefold() != workspace_id.casefold():
+            raise ValueError("workspace_id_mismatch")
+        return root
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        raise HTTPException(
+            403,
+            detail={"error": "project_target_identity_unverified"},
+        ) from exc
+
+
+def _target_state_manifest(
+    target_files: Any,
+    *,
+    project_id: str = "",
+    project_namespace: str = "",
+    workspace_id: str = "",
+) -> list[dict[str, Any]]:
     """Snapshot target existence and content before a mutating tool runs."""
 
     if not isinstance(target_files, (list, tuple, set)):
@@ -2132,17 +2337,43 @@ def _target_state_manifest(target_files: Any) -> list[dict[str, Any]]:
     roots = _target_allowed_roots()
     manifest: list[dict[str, Any]] = []
     total_bytes = 0
+    identity_bound = any((project_id, project_namespace, workspace_id))
+    if identity_bound and not all((project_id, project_namespace, workspace_id)):
+        raise HTTPException(
+            400,
+            detail={"error": "project_execution_identity_incomplete"},
+        )
+    verified_project_root: Path | None = None
     for raw in raw_paths:
-        candidate = Path(raw).expanduser()
+        candidate = _wire_target_path(raw).expanduser()
         if not candidate.is_absolute():
+            if identity_bound:
+                raise HTTPException(
+                    400,
+                    detail={"error": "bound_target_path_must_be_absolute"},
+                )
             candidate = _default_project_dir() / candidate
         resolved = candidate.resolve(strict=False)
-        root = _target_root_for(resolved, roots)
-        if root is None:
+        if identity_bound:
+            root = _verified_project_target_root(
+                resolved,
+                project_id=project_id,
+                project_namespace=project_namespace,
+                workspace_id=workspace_id,
+            )
+        else:
+            root = _target_root_for(resolved, roots)
+            if root is None:
+                raise HTTPException(
+                    400,
+                    detail={"error": "target_path_outside_allowed_roots"},
+                )
+        if verified_project_root is not None and root != verified_project_root:
             raise HTTPException(
                 400,
-                detail={"error": "target_path_outside_allowed_roots"},
+                detail={"error": "target_files_span_multiple_worktrees"},
             )
+        verified_project_root = root
         try:
             relative = resolved.relative_to(root)
         except ValueError as exc:
@@ -2187,8 +2418,21 @@ def _target_state_manifest(target_files: Any) -> list[dict[str, Any]]:
     return manifest
 
 
-def _target_digest(target_files: Any) -> str:
-    return canonical_hash(_target_state_manifest(target_files))
+def _target_digest(
+    target_files: Any,
+    *,
+    project_id: str = "",
+    project_namespace: str = "",
+    workspace_id: str = "",
+) -> str:
+    return canonical_hash(
+        _target_state_manifest(
+            target_files,
+            project_id=project_id,
+            project_namespace=project_namespace,
+            workspace_id=workspace_id,
+        )
+    )
 
 
 def _client_target_digest(payload: Mapping[str, Any]) -> str:
@@ -2206,6 +2450,7 @@ def _client_target_digest(payload: Mapping[str, Any]) -> str:
 def _ticket_scope_digest(
     *,
     project_id: str,
+    project_namespace: str,
     workspace_id: str,
     workorder_id: str,
     task_type: str,
@@ -2214,6 +2459,7 @@ def _ticket_scope_digest(
 ) -> str:
     return canonical_hash({
         "project_id": project_id.casefold(),
+        "project_namespace": project_namespace.casefold(),
         "workspace_id": workspace_id.casefold(),
         "workorder_id": workorder_id.casefold(),
         "task_type": re.sub(r"\s+", " ", task_type.strip()).casefold(),
@@ -2230,6 +2476,7 @@ def _stable_ticket_lease_key(
     scope_keywords: Any,
     task_type: str,
     project_id: str = "unspecified",
+    project_namespace: str = "unspecified",
     workspace_id: str = "unspecified",
     workorder_id: str = "unspecified",
     policy_version: str = _TICKET_POLICY_VERSION,
@@ -2238,6 +2485,7 @@ def _stable_ticket_lease_key(
     effective_target_digest = target_digest or _target_digest(target_files)
     scope_digest = _ticket_scope_digest(
         project_id=project_id,
+        project_namespace=project_namespace,
         workspace_id=workspace_id,
         workorder_id=workorder_id,
         task_type=task_type,
@@ -2333,14 +2581,21 @@ async def issue_route_ticket(payload: dict):
     if not task_desc:
         raise HTTPException(400, detail={"error": "task_description_required"})
 
-    project_id = _identity_value(payload, "project_id", "THREECAN_PROJECT_ID")
-    workspace_id = _identity_value(payload, "workspace_id", "THREECAN_WORKSPACE_ID")
-    workorder_id = _identity_value(payload, "workorder_id", "THREECAN_WORKORDER_ID")
+    execution_context = _execution_identity_context(payload)
+    project_id = execution_context.get("project_id", "unspecified")
+    project_namespace = execution_context.get("project_namespace", "")
+    workspace_id = execution_context.get("workspace_id", "unspecified")
+    workorder_id = execution_context.get("workorder_id", "unspecified")
     policy_version = str(
         payload.get("policy_version") or _TICKET_POLICY_VERSION
     ).strip()[:100]
     client_target_digest = _client_target_digest(payload)
-    target_digest = _target_digest(target_files)
+    target_digest = _target_digest(
+        target_files,
+        project_id=project_id if project_id != "unspecified" else "",
+        project_namespace=project_namespace,
+        workspace_id=workspace_id if workspace_id != "unspecified" else "",
+    )
     if client_target_digest and not secrets.compare_digest(
         client_target_digest,
         target_digest,
@@ -2352,6 +2607,7 @@ async def issue_route_ticket(payload: dict):
     target_digest_source = "server_verified_snapshot_v1"
     scope_digest = _ticket_scope_digest(
         project_id=project_id,
+        project_namespace=(project_namespace or "unspecified"),
         workspace_id=workspace_id,
         workorder_id=workorder_id,
         task_type=task_type,
@@ -2365,6 +2621,7 @@ async def issue_route_ticket(payload: dict):
         scope_keywords=scope_keywords,
         task_type=task_type,
         project_id=project_id,
+        project_namespace=(project_namespace or "unspecified"),
         workspace_id=workspace_id,
         workorder_id=workorder_id,
         policy_version=policy_version,
@@ -2387,6 +2644,10 @@ async def issue_route_ticket(payload: dict):
         mode="slim",
         confirm_low_confidence=True,
         allow_degraded=True,
+        project_id=(project_id if project_id != "unspecified" else None),
+        project_namespace=project_namespace or None,
+        workspace_id=(workspace_id if workspace_id != "unspecified" else None),
+        workorder_id=(workorder_id if workorder_id != "unspecified" else None),
     )
     result = await _route_in_worker(req)
     route_meta = (
@@ -2456,6 +2717,7 @@ async def issue_route_ticket(payload: dict):
         "state": "issued",
         "reused": False,
         "project_id": project_id,
+        "project_namespace": project_namespace or "unspecified",
         "workspace_id": workspace_id,
         "workorder_id": workorder_id,
         "target_digest": target_digest,
@@ -2550,7 +2812,14 @@ async def consume_route_ticket(ticket_id: str, payload: dict):
             == "server_verified_snapshot_v1"
         ):
             current_digest = _target_digest(
-                (current_ticket.get("scope") or {}).get("target_files") or []
+                (current_ticket.get("scope") or {}).get("target_files") or [],
+                project_id=_specified_identity(current_ticket.get("project_id")),
+                project_namespace=_specified_identity(
+                    current_ticket.get("project_namespace")
+                ),
+                workspace_id=_specified_identity(
+                    current_ticket.get("workspace_id")
+                ),
             )
             if current_digest != str(current_ticket.get("target_digest") or ""):
                 raise LedgerError("ticket_target_state_changed")
@@ -3018,11 +3287,22 @@ def _ticketed_error_target_path(ticket: Mapping[str, Any]) -> Path:
             409,
             detail={"error": "ticketed_error_exact_target_required"},
         )
-    candidate = Path(str(target_files[0])).expanduser()
+    candidate = _wire_target_path(str(target_files[0])).expanduser()
     if not candidate.is_absolute():
         candidate = _default_project_dir() / candidate
     resolved = candidate.resolve(strict=False)
-    if _target_root_for(resolved, _target_allowed_roots()) is None:
+    project_id = _specified_identity(ticket.get("project_id"))
+    project_namespace = _specified_identity(ticket.get("project_namespace"))
+    workspace_id = _specified_identity(ticket.get("workspace_id"))
+    identity_bound = all((project_id, project_namespace, workspace_id))
+    if identity_bound:
+        _verified_project_target_root(
+            resolved,
+            project_id=project_id,
+            project_namespace=project_namespace,
+            workspace_id=workspace_id,
+        )
+    elif _target_root_for(resolved, _target_allowed_roots()) is None:
         raise HTTPException(
             403,
             detail={"error": "ticketed_error_target_outside_allowed_roots"},
@@ -3066,7 +3346,12 @@ def _ticketed_error_spool_binding(
             detail={"error": "ticket_scope_digest_mismatch"},
         )
     scope = ticket.get("scope") if isinstance(ticket.get("scope"), dict) else {}
-    current_target_digest = _target_digest(scope.get("target_files") or [])
+    current_target_digest = _target_digest(
+        scope.get("target_files") or [],
+        project_id=_specified_identity(ticket.get("project_id")),
+        project_namespace=_specified_identity(ticket.get("project_namespace")),
+        workspace_id=_specified_identity(ticket.get("workspace_id")),
+    )
     if current_target_digest != target_digest:
         raise HTTPException(
             409,
@@ -4724,8 +5009,33 @@ async def handoff_create(payload: dict):
     context_ids = payload.get("context_node_ids", [])
     task_cont = payload.get("task_continuation", "")
     unresolved = payload.get("unresolved", [])
+    execution_context = _execution_identity_context(payload)
 
-    now = __import__("datetime").datetime.utcnow()
+    if not isinstance(context_ids, list) or any(
+        not isinstance(node_id, str) for node_id in context_ids
+    ):
+        raise HTTPException(
+            400,
+            detail={"error": "handoff_context_node_ids_invalid"},
+        )
+    existing_context_ids = [
+        node_id for node_id in context_ids if node_id in engine.nodes
+    ]
+    reserved_context_ids = [
+        node_id
+        for node_id in existing_context_ids
+        if _reserved_error_knowledge_id(node_id)
+    ]
+    if reserved_context_ids:
+        raise HTTPException(
+            403,
+            detail={
+                "error": "handoff_reserved_context_not_allowed",
+                "node_ids": reserved_context_ids,
+            },
+        )
+
+    now = _utc_now()
     ts = now.strftime("%Y%m%d-%H%M%S")
     node_id = f"HO-{ts}-{from_agent.replace('-', '_')}"
 
@@ -4740,6 +5050,7 @@ async def handoff_create(payload: dict):
             "context_node_ids": context_ids,
             "acknowledged_by": {},
             "unresolved": unresolved,
+            **execution_context,
         },
     )
     req = NodeCreate(
@@ -4752,13 +5063,16 @@ async def handoff_create(payload: dict):
     node = engine.create_node(req)
 
     # 建立context edges
-    for cid in context_ids:
-        if cid in engine.nodes:
-            try:
-                from models import EdgeCreate
-                engine.create_edge(EdgeCreate(source=node_id, target=cid, type="references", weight=0.5, description="handoff上下文"))
-            except Exception:
-                pass
+    for cid in existing_context_ids:
+        engine.create_edge(
+            EdgeCreate(
+                source=node_id,
+                target=cid,
+                type=EdgeType.informs,
+                weight=0.5,
+                description="handoff上下文",
+            )
+        )
 
     await manager.broadcast({"event": "handoff_created", "node": node.model_dump()})
     return {"handoff_id": node_id, "to_agent": to_agent}
@@ -4798,9 +5112,9 @@ async def handoff_ack(handoff_id: str, payload: dict):
     if not node:
         raise HTTPException(404, "handoff不存在")
     ack = node.content.extra.get("acknowledged_by", {})
-    ack[agent_id] = __import__("datetime").datetime.utcnow().isoformat()
+    ack[agent_id] = _utc_now().isoformat()
     node.content.extra["acknowledged_by"] = ack
-    node.updated_at = __import__("datetime").datetime.utcnow().isoformat()
+    node.updated_at = _utc_now().isoformat()
     engine._save_node(node)
     return {"acknowledged": handoff_id, "agent_id": agent_id}
 
@@ -4856,8 +5170,15 @@ async def session_writeback(payload: dict):
                 },
             )
 
+    execution_context = _execution_identity_context(
+        payload if isinstance(payload, dict) else {}
+    )
     try:
-        updated = engine.session_writeback(changes, agent_id=agent_id)
+        updated = engine.session_writeback(
+            changes,
+            agent_id=agent_id,
+            execution_context=execution_context,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=400,

@@ -9,6 +9,7 @@ import importlib.util
 import json
 import multiprocessing
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -304,6 +305,11 @@ def ticket_runtime(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(app, "_route_in_worker", fake_route)
+    monkeypatch.setattr(
+        app,
+        "_verified_project_target_root",
+        lambda _target, **_context: tmp_path,
+    )
     return app, fake, error_node, tmp_path
 
 
@@ -311,13 +317,130 @@ def _issue(app, *, task="Fix deterministic ticket lifecycle"):
     return asyncio.run(app.issue_route_ticket({
         "agent_id": "agent-a",
         "project_id": "project",
+        "project_namespace": "project",
         "workspace_id": "workspace",
         "workorder_id": "workorder",
         "task_description": task,
-        "target_files": ["backend/app.py"],
+        "target_files": [str(app._default_project_dir() / "backend" / "app.py")],
         "scope_keywords": ["ticket", "error"],
         "task_type": "Edit",
     }))
+
+
+def test_target_manifest_accepts_only_capsule_bound_git_worktree(
+    tmp_path,
+    monkeypatch,
+):
+    app = load_app()
+    authority_root = tmp_path / "authority"
+    authority_root.mkdir()
+    repo = tmp_path / "linked-worktree"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/public/example.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    capsule_dir = repo / ".agents"
+    capsule_dir.mkdir()
+    (capsule_dir / "project.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project_id": "public-demo",
+                "project_namespace": "public-demo",
+                "project_root": ".",
+                "git_repository": "github.com/public/example",
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = repo / "backend" / "app.py"
+    target.parent.mkdir()
+    target.write_text("value = 1\n", encoding="utf-8")
+    common_dir = Path(
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).stdout.strip()
+    )
+    workspace_id = (
+        f"git-{app._local_path_sha256(common_dir)[:12]}-"
+        f"{app._local_path_sha256(repo)[:12]}"
+    )
+    monkeypatch.setenv("THREECAN_PROJECT_DIR", str(authority_root))
+    monkeypatch.delenv("THREECAN_TARGET_ROOTS", raising=False)
+
+    manifest = app._target_state_manifest(
+        [str(target)],
+        project_id="public-demo",
+        project_namespace="public-demo",
+        workspace_id=workspace_id,
+    )
+
+    assert manifest[0]["kind"] == "file"
+    assert str(repo) not in manifest[0]["path"]
+    wsl_target = "/mnt/c/" + str(target).replace("\\", "/").split(":/", 1)[1]
+    assert app._target_state_manifest(
+        [wsl_target],
+        project_id="public-demo",
+        project_namespace="public-demo",
+        workspace_id=workspace_id,
+    ) == manifest
+    with pytest.raises(HTTPException) as relative:
+        app._target_state_manifest(
+            ["backend/app.py"],
+            project_id="public-demo",
+            project_namespace="public-demo",
+            workspace_id=workspace_id,
+        )
+    assert relative.value.detail["error"] == "bound_target_path_must_be_absolute"
+    with pytest.raises(HTTPException) as mismatch:
+        app._target_state_manifest(
+            [str(target)],
+            project_id="public-demo",
+            project_namespace="public-demo",
+            workspace_id="git-wrong-worktree",
+        )
+    assert mismatch.value.status_code == 403
+    assert mismatch.value.detail["error"] == "project_target_identity_unverified"
+
+
+def test_ticket_namespace_is_part_of_scope_and_lease_identity():
+    app = load_app()
+    common = {
+        "project_id": "public-demo",
+        "workspace_id": "git-family-worktree",
+        "workorder_id": "WO-public",
+        "task_type": "Edit",
+        "scope_keywords": ["ticket"],
+        "target_digest": "a" * 64,
+    }
+
+    left = app._ticket_scope_digest(project_namespace="namespace-a", **common)
+    right = app._ticket_scope_digest(project_namespace="namespace-b", **common)
+
+    assert left != right
 
 
 def _consume(app, ticket):
