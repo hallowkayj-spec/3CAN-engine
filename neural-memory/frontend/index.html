@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neural Memory — 3CAN Project Graph</title>
+<script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#060612;--panel:rgba(8,8,30,0.92);--border:rgba(0,240,255,0.2);
+  --cyan:#00f0ff;--magenta:#ff00ff;--yellow:#f0e000;--green:#00ff88;
+  --red:#ff3366;--white:#e0e0ff;--dim:#6a6a9a;
+  --glass:rgba(20,20,60,0.6);--glow:0 0 20px;
+}
+body{background:var(--bg);color:var(--white);font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;height:100vh}
+#graph-container{width:100vw;height:100vh;position:absolute;top:0;left:0}
+
+/* ── 顶部栏 ── */
+#topbar{
+  position:fixed;top:0;left:0;right:0;height:52px;z-index:100;
+  background:linear-gradient(180deg,rgba(6,6,18,0.98),rgba(6,6,18,0.8));
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 20px;gap:16px;
+  backdrop-filter:blur(16px);
+}
+#topbar .logo{font-size:18px;font-weight:800;letter-spacing:2px;text-shadow:0 0 20px rgba(0,240,255,0.5)}
+#topbar .logo span{color:var(--cyan)}
+#topbar .logo .sub{font-size:10px;color:var(--dim);letter-spacing:0.5px;font-weight:400;margin-left:8px}
+.stat-pill{
+  background:var(--glass);border:1px solid var(--border);border-radius:20px;
+  padding:5px 16px;font-size:12px;display:flex;align-items:center;gap:6px;
+  transition:all .3s;
+}
+.stat-pill:hover{border-color:var(--cyan);box-shadow:0 0 12px rgba(0,240,255,0.15)}
+.stat-pill .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.dot-cyan{background:var(--cyan);box-shadow:0 0 8px var(--cyan)}
+.dot-green{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot-magenta{background:var(--magenta);box-shadow:0 0 8px var(--magenta)}
+.dot-red{background:var(--red);box-shadow:0 0 8px var(--red)}
+.dot-yellow{background:var(--yellow);box-shadow:0 0 8px var(--yellow)}
+
+/* ── 视图切换 ── */
+.view-tabs{display:flex;gap:2px;margin-left:16px}
+.view-tab{
+  padding:5px 14px;font-size:11px;border:1px solid var(--border);background:transparent;
+  color:var(--dim);cursor:pointer;transition:all .2s;font-weight:600;letter-spacing:0.5px;
+}
+.view-tab:first-child{border-radius:16px 0 0 16px}
+.view-tab:last-child{border-radius:0 16px 16px 0}
+.view-tab.active{background:rgba(0,240,255,0.15);color:var(--cyan);border-color:var(--cyan)}
+
+/* ── 搜索 ── */
+#search-box{margin-left:auto;position:relative}
+#search-input{
+  background:var(--glass);border:1px solid var(--border);border-radius:20px;
+  color:var(--white);padding:7px 16px 7px 36px;font-size:13px;width:300px;
+  outline:none;transition:all .3s;
+}
+#search-input:focus{border-color:var(--cyan);box-shadow:0 0 16px rgba(0,240,255,0.25);width:360px}
+#search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:14px}
+
+/* ── 右侧面板 ── */
+#panel{
+  position:fixed;right:-480px;top:52px;bottom:0;width:470px;z-index:90;
+  background:var(--panel);border-left:1px solid var(--border);
+  backdrop-filter:blur(20px);transition:right .35s cubic-bezier(.4,0,.2,1);
+  overflow-y:auto;padding:24px;
+}
+#panel.open{right:0}
+#panel-close{position:absolute;top:12px;right:16px;background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer}
+#panel-close:hover{color:var(--cyan);text-shadow:0 0 10px var(--cyan)}
+.panel-header{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+.panel-header .node-badge{font-size:11px;padding:3px 12px;border-radius:12px;font-weight:700;letter-spacing:0.5px}
+.panel-header h2{font-size:18px;font-weight:700}
+.panel-section{margin-bottom:18px}
+.panel-section h3{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:600}
+.panel-section p,.panel-section li{font-size:13px;line-height:1.7}
+.panel-section ul{padding-left:16px}
+.tag{display:inline-block;background:var(--glass);border:1px solid var(--border);border-radius:4px;padding:2px 10px;margin:2px;font-size:11px;color:var(--cyan)}
+.tag-secret{color:var(--red);border-color:rgba(255,51,102,0.3)}
+.tag-error{color:var(--yellow);border-color:rgba(240,224,0,0.3)}
+.status-active{color:var(--green);font-weight:600}
+.status-blocked{color:var(--red);font-weight:600}
+.status-dormant{color:var(--yellow)}
+.status-deprecated{color:var(--dim)}
+.progress-bar{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;margin:6px 0}
+.progress-bar-fill{height:100%;border-radius:3px;transition:width .5s}
+
+/* ── 左侧集群图例 ── */
+#legend{
+  position:fixed;left:16px;bottom:16px;z-index:80;
+  background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  padding:16px;backdrop-filter:blur(16px);max-height:420px;overflow-y:auto;min-width:180px;
+}
+#legend h3{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;font-weight:600}
+.legend-item{display:flex;align-items:center;gap:8px;margin-bottom:7px;cursor:pointer;font-size:12px;opacity:0.85;transition:all .2s}
+.legend-item:hover{opacity:1;transform:translateX(2px)}
+.legend-item .color-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.legend-item.dimmed{opacity:0.2}
+.legend-item .count{margin-left:auto;color:var(--dim);font-size:10px}
+
+/* ── 路由面板 ── */
+#route-panel{
+  position:fixed;left:16px;top:68px;z-index:80;
+  background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  padding:16px;backdrop-filter:blur(16px);width:340px;
+}
+#route-panel h3{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;font-weight:600}
+#route-input{
+  width:100%;background:var(--glass);border:1px solid var(--border);border-radius:10px;
+  color:var(--white);padding:10px 14px;font-size:13px;outline:none;resize:vertical;
+  min-height:64px;font-family:inherit;
+}
+#route-input:focus{border-color:var(--magenta);box-shadow:0 0 16px rgba(255,0,255,0.2)}
+#route-btn{
+  margin-top:10px;width:100%;padding:9px;border:1px solid var(--magenta);
+  background:rgba(255,0,255,0.1);color:var(--magenta);border-radius:10px;
+  font-size:13px;cursor:pointer;transition:all .2s;font-weight:700;letter-spacing:0.5px;
+}
+#route-btn:hover{background:rgba(255,0,255,0.25);box-shadow:0 0 20px rgba(255,0,255,0.3);transform:translateY(-1px)}
+#route-result{margin-top:10px;font-size:12px;max-height:200px;overflow-y:auto}
+.route-hit{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+.route-hit .score{color:var(--magenta);font-weight:700}
+
+/* ── Dashboard面板 ── */
+#dashboard{
+  position:fixed;top:52px;left:0;right:0;bottom:0;z-index:85;
+  background:var(--bg);display:none;overflow-y:auto;padding:24px 32px;
+}
+#dashboard.visible{display:block}
+.dash-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;margin-bottom:24px}
+.dash-card{
+  background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  padding:20px;backdrop-filter:blur(12px);transition:all .3s;
+}
+.dash-card:hover{border-color:var(--cyan);transform:translateY(-2px);box-shadow:0 4px 20px rgba(0,240,255,0.1)}
+.dash-card h3{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+.dash-card .big-num{font-size:36px;font-weight:800;line-height:1}
+.dash-card .big-num.cyan{color:var(--cyan);text-shadow:0 0 20px rgba(0,240,255,0.4)}
+.dash-card .big-num.green{color:var(--green);text-shadow:0 0 20px rgba(0,255,136,0.4)}
+.dash-card .big-num.magenta{color:var(--magenta);text-shadow:0 0 20px rgba(255,0,255,0.4)}
+.dash-card .big-num.red{color:var(--red);text-shadow:0 0 20px rgba(255,51,102,0.4)}
+.dash-card .big-num.yellow{color:var(--yellow);text-shadow:0 0 20px rgba(240,224,0,0.4)}
+.module-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.module-row .name{flex:1;font-size:13px;font-weight:600}
+.module-row .status-dot{width:8px;height:8px;border-radius:50%}
+.module-row .bar{flex:2;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden}
+.module-row .bar-fill{height:100%;border-radius:4px;transition:width .6s}
+.module-row .pct{font-size:12px;color:var(--dim);width:40px;text-align:right}
+.error-item{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.error-item .title{font-size:13px;font-weight:600}
+.error-item .desc{font-size:11px;color:var(--dim);margin-top:3px}
+.error-item .severity{font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700}
+.secret-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.secret-item .icon{font-size:16px}
+.secret-item .name{font-size:13px;font-weight:600;flex:1}
+.secret-item .state{font-size:11px;padding:2px 8px;border-radius:8px}
+
+@keyframes pulse{0%,100%{opacity:0.6}50%{opacity:1}}
+@keyframes glow-pulse{0%,100%{box-shadow:0 0 5px currentColor}50%{box-shadow:0 0 20px currentColor}}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+</style>
+</head>
+<body>
+
+<!-- ── 顶部栏 ── -->
+<div id="topbar">
+  <div class="logo">NEURAL <span>MEMORY</span><span class="sub">3CAN Project Graph</span></div>
+  <div class="view-tabs">
+    <div class="view-tab active" data-view="graph">3D Graph</div>
+    <div class="view-tab" data-view="dashboard">Dashboard</div>
+  </div>
+  <div class="stat-pill"><span class="dot dot-cyan"></span><span id="stat-nodes">0</span> Nodes</div>
+  <div class="stat-pill"><span class="dot dot-magenta"></span><span id="stat-edges">0</span> Edges</div>
+  <div class="stat-pill"><span class="dot dot-green"></span><span id="stat-active">0</span> Active</div>
+  <div class="stat-pill"><span class="dot dot-red"></span><span id="stat-blocked">0</span> Blocked</div>
+  <div class="stat-pill"><span class="dot dot-yellow"></span><span id="stat-errors">0</span> Errors</div>
+  <div class="stat-pill"><span class="dot dot-red"></span>&#x1F512; <span id="stat-secrets">0</span> Secrets</div>
+  <div id="search-box">
+    <span id="search-icon">&#x1F50D;</span>
+    <input id="search-input" placeholder="搜索节点 (名称/关键词/ID)..." />
+  </div>
+</div>
+
+<!-- ── 路由面板 ── -->
+<div id="route-panel">
+  <h3>&#x26A1; Task Router</h3>
+  <textarea id="route-input" placeholder="输入任务描述，路由引擎会激活相关子图...&#10;例如: KB蒸馏推到5000条"></textarea>
+  <button id="route-btn">ACTIVATE SUBGRAPH</button>
+  <div id="route-result"></div>
+</div>
+
+<!-- ── 集群图例 ── -->
+<div id="legend">
+  <h3>Clusters</h3>
+  <div id="legend-items"></div>
+</div>
+
+<!-- ── 节点详情面板 ── -->
+<div id="panel">
+  <button id="panel-close">&times;</button>
+  <div id="panel-content"></div>
+</div>
+
+<!-- ── Dashboard视图 ── -->
+<div id="dashboard"></div>
+
+<!-- ── 视觉控制面板 ── -->
+<div id="visual-controls" style="position:fixed;right:16px;bottom:16px;z-index:80;background:rgba(8,8,30,0.92);border:1px solid rgba(0,240,255,0.2);border-radius:14px;padding:16px;backdrop-filter:blur(16px);width:220px">
+  <h3 style="font-size:10px;color:#6a6a9a;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:12px;font-weight:600">Visual Controls</h3>
+  <div style="margin-bottom:10px">
+    <label style="font-size:11px;color:#e0e0ff;display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" id="intf-toggle" checked style="accent-color:#00f0ff"> Show INTF nodes
+    </label>
+  </div>
+  <div style="margin-bottom:10px">
+    <label style="font-size:11px;color:#6a6a9a;display:block;margin-bottom:4px">Node Size</label>
+    <input type="range" id="size-slider" min="0.3" max="3" step="0.1" value="1" style="width:100%;accent-color:#ff00ff">
+  </div>
+  <div style="margin-bottom:10px">
+    <label style="font-size:11px;color:#6a6a9a;display:block;margin-bottom:4px">Background</label>
+    <input type="range" id="bg-slider" min="0" max="40" step="2" value="6" style="width:100%;accent-color:#00ff88">
+  </div>
+  <div style="margin-bottom:6px">
+    <label style="font-size:11px;color:#6a6a9a;display:block;margin-bottom:4px">Dormant Nodes</label>
+    <label style="font-size:11px;color:#e0e0ff;display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" id="dormant-toggle" checked style="accent-color:#f0e000"> Show dormant
+    </label>
+  </div>
+</div>
+
+<!-- ── 3D图容器 ── -->
+<div id="graph-container"></div>
+
+<script>
+const API = window.location.origin;
+
+const CLUSTER_COLORS = {
+  '数据基础设施':'#00f0ff','架构设计':'#ff6b6b','工具链':'#4ECDC4',
+  '业务逻辑':'#FFE66D','前端UI':'#45B7D1','运营知识':'#96CEB4',
+  '密钥配置':'#ff3366','会话记录':'#6a6aaa','系统元节点':'#FFFFFF',
+  '产品与工艺':'#FF6B6B','战略决策':'#E74C3C','Agent协作':'#2ECC71',
+  '训练与模型':'#F0B27A','反馈与规则':'#AED6F1','外部引用':'#F7DC6F',
+  '错误与教训':'#ff3366','项目模块':'#00ff88',
+  '接口契约':'#8888cc','项目交接':'#FF9F43','项目文档':'#A29BFE',
+  '项目活动':'#55E6C1','用户画像':'#F8B739',
+};
+
+// ── 视觉控制状态 ──
+let showINTF = true;
+let nodeSizeMultiplier = 1.0;
+let bgBrightness = 6;  // 0-100
+const PRIORITY_SIZE = {critical:14,high:10,medium:7,low:4};
+const STATUS_OPACITY = {active:1,dormant:0.5,blocked:0.8,deprecated:0.25};
+const TYPE_SHAPE = {secret:'diamond',feedback:'triangle',process:'sphere',tool:'cube',knowledge:'sphere'};
+
+let graphData = {nodes:[],links:[]};
+let allStats = {};
+let Graph;
+let highlightNodes = new Set();
+let highlightLinks = new Set();
+let selectedNode = null;
+let currentView = 'graph';
+
+// ── 初始化 ──
+async function init() {
+  const [graphResp, statsResp] = await Promise.all([
+    fetch(`${API}/api/graph`), fetch(`${API}/api/stats`)
+  ]);
+  graphData = await graphResp.json();
+  allStats = await statsResp.json();
+  updateTopbar(allStats);
+  buildLegend(allStats.clusters);
+  initGraph();
+  buildDashboard();
+  connectWS();
+}
+
+function updateTopbar(stats) {
+  document.getElementById('stat-nodes').textContent = stats.total_nodes;
+  document.getElementById('stat-edges').textContent = stats.total_edges;
+  document.getElementById('stat-active').textContent = stats.active_nodes;
+  document.getElementById('stat-blocked').textContent = stats.blocked_nodes;
+  const errCount = graphData.nodes.filter(n => n.id.startsWith('ERR-')).length;
+  const secCount = graphData.nodes.filter(n => n.id.startsWith('SEC-')).length;
+  document.getElementById('stat-errors').textContent = errCount;
+  document.getElementById('stat-secrets').textContent = secCount;
+}
+
+// ── 3D图（纯内置渲染，零自定义对象） ──
+function initGraph() {
+  Graph = ForceGraph3D()(document.getElementById('graph-container'))
+    .graphData(graphData)
+    .backgroundColor('#060612')
+    .showNavInfo(false)
+    .nodeVal(n => (PRIORITY_SIZE[n.priority] || 7) * 2)
+    .nodeColor(n => {
+      if (highlightNodes.size > 0 && !highlightNodes.has(n.id)) return '#151530';
+      return CLUSTER_COLORS[n.cluster] || '#888888';
+    })
+    .nodeOpacity(1.0)
+    .nodeResolution(24)
+    .nodeLabel(n => {
+      const c = CLUSTER_COLORS[n.cluster]||'#888';
+      return `<div style="background:rgba(6,6,18,0.92);padding:10px 14px;border-radius:10px;border:1px solid ${c}55;max-width:320px;font-size:12px;color:#e0e0ff;line-height:1.5">
+        <div style="font-weight:700;font-size:14px;color:${c};margin-bottom:4px">[${n.id}] ${n.name}</div>
+        <div style="color:#7777aa;font-size:11px">${n.cluster} | ${n.layer} | ${n.type} | ${n.priority}</div>
+        ${n.description ? '<div style="margin-top:6px">'+n.description.substring(0,150)+'</div>' : ''}
+        ${n.current_state ? '<div style="color:#f0e000;margin-top:4px;font-weight:600">'+n.current_state+'</div>' : ''}
+        ${(n.blockers&&n.blockers.length) ? '<div style="color:#ff3366;margin-top:4px">Blockers: '+n.blockers.join(', ')+'</div>' : ''}
+      </div>`;
+    })
+    .linkColor(link => {
+      if (highlightLinks.size > 0 && !highlightLinks.has(link)) return 'rgba(255,255,255,0.03)';
+      if (link.type === 'requires') return 'rgba(255,80,120,0.6)';
+      if (link.type === 'feeds_into') return 'rgba(0,255,136,0.6)';
+      if (link.type === 'validates') return 'rgba(240,224,0,0.6)';
+      if (link.type === 'triggers') return 'rgba(255,0,255,0.6)';
+      return 'rgba(0,240,255,0.35)';
+    })
+    .linkWidth(link => highlightLinks.has(link) ? 2.5 : 0.4)
+    .linkOpacity(0.6)
+    .linkDirectionalArrowLength(5)
+    .linkDirectionalArrowRelPos(1)
+    .linkDirectionalParticles(link => highlightLinks.has(link) ? 6 : 1)
+    .linkDirectionalParticleWidth(link => highlightLinks.has(link) ? 3 : 1)
+    .linkDirectionalParticleColor(link => {
+      if (link.type === 'requires') return '#ff3366';
+      if (link.type === 'feeds_into') return '#00ff88';
+      return '#00f0ff';
+    })
+    .linkDirectionalParticleSpeed(0.004)
+    .onNodeClick(onNodeClick)
+    .onNodeHover(n => { document.body.style.cursor = n ? 'pointer' : 'default'; })
+    .onBackgroundClick(() => { highlightNodes.clear(); highlightLinks.clear(); closePanel(); refreshGraph(); })
+    .d3AlphaDecay(0.015)
+    .d3VelocityDecay(0.25)
+    .warmupTicks(150)
+    .cooldownTicks(200);
+}
+
+function refreshGraph() {
+  if (!Graph) return;
+  Graph.nodeColor(Graph.nodeColor());
+  Graph.linkColor(Graph.linkColor());
+  Graph.linkWidth(Graph.linkWidth());
+  Graph.linkDirectionalParticles(Graph.linkDirectionalParticles());
+  Graph.linkDirectionalParticleWidth(Graph.linkDirectionalParticleWidth());
+}
+
+// ── 节点点击 ──
+function onNodeClick(node) {
+  if (!node) return;
+  selectedNode = node;
+  highlightNodes.clear(); highlightLinks.clear();
+  highlightNodes.add(node.id);
+  graphData.links.forEach(link => {
+    const s = typeof link.source === 'object' ? link.source.id : link.source;
+    const t = typeof link.target === 'object' ? link.target.id : link.target;
+    if (s === node.id || t === node.id) { highlightLinks.add(link); highlightNodes.add(s); highlightNodes.add(t); }
+  });
+  refreshGraph();
+  openPanel(node);
+  const d = 130, r = 1 + d / Math.hypot(node.x||0, node.y||0, node.z||0);
+  Graph.cameraPosition({x:(node.x||0)*r, y:(node.y||0)*r, z:(node.z||0)*r}, node, 1200);
+}
+
+// ── 详情面板 ──
+function openPanel(node) {
+  const color = CLUSTER_COLORS[node.cluster] || '#888';
+  let h = `<div class="panel-header">
+    <span class="node-badge" style="background:${color}22;color:${color};border:1px solid ${color}55">${node.id}</span>
+    <h2>${node.name}</h2>
+  </div>
+  <div class="panel-section"><h3>Status</h3>
+    <p><span class="status-${node.status}">${node.status.toUpperCase()}</span> | ${node.cluster} | ${node.layer} | ${node.type} | ${node.priority}</p>
+  </div>`;
+
+  if (node.description) h += `<div class="panel-section"><h3>Description</h3><p>${node.description}</p></div>`;
+  if (node.current_state) h += `<div class="panel-section"><h3>Current State</h3><p style="color:var(--yellow);font-weight:600">${node.current_state}</p></div>`;
+  if (node.tech_stack?.length) h += `<div class="panel-section"><h3>Tech Stack</h3>${node.tech_stack.map(t=>`<span class="tag">${t}</span>`).join('')}</div>`;
+  if (node.key_files?.length) h += `<div class="panel-section"><h3>Key Files</h3><ul>${node.key_files.map(f=>`<li style="font-size:12px;color:var(--cyan);font-family:monospace">${f}</li>`).join('')}</ul></div>`;
+  if (node.blockers?.length) h += `<div class="panel-section"><h3>&#x1F6A8; Blockers</h3><ul>${node.blockers.map(b=>`<li style="color:var(--red)">${b}</li>`).join('')}</ul></div>`;
+  if (node.keywords?.length) h += `<div class="panel-section"><h3>Activation Keywords</h3>${node.keywords.map(k=>`<span class="tag">${k}</span>`).join('')}</div>`;
+  if (node.notes) h += `<div class="panel-section"><h3>Notes</h3><p style="font-size:12px">${node.notes.substring(0,500)}</p></div>`;
+
+  const edges = graphData.links.filter(l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    return s === node.id || t === node.id;
+  });
+  if (edges.length) {
+    h += `<div class="panel-section"><h3>Connections (${edges.length})</h3><ul>`;
+    edges.forEach(e => {
+      const s = typeof e.source === 'object' ? e.source.id : e.source;
+      const t = typeof e.target === 'object' ? e.target.id : e.target;
+      const other = s === node.id ? t : s;
+      const dir = s === node.id ? '→' : '←';
+      const tc = e.type === 'requires' ? 'var(--red)' : e.type === 'feeds_into' ? 'var(--green)' : 'var(--dim)';
+      h += `<li style="font-size:12px">${dir} <strong>${other}</strong> <span style="color:${tc}">[${e.type}]</span> ${e.description||''}</li>`;
+    });
+    h += `</ul></div>`;
+  }
+
+  h += `<div class="panel-section"><h3>Meta</h3><p style="font-size:11px;color:var(--dim)">
+    Updated: ${node.updated_at||'N/A'} | By: ${node.updated_by||'N/A'} | Activations: ${node.activation_count||0}
+  </p></div>`;
+
+  document.getElementById('panel-content').innerHTML = h;
+  document.getElementById('panel').classList.add('open');
+}
+function closePanel() { document.getElementById('panel').classList.remove('open'); selectedNode = null; }
+document.getElementById('panel-close').addEventListener('click', () => { highlightNodes.clear(); highlightLinks.clear(); closePanel(); refreshGraph(); });
+
+// ── Dashboard ──
+function buildDashboard() {
+  const modules = graphData.nodes.filter(n => n.id.startsWith('MOD-'));
+  const secrets = graphData.nodes.filter(n => n.id.startsWith('SEC-'));
+  const errors = graphData.nodes.filter(n => n.id.startsWith('ERR-'));
+
+  // 模块进度估算
+  const moduleProgress = {
+    'MOD-advisor': 65, 'MOD-kb': 55, 'MOD-distill': 40, 'MOD-rpa': 70,
+    'MOD-wu': 60, 'MOD-wen': 30, 'MOD-video': 25, 'MOD-frontend': 50,
+    'MOD-pvi': 10, 'MOD-selflearn': 5, 'MOD-tests': 70, 'MOD-c3an': 35,
+    'MOD-neural': 15,
+  };
+
+  let html = `
+  <h2 style="font-size:22px;margin-bottom:20px;font-weight:800">Project Dashboard <span style="color:var(--dim);font-size:13px;font-weight:400">Real-time development status</span></h2>
+  <div class="dash-grid">
+    <div class="dash-card">
+      <h3>Total Nodes</h3>
+      <div class="big-num cyan">${allStats.total_nodes}</div>
+      <p style="font-size:11px;color:var(--dim);margin-top:6px">${Object.keys(allStats.clusters||{}).length} clusters</p>
+    </div>
+    <div class="dash-card">
+      <h3>Edges (Relations)</h3>
+      <div class="big-num magenta">${allStats.total_edges}</div>
+      <p style="font-size:11px;color:var(--dim);margin-top:6px">knowledge graph density</p>
+    </div>
+    <div class="dash-card">
+      <h3>KB Status</h3>
+      <div class="big-num yellow">2754<span style="font-size:16px;color:var(--dim)">/5000</span></div>
+      <div class="progress-bar"><div class="progress-bar-fill" style="width:55%;background:linear-gradient(90deg,var(--yellow),var(--green))"></div></div>
+      <p style="font-size:11px;color:var(--dim)">差2246条蒸馏数据</p>
+    </div>
+    <div class="dash-card">
+      <h3>Error Lessons</h3>
+      <div class="big-num red">${errors.length}</div>
+      <p style="font-size:11px;color:var(--dim);margin-top:6px">critical patterns stored</p>
+    </div>
+    <div class="dash-card">
+      <h3>API Keys</h3>
+      <div class="big-num red">${secrets.length}</div>
+      <p style="font-size:11px;color:var(--dim);margin-top:6px">secured references (no plaintext)</p>
+    </div>
+    <div class="dash-card">
+      <h3>Tests</h3>
+      <div class="big-num green">460</div>
+      <p style="font-size:11px;color:var(--dim);margin-top:6px">passed / 36 API endpoints</p>
+    </div>
+  </div>
+
+  <div class="dash-grid">
+    <div class="dash-card" style="grid-column:span 2">
+      <h3>&#x1F3D7; Module Development Progress</h3>`;
+
+  modules.sort((a,b) => (moduleProgress[b.id]||0) - (moduleProgress[a.id]||0));
+  modules.forEach(m => {
+    const pct = moduleProgress[m.id] || 0;
+    const c = pct >= 60 ? 'var(--green)' : pct >= 30 ? 'var(--yellow)' : 'var(--red)';
+    const statusDot = m.blockers?.length ? 'var(--red)' : 'var(--green)';
+    html += `<div class="module-row">
+      <span class="status-dot" style="background:${statusDot};box-shadow:0 0 6px ${statusDot}"></span>
+      <span class="name">${m.name}</span>
+      <div class="bar"><div class="bar-fill" style="width:${pct}%;background:${c}"></div></div>
+      <span class="pct" style="color:${c}">${pct}%</span>
+    </div>`;
+  });
+  html += `</div>
+
+    <div class="dash-card">
+      <h3>&#x1F6A8; Error & Lesson Log</h3>`;
+  errors.forEach(e => {
+    const sev = e.priority === 'critical' ? ['CRITICAL','var(--red)'] : ['HIGH','var(--yellow)'];
+    html += `<div class="error-item">
+      <span class="severity" style="background:${sev[1]}22;color:${sev[1]}">${sev[0]}</span>
+      <span class="title" style="margin-left:8px">${e.name}</span>
+      <div class="desc">${e.description||''}</div>
+    </div>`;
+  });
+  html += `</div></div>
+
+  <div class="dash-grid">
+    <div class="dash-card" style="grid-column:span 2">
+      <h3>&#x1F512; API Keys & Secrets Registry</h3>`;
+  secrets.forEach(s => {
+    const state = s.current_state || 'configured';
+    const isActive = state.includes('活跃') || state.includes('Active');
+    const sc = isActive ? 'var(--green)' : 'var(--yellow)';
+    html += `<div class="secret-item">
+      <span class="icon">&#x1F511;</span>
+      <span class="name">${s.name}</span>
+      <span class="state" style="background:${sc}22;color:${sc}">${state.substring(0,30)}</span>
+    </div>`;
+  });
+  html += `</div>
+
+    <div class="dash-card">
+      <h3>&#x1F517; Most Connected Nodes</h3>`;
+  (allStats.most_connected||[]).forEach(mc => {
+    html += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+      <span style="font-size:13px">${mc.name}</span>
+      <span style="color:var(--cyan);font-weight:700">${mc.connections}</span>
+    </div>`;
+  });
+  html += `</div></div>`;
+
+  document.getElementById('dashboard').innerHTML = html;
+}
+
+// ── 图例 ──
+function buildLegend(clusters) {
+  const c = document.getElementById('legend-items');
+  c.innerHTML = '';
+  Object.entries(clusters).sort((a,b)=>b[1]-a[1]).forEach(([cluster, cnt]) => {
+    const color = CLUSTER_COLORS[cluster] || '#888';
+    const d = document.createElement('div');
+    d.className = 'legend-item';
+    d.innerHTML = `<span class="color-dot" style="background:${color};box-shadow:0 0 8px ${color}"></span><span>${cluster}</span><span class="count">${cnt}</span>`;
+    d.addEventListener('click', () => toggleCluster(cluster));
+    c.appendChild(d);
+  });
+}
+
+let activeCluster = null;
+function toggleCluster(cluster) {
+  if (activeCluster === cluster) {
+    activeCluster = null;
+    document.querySelectorAll('.legend-item').forEach(el => el.classList.remove('dimmed'));
+    highlightNodes.clear();
+  } else {
+    activeCluster = cluster;
+    document.querySelectorAll('.legend-item').forEach(el => el.classList.toggle('dimmed', !el.textContent.includes(cluster)));
+    highlightNodes.clear();
+    graphData.nodes.forEach(n => { if (n.cluster === cluster) highlightNodes.add(n.id); });
+  }
+  refreshGraph();
+}
+
+// ── 搜索 ──
+document.getElementById('search-input').addEventListener('input', e => {
+  const q = e.target.value.toLowerCase().trim();
+  highlightNodes.clear(); highlightLinks.clear();
+  if (q) graphData.nodes.forEach(n => {
+    if (`${n.id} ${n.name} ${n.cluster} ${(n.keywords||[]).join(' ')} ${n.description||''}`.toLowerCase().includes(q))
+      highlightNodes.add(n.id);
+  });
+  refreshGraph();
+});
+
+// ── 路由 ──
+document.getElementById('route-btn').addEventListener('click', async () => {
+  const task = document.getElementById('route-input').value.trim();
+  if (!task) return;
+  const resp = await fetch(`${API}/api/route`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({task, max_nodes:10, include_edges:true}),
+  });
+  const result = await resp.json();
+  highlightNodes.clear(); highlightLinks.clear();
+  result.activated_nodes.forEach(n => highlightNodes.add(n.id));
+  const idSet = new Set(result.activated_nodes.map(n => n.id));
+  graphData.links.forEach(link => {
+    const s = typeof link.source === 'object' ? link.source.id : link.source;
+    const t = typeof link.target === 'object' ? link.target.id : link.target;
+    if (idSet.has(s) && idSet.has(t)) highlightLinks.add(link);
+  });
+  refreshGraph();
+  let html = `<div style="color:var(--green);margin-bottom:6px;font-weight:600">Activated ${result.activated_nodes.length}/${result.total_nodes}</div>`;
+  Object.entries(result.scores).sort((a,b)=>b[1]-a[1]).forEach(([id,score]) => {
+    const node = result.activated_nodes.find(n=>n.id===id);
+    html += `<div class="route-hit"><span>${id} ${node?node.name:''}</span><span class="score">${score.toFixed(1)}</span></div>`;
+  });
+  document.getElementById('route-result').innerHTML = html;
+});
+
+// ── 视图切换 ──
+document.querySelectorAll('.view-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentView = tab.dataset.view;
+    document.getElementById('dashboard').classList.toggle('visible', currentView === 'dashboard');
+    document.getElementById('graph-container').style.display = currentView === 'graph' ? 'block' : 'none';
+    document.getElementById('route-panel').style.display = currentView === 'graph' ? 'block' : 'none';
+    document.getElementById('legend').style.display = currentView === 'graph' ? 'block' : 'none';
+  });
+});
+
+// ── WebSocket ──
+function connectWS() {
+  const ws = new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws`);
+  ws.onmessage = evt => {
+    const msg = JSON.parse(evt.data);
+    if (['node_created','node_updated','node_deleted','edge_created','edge_deleted','graph_reloaded'].includes(msg.event)) {
+      Promise.all([fetch(`${API}/api/graph`).then(r=>r.json()), fetch(`${API}/api/stats`).then(r=>r.json())])
+        .then(([g,s]) => { graphData = g; allStats = s; Graph.graphData(g); updateTopbar(s); buildDashboard(); });
+    }
+  };
+  ws.onclose = () => setTimeout(connectWS, 3000);
+}
+
+// ── 视觉控制 ──
+document.getElementById('intf-toggle').addEventListener('change', e => {
+  showINTF = e.target.checked;
+  graphData.nodes.forEach(n => {
+    if (n.cluster === '接口契约') n._hidden = !showINTF;
+  });
+  if (Graph) {
+    Graph.nodeVisibility(n => !n._hidden);
+    Graph.linkVisibility(link => {
+      const s = typeof link.source === 'object' ? link.source : {id: link.source};
+      const t = typeof link.target === 'object' ? link.target : {id: link.target};
+      const sNode = graphData.nodes.find(n => n.id === (s.id || s));
+      const tNode = graphData.nodes.find(n => n.id === (t.id || t));
+      return !(sNode && sNode._hidden) && !(tNode && tNode._hidden);
+    });
+  }
+});
+
+document.getElementById('size-slider').addEventListener('input', e => {
+  nodeSizeMultiplier = parseFloat(e.target.value);
+  if (Graph) Graph.nodeVal(n => (PRIORITY_SIZE[n.priority] || 7) * 2 * nodeSizeMultiplier);
+});
+
+document.getElementById('bg-slider').addEventListener('input', e => {
+  bgBrightness = parseInt(e.target.value);
+  const hex = bgBrightness.toString(16).padStart(2,'0');
+  const bg = `#${hex}${hex}${Math.min(bgBrightness+6,255).toString(16).padStart(2,'0')}`;
+  if (Graph) Graph.backgroundColor(bg);
+});
+
+document.getElementById('dormant-toggle').addEventListener('change', e => {
+  const showDormant = e.target.checked;
+  graphData.nodes.forEach(n => {
+    if (n.status === 'dormant') n._hidden = !showDormant;
+  });
+  if (Graph) Graph.nodeVisibility(n => !n._hidden);
+});
+
+init();
+</script>
+</body>
+</html>

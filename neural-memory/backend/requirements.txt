@@ -1,0 +1,10 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+pydantic>=2.0.0
+requests>=2.31.0
+httpx>=0.28.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+# Linux/WSL CPU-only machines should install torch first:
+# python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+sentence-transformers>=2.7.0

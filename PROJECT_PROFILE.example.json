@@ -1,0 +1,26 @@
+{
+  "project_id": "example-project",
+  "project_name": "Example Project",
+  "base_url": "http://127.0.0.1:9711",
+  "port": 9711,
+  "min_nodes": 10,
+  "engine_root": "../3CAN-engine/neural-memory",
+  "graph_dir": "../3CAN-engine/neural-memory/graph",
+  "project_dir": ".",
+  "watch_dirs": [
+    ".",
+    "docs",
+    ".agents"
+  ],
+  "runtime": {
+    "token_auto_import": true,
+    "token_auto_import_interval_sec": 60,
+    "token_auto_import_max_files": 3,
+    "token_auto_import_max_events": 1000
+  },
+  "privacy": {
+    "copy_project_data_between_graphs": false,
+    "store_secret_values_in_graph": false,
+    "scan_before_release": true
+  }
+}

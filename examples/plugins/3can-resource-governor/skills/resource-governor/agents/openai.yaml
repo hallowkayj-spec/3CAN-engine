@@ -1,0 +1,4 @@
+interface:
+  display_name: "3CAN Resource Governor"
+  short_description: "Coordinate local Docker and port leases safely"
+  default_prompt: "Coordinate this task's conflicting local resources and show cleanup-pending leases."

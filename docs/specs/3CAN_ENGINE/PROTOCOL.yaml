@@ -1,0 +1,670 @@
+openapi: 3.0.3
+info:
+  title: 3CAN Engine HTTP Protocol
+  version: 0.2.0.dev0
+  x-release-candidate-line: 0.2.0-rc.1
+  description: |
+    v0.2 release-candidate runtime harness contract:
+    - Session bootstrap: stats/liveness -> agents/checkin -> briefing -> route.
+    - Pre-mutation gate: durable route/ticket -> validate -> scoped consume.
+    - Error lifecycle: occurrence -> repeated ErrorCase -> verified Resolution.
+    - Post-mutation completion: replay-safe activity/done plus typed evidence.
+    - Pre-compact continuation: create/update SES-* or writeback durable state.
+    Claude Code can enforce these through native hooks. Codex and other CLIs
+    must use an explicit wrapper/pseudo-hook harness until their runtimes expose
+    native hook surfaces.
+
+    v0.2 候选运行时 harness 契约:
+    - Session bootstrap: 先做 stats/liveness, 再 agents/checkin, briefing, route.
+    - 动手前 gate: SQLite/WAL route/ticket -> 验证 -> scope digest consume.
+    - 错误闭环: occurrence -> 重复 ErrorCase -> 经证据验证的 Resolution.
+    - 动手后完成: activity/done 绑定请求 hash, 重放返回同一结果.
+    - compact 前续接: 创建/更新 SES-* 或 writeback 阶段成果.
+    Claude Code 可以用原生 hooks 强制执行; Codex 和其他 CLI 目前必须用显式
+    wrapper / pseudo-hook harness, 直到运行时提供原生 hook surface.
+
+    Chinese route semantics / 中文路由语义:
+    - Online stack: BAAI/bge-m3 dense embedding, BAAI/bge-reranker-v2-m3
+      rerank, graph co-occurrence expansion, and /api/route/simple for
+      Chinese-friendly shell usage.
+    - Prepared extension point: backend/query_expander.py plus
+      expansions/jieba_synonyms.py. This plugin host exists, but must not be
+      described as fully wired into /api/route until code/tests prove it.
+    - 详见 CHINESE_ROUTE_SEMANTICS.md: 已在线能力和预留扩展点必须分开描述。
+
+    3CAN Protocol v9.4 — 协议层 (非 Python 实现, 独立定义).
+    任何 agent / 工具接入 3CAN 必须遵守此规范.
+
+    **版本语义 (SemVer)**:
+    - MAJOR (9→10): 破坏性变更 (删端点, 改 schema 不兼容)
+    - MINOR (9.3→9.4): 新增端点或字段
+    - PATCH: bug 修复
+
+    **错误码约定 (HTTP status + 自定 error code)**:
+    - 400: 请求参数错误 (body schema 不符 / 缺字段)
+    - 404: 资源不存在 (node_id / agent_id 查不到)
+    - 409: R1 查重拒绝 (创节点时已有同类, top1 score ≥ 0.045)
+    - 422: 质量不达标 (strict=true 时节点质量差)
+    - 503: backend 不可达 (proxy 显示 active slot down)
+  contact:
+    name: 3CAN Engine
+    url: 'http://localhost:9700'
+
+servers:
+  - url: 'http://localhost:9700'
+    description: Local proxy (蓝绿唯一入口)
+
+tags:
+  - name: route
+    description: 检索核心
+  - name: nodes
+    description: 节点 CRUD
+  - name: edges
+    description: 边 CRUD
+  - name: agents
+    description: Agent 注册 + 活动
+  - name: skills
+    description: Skill 管理 (v9.1+)
+  - name: audit
+    description: 审计 + hash chain
+  - name: admin
+    description: 蓝绿部署管控
+  - name: lifecycle
+    description: 生命周期 + 归档
+  - name: errors
+    description: Error occurrence, canonical case, and verified resolution lifecycle
+
+paths:
+  /api/route:
+    post:
+      tags: [route]
+      summary: 主检索, 4-signal RRF + reranker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutingRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RoutingResponseFull'
+                  - $ref: '#/components/schemas/RoutingResponseSlim'
+
+  /api/route/simple:
+    get:
+      tags: [route]
+      summary: GET 旁路 (中文 query 避免 body 转义)
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: max_nodes
+          in: query
+          schema: { type: integer, default: 6 }
+        - name: agent_id
+          in: query
+          schema: { type: string }
+        - name: mode
+          in: query
+          schema: { type: string, enum: [skeleton, slim, full] }
+        - name: budget_tokens
+          in: query
+          schema: { type: integer }
+
+  /api/retrieve/{node_id}:
+    get:
+      tags: [route]
+      summary: CCR 第二段, 取完整 Node + 记 expand 活动
+      parameters:
+        - name: node_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: agent_id
+          in: query
+          schema: { type: string }
+
+  /api/route/ticket:
+    post:
+      tags: [route]
+      summary: Issue a short-lived route ticket before mutating tool use.
+      description: >
+        Used by hook or pseudo-hook harnesses. The ticket proves the agent routed
+        relevant ERR/INTF/API_USAGE context before acting. Native hooks can deny
+        mutation when no valid ticket exists; Codex-style CLIs should call this
+        through a wrapper before apply/write/bash mutation.
+        中文: 动手改文件或执行高风险 Bash 前签发短期 ticket, 证明 agent 已经 route
+        过相关 ERR/INTF/API_USAGE 上下文. Claude hook 可以无 ticket 直接 deny;
+        Codex 类 CLI 应通过 wrapper 在 apply/write/bash 前调用.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteTicketRequest'
+      responses:
+        '200':
+          description: Ticket issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteTicket'
+
+  /api/route/ticket/{ticket_id}:
+    get:
+      tags: [route]
+      summary: Validate or retrieve a live route ticket.
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Ticket exists and is not expired. }
+        '404': { description: Ticket not found or expired. }
+
+  /api/route/ticket/{ticket_id}/consume:
+    post:
+      tags: [route]
+      summary: Record that a tool used a live route ticket.
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteTicketConsumeRequest'
+      responses:
+        '200': { description: Ticket consumption recorded. }
+        '403': { description: Agent, target digest, scope digest, or ErrorCase authorization mismatch. }
+        '404': { description: Ticket not found or inactive. }
+
+  /api/errors/occurrences:
+    post:
+      tags: [errors]
+      summary: Idempotently record one normalized error occurrence.
+      description: >
+        The server recomputes the ek2 fingerprint. The first occurrence remains
+        ledger-only; the second promotes a canonical ERR-case graph projection.
+        Projection failure returns PARTIAL without losing ledger truth.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ErrorOccurrenceRequest'
+      responses:
+        '200':
+          description: RECORDED, PROMOTED, or PARTIAL.
+        '409':
+          description: Fingerprint mismatch or occurrence-id conflict.
+
+  /api/errors/cases:
+    get:
+      tags: [errors]
+      summary: Retrieve the authoritative SQLite ErrorCase.
+      parameters:
+        - name: fingerprint
+          in: query
+          schema: { type: string }
+        - name: case_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Canonical case ledger record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorCase'
+        '404': { description: ErrorCase not found. }
+
+  /api/errors/occurrences/{occurrence_id}:
+    get:
+      tags: [errors]
+      summary: Retrieve one stored occurrence envelope.
+      parameters:
+        - name: occurrence_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Stored occurrence. }
+        '404': { description: Occurrence not found. }
+
+  /api/errors/reconcile:
+    post:
+      tags: [errors]
+      summary: Reconcile normalized graph ErrorCases into the SQLite ledger.
+      description: >
+        Records without a trustworthy fingerprint remain review_required;
+        the endpoint does not guess or force-merge legacy identities.
+      responses:
+        '200': { description: Reconciliation report. }
+
+  /api/nodes:
+    post:
+      tags: [nodes]
+      summary: 建节点 (R1 查重, 可 force=true 跳过)
+      parameters:
+        - name: force
+          in: query
+          schema: { type: boolean, default: false }
+        - name: strict
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200': { description: OK }
+        '409': { description: R1 查重拒绝, 建议 PUT 更新 }
+        '422': { description: 质量不达标 (strict=true) }
+
+  /api/nodes/{node_id}:
+    get:
+      tags: [nodes]
+      parameters:
+        - name: node_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: agent_id
+          in: query
+          schema: { type: string }
+    put:
+      tags: [nodes]
+      summary: 更新节点 (部分字段, 增量 embedding)
+
+  /api/edges:
+    post:
+      tags: [edges]
+    get:
+      tags: [edges]
+    delete:
+      tags: [edges]
+
+  /api/writeback:
+    post:
+      tags: [nodes]
+      summary: 批量字段更新
+
+  /api/skills:
+    get:
+      tags: [skills]
+      summary: 列所有 type=skill 节点 + 统计
+      parameters:
+        - name: active_only
+          in: query
+          schema: { type: boolean, default: true }
+
+  /api/skills/invoke:
+    post:
+      tags: [skills]
+      summary: 记 skill 调用 (通常由 PostToolUse hook 触发)
+
+  /api/audit/verify:
+    get:
+      tags: [audit]
+      summary: 校验 activity_log hash chain 完整性
+
+  /api/agents/checkin:
+    post:
+      tags: [agents]
+
+  /api/agents:
+    get:
+      tags: [agents]
+
+  /api/briefing:
+    get:
+      tags: [agents]
+      summary: 冷启动 briefing (新 session 拉全局)
+
+  /api/activity:
+    get:
+      tags: [audit]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+
+  /api/activity/log:
+    post:
+      tags: [audit]
+      summary: Append a hash-chained agent activity entry.
+      description: >
+        Used by PostToolUse hooks or pseudo-hook wrappers after mutation. Include
+        ticket_id when the activity was authorized by a route ticket.
+        中文: mutation 后由 PostToolUse hook 或 pseudo-hook wrapper 写入 hash-chain
+        activity. 如果本次操作由 route ticket 授权, 应带 ticket_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivityLogRequest'
+      responses:
+        '200':
+          description: Activity appended with its full SHA-256 self_hash.
+
+  /api/activity/done:
+    post:
+      tags: [audit, errors]
+      summary: Complete one consumed ticket exactly once.
+      description: >
+        Binds the canonical completion request hash to the ticket. Typed
+        evidence is verified server-side before an authorized ErrorCase can
+        become resolved. Replays return the original response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivityDoneRequest'
+      responses:
+        '200': { description: Completed, replayed, or review_required. }
+        '403': { description: ErrorCase is outside the ticket authorization. }
+        '409': { description: Completion request conflict or concurrent owner. }
+
+  /api/stats:
+    get:
+      tags: [audit]
+      summary: 图谱统计
+
+  /api/health/scan:
+    get:
+      tags: [audit]
+      summary: 健康扫描 (孤立 / 零激活 / prefix 分布)
+
+  /api/lifecycle/sweep:
+    post:
+      tags: [lifecycle]
+      summary: 生命周期扫描 (active→dormant 30d / dormant→archive 60d, 永不删除)
+
+  /api/admin/state:
+    get:
+      tags: [admin]
+
+  /api/admin/deploy:
+    post:
+      tags: [admin]
+
+  /api/admin/switch:
+    post:
+      tags: [admin]
+
+  /api/admin/retire:
+    post:
+      tags: [admin]
+
+components:
+  schemas:
+    RoutingRequest:
+      type: object
+      required: [task]
+      properties:
+        task: { type: string, description: "自然语言 query (中/英)" }
+        max_nodes: { type: integer, default: 10 }
+        include_edges: { type: boolean, default: true }
+        agent_id: { type: string, default: unknown }
+        mode: { type: string, enum: [skeleton, slim, full], default: slim }
+        budget_tokens: { type: integer, nullable: true }
+        confirm_low_confidence:
+          type: boolean
+          default: false
+          description: Explicitly accept a low-confidence route result.
+        allow_degraded:
+          type: boolean
+          default: false
+          description: Friendly alias for confirm_low_confidence.
+
+    RouteTicketRequest:
+      type: object
+      required: [agent_id, task_description, target_files]
+      properties:
+        agent_id: { type: string }
+        task_description: { type: string }
+        target_files:
+          type: array
+          items: { type: string }
+        scope_keywords:
+          type: array
+          items: { type: string }
+        task_type: { type: string, default: Edit }
+        project_id: { type: string, default: unspecified }
+        workspace_id: { type: string, default: unspecified }
+        workorder_id: { type: string, default: unspecified }
+        policy_version: { type: string, default: 3can.ticket-policy/v2 }
+
+    RouteTicket:
+      type: object
+      required:
+        - ticket_id
+        - agent_id
+        - issued_at
+        - ttl_sec
+        - project_id
+        - workspace_id
+        - workorder_id
+        - target_digest
+        - scope_digest
+        - policy_version
+        - allowed_error_ids
+        - scope
+      properties:
+        ticket_id: { type: string }
+        agent_id: { type: string }
+        issued_at: { type: string }
+        ttl_sec: { type: integer, example: 900 }
+        project_id: { type: string }
+        workspace_id: { type: string }
+        workorder_id: { type: string }
+        target_digest: { type: string }
+        scope_digest: { type: string }
+        policy_version: { type: string }
+        allowed_error_ids:
+          type: array
+          items: { type: string }
+        task_description: { type: string }
+        task_type: { type: string }
+        scope: { type: object }
+        err_warnings:
+          type: array
+          items: { type: object }
+        intf_anchors:
+          type: array
+          items: { type: object }
+        api_usage_hints:
+          type: array
+          items: { type: object }
+        consumed_by_tools:
+          type: array
+          items: { type: object }
+
+    RouteTicketConsumeRequest:
+      type: object
+      required:
+        - agent_id
+        - target_digest
+        - scope_digest
+        - tool_name
+        - tool_input_summary
+      properties:
+        agent_id: { type: string }
+        target_digest: { type: string }
+        scope_digest: { type: string }
+        tool_name: { type: string }
+        tool_input_summary: { type: string }
+
+    ActivityLogRequest:
+      type: object
+      required: [agent_id, action, detail]
+      properties:
+        agent_id: { type: string }
+        action: { type: string }
+        detail: { type: string }
+        affected_nodes:
+          type: array
+          items: { type: string }
+        meta: { type: object }
+        ticket_id: { type: string, nullable: true }
+
+    VerificationEvidence:
+      type: object
+      required: [kind, ref, verified, verifier]
+      properties:
+        kind: { type: string }
+        ref: { type: string }
+        summary: { type: string }
+        verified: { type: boolean }
+        verifier: { type: string }
+        digest:
+          type: string
+          nullable: true
+          pattern: '^sha256:[0-9a-f]{64}$'
+        self_hash:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-f]{64}$'
+
+    ErrorOccurrenceRequest:
+      type: object
+      required:
+        - occurrence_id
+        - fingerprint
+        - project_id
+        - operation
+        - component
+        - error_type
+        - error
+        - root_cause
+        - occurred_at
+      properties:
+        occurrence_id: { type: string }
+        fingerprint:
+          type: string
+          pattern: '^ek2:[0-9a-f]{64}$'
+        project_id: { type: string }
+        operation: { type: string }
+        component: { type: string }
+        error_type: { type: string }
+        error: { type: string }
+        root_cause: { type: string }
+        occurred_at: { type: string, format: date-time }
+        agent_id: { type: string }
+        context: { type: object }
+
+    ErrorCase:
+      type: object
+      required:
+        - fingerprint
+        - project_id
+        - operation
+        - component
+        - error_type
+        - occurrence_count
+        - state
+      properties:
+        case_id:
+          type: string
+          nullable: true
+          pattern: '^ERR-case-[0-9a-f]{24}$'
+        fingerprint:
+          type: string
+          pattern: '^ek2:[0-9a-f]{64}$'
+        project_id: { type: string }
+        operation: { type: string }
+        component: { type: string }
+        error_type: { type: string }
+        occurrence_count: { type: integer, minimum: 1 }
+        state:
+          type: string
+          enum: [observed, diagnosed, mitigated, resolved, regressed, superseded]
+        graph_projection_state:
+          type: string
+          enum: [not_promoted, pending, projected, partial]
+
+    ActivityDoneRequest:
+      type: object
+      required: [agent_id, ticket_id, detail]
+      properties:
+        agent_id: { type: string }
+        ticket_id: { type: string }
+        detail: { type: string }
+        affected_nodes:
+          type: array
+          items: { type: string }
+        meta: { type: object }
+        resolved_errors:
+          type: array
+          items:
+            type: string
+            pattern: '^ERR-case-[0-9a-f]{24}$'
+        root_cause: { type: string }
+        solution_summary: { type: string }
+        verification_evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerificationEvidence'
+        fixed_in: { type: string }
+
+    RoutingResponseSlim:
+      type: object
+      required: [mode, nodes, scores, total_nodes, total_edges, confidence]
+      properties:
+        mode: { type: string }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/NodeSlim' }
+        scores:
+          type: object
+          additionalProperties: { type: number }
+        total_nodes: { type: integer }
+        total_edges: { type: integer }
+        budget_truncated: { type: boolean }
+        confidence: { type: string, enum: [high, medium, low] }
+        confidence_meta: { type: object }
+        fallback_hint: { type: string, nullable: true }
+
+    RoutingResponseFull:
+      type: object
+      properties:
+        activated_nodes:
+          type: array
+          items: { $ref: '#/components/schemas/Node' }
+        relevant_edges:
+          type: array
+          items: { $ref: '#/components/schemas/Edge' }
+        scores: { type: object }
+        total_nodes: { type: integer }
+        total_edges: { type: integer }
+
+    NodeSlim:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        cluster: { type: string }
+        type: { type: string }
+        summary: { type: string }
+        current_state: { type: string }
+        key_files:
+          type: array
+          items: { type: string }
+
+    Node:
+      $ref: './schemas/node.schema.json'
+
+    Edge:
+      $ref: './schemas/edge.schema.json'
+
+    ActivityEntry:
+      $ref: './schemas/activity.schema.json'

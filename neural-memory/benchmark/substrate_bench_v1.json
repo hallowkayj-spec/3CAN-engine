@@ -1,0 +1,70 @@
+{
+  "name": "3CAN Substrate Benchmark v1 — Synthetic Public Fixture",
+  "version": "1.1-synthetic-public",
+  "created_at": "2026-07-29",
+  "fixture_scope": "synthetic_public",
+  "policy_ref": "docs/specs/3CAN_ENGINE/BENCHMARK_POLICY.md",
+  "release_evidence": {
+    "status": "synthetic_public_fixture",
+    "reproducible_from_release_package": true,
+    "requires_excluded_runtime_graph": false,
+    "raw_result_receipt_included": true,
+    "result_receipt": "docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json",
+    "historical_pilot_score_reproducible": false
+  },
+  "graph_binding": {
+    "schema_version": "3can.benchmark-graph-binding/v1",
+    "kind": "release_seed_graph",
+    "seed_source": "neural-memory/backend/seed_nodes.py",
+    "required_node_ids": [
+      "DEC-3can-project-graph-isolation",
+      "DOC-3can-quickstart",
+      "ERR-3can-loop-detection",
+      "ERR-3can-no-secret-values",
+      "INTF-3can-admin-health",
+      "INTF-3can-route-api",
+      "INTF-3can-writeback-api",
+      "PROC-3can-project-bootstrap",
+      "PROC-3can-research-gate",
+      "PROC-3can-session-bootstrap",
+      "PROC-3can-standing-orders",
+      "SKILL-3can-context-router"
+    ],
+    "acceptance": "all_required_nodes_present"
+  },
+  "test_protocol": {
+    "endpoint": "POST http://localhost:9700/api/route",
+    "setup": "Run seed_nodes.py into an empty project-local graph before executing the suite.",
+    "defaults": {
+      "max_nodes": 5,
+      "mode": "slim",
+      "agent_id": "substrate-bench",
+      "confirm_low_confidence": true,
+      "allow_degraded": true
+    },
+    "metrics": [
+      "top1_accuracy",
+      "top3_recall",
+      "latency_ms",
+      "confidence_distribution",
+      "err_proactive_rate_at_top3"
+    ]
+  },
+  "caveats": [
+    "All cases reference only the generic nodes created by seed_nodes.py.",
+    "This public fixture does not reproduce the historical private-graph pilot score.",
+    "Results are environment and graph-state dependent; retain a content-addressed result receipt for any release claim."
+  ],
+  "cases": [
+    {"id":"sbench-d1-01","dimension":"cross-session-decision","question":"Which decision requires an isolated graph directory and port for each project?","expected_top1":"DEC-3can-project-graph-isolation","expected_top3":["DEC-3can-project-graph-isolation","PROC-3can-project-bootstrap"],"notes":"Generic project-isolation decision."},
+    {"id":"sbench-d1-02","dimension":"cross-session-decision","question":"How should an agent start a serious session and verify the graph?","expected_top1":"PROC-3can-session-bootstrap","expected_top3":["PROC-3can-session-bootstrap","INTF-3can-admin-health"],"notes":"Generic session bootstrap process."},
+    {"id":"sbench-d2-01","dimension":"intf-precision","question":"What API returns task-specific graph nodes?","expected_top1":"INTF-3can-route-api","expected_top3":["INTF-3can-route-api","SKILL-3can-context-router"],"notes":"Generic route interface."},
+    {"id":"sbench-d2-02","dimension":"intf-precision","question":"Which API records durable decisions, errors, and handoffs?","expected_top1":"INTF-3can-writeback-api","expected_top3":["INTF-3can-writeback-api","PROC-3can-standing-orders"],"notes":"Generic writeback interface."},
+    {"id":"sbench-d3-01","dimension":"err-proactive","question":"Error: a raw password or token was stored in the graph. What rule applies?","expected_top1":"ERR-3can-no-secret-values","expected_top3":["ERR-3can-no-secret-values"],"notes":"Explicit error intent is required for error knowledge."},
+    {"id":"sbench-d3-02","dimension":"err-proactive","question":"Error: the same command failed repeatedly. When should retries stop?","expected_top1":"ERR-3can-loop-detection","expected_top3":["ERR-3can-loop-detection"],"notes":"Generic loop-detection error case."},
+    {"id":"sbench-d4-01","dimension":"rule-precision","question":"What preflight discipline applies before edits and high-risk actions?","expected_top1":"PROC-3can-standing-orders","expected_top3":["PROC-3can-standing-orders","PROC-3can-session-bootstrap"],"notes":"Generic standing-order rule."},
+    {"id":"sbench-d4-02","dimension":"rule-precision","question":"When must external research use official sources and a source ledger?","expected_top1":"PROC-3can-research-gate","expected_top3":["PROC-3can-research-gate","PROC-3can-standing-orders"],"notes":"Generic research rule."},
+    {"id":"sbench-d5-01","dimension":"module-identity","question":"Which process seeds a target repository after a reviewed dry run?","expected_top1":"PROC-3can-project-bootstrap","expected_top3":["PROC-3can-project-bootstrap","DOC-3can-quickstart"],"notes":"Generic project bootstrap module."},
+    {"id":"sbench-d6-01","dimension":"fresh-graph-health","question":"How should a fresh small graph choose and verify its node threshold?","expected_top1":"INTF-3can-admin-health","expected_top3":["INTF-3can-admin-health","DOC-3can-quickstart","DEC-3can-project-graph-isolation"],"notes":"Fresh graphs use project-specific thresholds."}
+  ]
+}
