@@ -29,8 +29,9 @@ probe is evidence to inspect, not permission to restart services.
 For read-only orientation, call route directly:
 
 ```powershell
+$agentId = 'codex-main-W1-20260810' # replace for every session/workorder
 scripts\codex-3can.cmd route `
-  -AgentId codex-main `
+  -AgentId $agentId `
   -Task "current task" `
   -BaseUrl $env:THREECAN_BASE_URL
 ```
@@ -40,6 +41,11 @@ mutation. Retrieve full node content only for selected results. Treat typed
 `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, and readiness reason codes as real
 outcomes; do not collapse them into one `healthy` boolean.
 
+Every non-diagnostic wrapper command requires an explicit, session- or
+workorder-specific `AgentId`; the generic `codex-main` id is rejected. Wrapper
+ticket state is private to that AgentId and the current physical Git worktree.
+The shared 3CAN graph remains the durable collaboration surface.
+
 ## Optional Guarded-Write Workflow
 
 Use `prepare` and the exact returned ticket ID only when this project has a
@@ -48,14 +54,18 @@ pass that ID to `done`. Tickets are authorization/evidence receipts, not
 worktree locks and not a universal prerequisite for edits.
 
 `compact` remains available for a durable handoff before archive or context
-compaction. Store decisions, verified outcomes, and source locations; do not
-store raw chain-of-thought, credentials, cookies, or private logs.
+compaction. Pass files explicitly, or pass a live ticket from the same AgentId
+and worktree. It never imports files from implicit or expired wrapper state.
+Store decisions, verified outcomes, and source locations; do not store raw
+chain-of-thought, credentials, cookies, or private logs.
 
 ## Concurrency
 
 - Treat one physical Git worktree as one writer.
 - Parallel writers need distinct worktrees, branches, AgentIds, WorkorderIds,
   and non-overlapping file allowlists.
+- `GET /api/agents` is a heartbeat-TTL view of registrations, not a process
+  inventory. Old registrations project as `offline` without being deleted.
 - Use the repository's external worktree lease as write authority. Agent cards,
   tickets, and PIDs do not prove ownership.
 - Give Docker lanes unique Compose project names, ports, image tags, and

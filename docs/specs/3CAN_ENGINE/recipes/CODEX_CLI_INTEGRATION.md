@@ -21,8 +21,9 @@ If the host project ships the Codex helper scripts, prefer a single bootstrap
 entrypoint instead of manually remembering each HTTP call:
 
 ```powershell
+$agentId = "codex-main-W1-20260810" # replace for every session/workorder
 scripts\codex-3can.cmd bootstrap `
-  -AgentId codex-main `
+  -AgentId $agentId `
   -Role frontend `
   -Task "current task"
 ```
@@ -39,7 +40,7 @@ Before mutating files, use:
 
 ```powershell
 $prepareResult = scripts\codex-3can.cmd prepare `
-  -AgentId codex-main `
+  -AgentId $agentId `
   -TaskDescription "edit focused area" `
   -TargetFiles path/to/file `
   -ToolName apply_patch `
@@ -49,10 +50,12 @@ if (-not $ticketId) { throw "prepare did not return ticket_id" }
 ```
 
 After the mutation, use
-`scripts\codex-3can.cmd done -AgentId codex-main -TicketId $ticketId -Detail "what changed and why"`.
+`scripts\codex-3can.cmd done -AgentId $agentId -TicketId $ticketId -Detail "what changed and why"`.
 Always pass the exact ID returned by that operation's `prepare`; never infer it
-from shared wrapper state. Before compacting, use
-`scripts\codex-3can.cmd compact ...`.
+from shared wrapper state. Wrapper state is isolated by AgentId and physical
+Git worktree and expires after at most 900 seconds for implicit selection.
+Before compacting, pass files explicitly, or pass a still-live ticket from the
+same worktree; compact never imports files from implicit state.
 
 ### Step 1. Agent checkin
 
@@ -150,8 +153,11 @@ Codex 作 **前端 / schema 对接** 场景:
 - 每次 route 都应带 `agent_id: codex-cli-main`
 
 **多 Codex session 冲突**
-- 用不同 agent_id 前缀: `codex-cli-backend`, `codex-cli-frontend`, `codex-cli-test`
-- `GET /api/agents` 查当前活跃 agents
+- 每个 session/workorder 使用唯一 agent_id，例如
+  `codex-cli-backend-W1`, `codex-cli-frontend-W2`, `codex-cli-test-W3`；通用
+  `codex-main` 会被 wrapper 拒绝
+- `GET /api/agents` 返回 heartbeat TTL 投影后的登记状态，不是进程清单；
+  过期登记显示 `offline`
 - `POST /api/handoff/create` 在 agents 间传任务状态
 
 ## 跨 agent 协作 (Claude Code + Codex + Gemini)

@@ -3,7 +3,7 @@ param(
     [ValidateSet('doctor', 'start', 'before-edit', 'prepare-mutate', 'before-mutate', 'after-edit', 'before-compact', 'check-ticket', 'show-state', 'clear-state')]
     [string]$Command,
 
-    [string]$AgentId = 'codex-main',
+    [string]$AgentId,
     [string]$Role = 'frontend',
     [string]$Task = 'codex session',
     [string]$TaskDescription,
@@ -45,11 +45,57 @@ $env:PYTHONUTF8 = '1'
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Helper = Join-Path $ProjectRoot 'scripts\3can_codex.py'
+
+if ($Command -ne 'doctor') {
+    if ([string]::IsNullOrWhiteSpace($AgentId)) {
+        throw "$Command requires an explicit unique -AgentId."
+    }
+    $AgentId = $AgentId.Trim()
+    if ([string]::Equals($AgentId, 'codex-main', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Generic AgentId 'codex-main' is not allowed. Use a session- or workorder-specific id such as 'codex-main-<session-or-workorder>'."
+    }
+}
+
+function Get-3CanSha256Text {
+    param([string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+        return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Resolve-3CanWorktreeRoot {
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $gitRoot = & git -C $ProjectRoot rev-parse --show-toplevel 2>$null
+        if ($LASTEXITCODE -eq 0 -and $gitRoot) {
+            return [System.IO.Path]::GetFullPath([string]($gitRoot | Select-Object -First 1))
+        }
+    }
+    return [System.IO.Path]::GetFullPath($ProjectRoot)
+}
+
+$WorktreeRoot = Resolve-3CanWorktreeRoot
+$NormalizedWorktreeRoot = $WorktreeRoot.Replace('\', '/').TrimEnd('/').ToLowerInvariant()
+$WorktreeRootSha256 = Get-3CanSha256Text $NormalizedWorktreeRoot
+$WorkspaceKey = $WorktreeRootSha256.Substring(0, 16)
+$AgentStateKey = if ($AgentId) {
+    $safePrefix = [regex]::Replace($AgentId.ToLowerInvariant(), '[^a-z0-9._-]', '_')
+    if ($safePrefix.Length -gt 48) {
+        $safePrefix = $safePrefix.Substring(0, 48)
+    }
+    "{0}-{1}" -f $safePrefix, (Get-3CanSha256Text $AgentId).Substring(0, 12)
+} else {
+    'agentless'
+}
 $StateDir = Join-Path $ProjectRoot 'test-results\3can'
-$StatePath = Join-Path $StateDir 'codex_wrapper_state.json'
-$StateIndexPath = Join-Path $StateDir 'codex_wrapper_state_index.json'
-$ScopedStateDir = Join-Path $StateDir 'codex_wrapper_states'
+$AgentWorkspaceStateDir = Join-Path $StateDir ("codex_wrapper_states\{0}\{1}" -f $AgentStateKey, $WorkspaceKey)
+$StateIndexPath = Join-Path $AgentWorkspaceStateDir 'index.json'
+$ScopedStateDir = Join-Path $AgentWorkspaceStateDir 'scopes'
 $ScopedStateIndexLimit = 80
+$MaxInheritedStateAgeSec = 900
 
 function Resolve-3CanEngineRoot {
     if ($EngineRoot) {
@@ -192,6 +238,7 @@ function Get-3CanScopeKey {
     )
     $material = [ordered]@{
         agent_id = $CurrentAgentId
+        workspace_key = $WorkspaceKey
         base_url = $CurrentBaseUrl
         task_tokens = @(Get-3CanScopeTokens $CurrentTaskDescription | Sort-Object | Select-Object -First 16)
         target_files = @($CurrentTargetFiles | ForEach-Object { Normalize-3CanStatePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
@@ -206,6 +253,25 @@ function Get-3CanScopeKey {
         return $hex.Substring(0, 16)
     } finally {
         $sha.Dispose()
+    }
+}
+
+function Test-3CanStateFresh {
+    param([object]$State)
+    if (-not $State -or -not $State.issued_at) {
+        return $false
+    }
+    try {
+        $issuedAt = [DateTimeOffset]::Parse([string]$State.issued_at).ToUniversalTime()
+        $ticketTtlSec = [int]$State.ttl_sec
+        if ($ticketTtlSec -le 0) {
+            return $false
+        }
+        $effectiveTtlSec = [Math]::Min($ticketTtlSec, $MaxInheritedStateAgeSec)
+        $ageSec = ([DateTimeOffset]::UtcNow - $issuedAt).TotalSeconds
+        return $ageSec -ge -60 -and $ageSec -le $effectiveTtlSec
+    } catch {
+        return $false
     }
 }
 
@@ -227,9 +293,9 @@ function Load-StateIndex {
 
 function Save-StateIndex {
     param([object]$Index)
-    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $AgentWorkspaceStateDir | Out-Null
     $json = $Index | ConvertTo-Json -Depth 8
-    $tmpPath = Join-Path $StateDir ("codex_wrapper_state_index.{0}.{1}.tmp" -f $PID, ([guid]::NewGuid().ToString('N')))
+    $tmpPath = Join-Path $AgentWorkspaceStateDir ("index.{0}.{1}.tmp" -f $PID, ([guid]::NewGuid().ToString('N')))
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($tmpPath, $json + [Environment]::NewLine, $utf8NoBom)
     Move-Item -LiteralPath $tmpPath -Destination $StateIndexPath -Force
@@ -241,15 +307,25 @@ function Get-StateMatchScore {
         [string]$CurrentAgentId,
         [string]$CurrentBaseUrl,
         [string]$ExpectedScopeText,
-        [string[]]$ExpectedTargetFiles = @()
+        [string[]]$ExpectedTargetFiles = @(),
+        [string]$ExpectedTicketId
     )
     if ($State.agent_id -and $State.agent_id -ne $CurrentAgentId) {
+        return -1
+    }
+    if (-not $State.workspace_key -or $State.workspace_key -ne $WorkspaceKey) {
         return -1
     }
     if ($State.base_url -and $State.base_url -ne $CurrentBaseUrl) {
         return -1
     }
     $score = 0
+    if ($ExpectedTicketId) {
+        if ($State.ticket_id -ne $ExpectedTicketId) {
+            return -1
+        }
+        $score += 1000
+    }
     $expectedPaths = @($ExpectedTargetFiles | ForEach-Object { Normalize-3CanStatePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
     $statePaths = @($State.target_files | ForEach-Object { Normalize-3CanStatePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
     if ($expectedPaths.Count -gt 0) {
@@ -275,7 +351,7 @@ function Get-StateMatchScore {
         $overlapTokens = @($expectedTokens | Where-Object { $stateTokens -contains $_ })
         if ($overlapTokens.Count -gt 0) {
             $score += [Math]::Min($overlapTokens.Count, 20)
-        } elseif ($expectedPaths.Count -eq 0) {
+        } elseif ($expectedPaths.Count -eq 0 -and -not $ExpectedTicketId) {
             return -1
         }
     }
@@ -296,23 +372,13 @@ function Save-State {
             -CurrentScopeKeywords $State.scope_keywords
         $State['scope_key'] = $scopeKey
     }
-    $scopedPath = Join-Path $ScopedStateDir ("codex_wrapper_state.{0}.{1}.json" -f (Normalize-3CanStatePath $State.agent_id).Replace('/', '_'), $scopeKey)
+    $scopedPath = Join-Path $ScopedStateDir ("$scopeKey.json")
     $State['state_path'] = $scopedPath
     $json = $State | ConvertTo-Json -Depth 6
-    $scopedTmpPath = Join-Path $ScopedStateDir ("codex_wrapper_state.{0}.{1}.tmp" -f $PID, ([guid]::NewGuid().ToString('N')))
+    $scopedTmpPath = Join-Path $ScopedStateDir ("{0}.{1}.{2}.tmp" -f $scopeKey, $PID, ([guid]::NewGuid().ToString('N')))
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($scopedTmpPath, $json + [Environment]::NewLine, $utf8NoBom)
     Move-Item -LiteralPath $scopedTmpPath -Destination $scopedPath -Force
-
-    $legacyState = [ordered]@{}
-    foreach ($key in $State.Keys) {
-        $legacyState[$key] = $State[$key]
-    }
-    $legacyState['scoped_state_path'] = $scopedPath
-    $legacyJson = $legacyState | ConvertTo-Json -Depth 6
-    $tmpPath = Join-Path $StateDir ("codex_wrapper_state.{0}.{1}.tmp" -f $PID, ([guid]::NewGuid().ToString('N')))
-    [System.IO.File]::WriteAllText($tmpPath, $legacyJson + [Environment]::NewLine, $utf8NoBom)
-    Move-Item -LiteralPath $tmpPath -Destination $StatePath -Force
 
     $index = Load-StateIndex
     $entries = @()
@@ -326,6 +392,7 @@ function Save-State {
             scope_key = $scopeKey
             state_path = $scopedPath
             agent_id = $State.agent_id
+            workspace_key = $State.workspace_key
             base_url = $State.base_url
             task_description = $State.task_description
             target_files = $State.target_files
@@ -344,7 +411,8 @@ function Load-State {
         [string]$CurrentBaseUrl,
         [string]$ExpectedScopeText,
         [string[]]$ExpectedTargetFiles = @(),
-        [bool]$AllowLegacyFallback = $true
+        [string]$ExpectedTicketId,
+        [bool]$AllowExpiredExactTicket = $false
     )
     $candidates = @()
     $index = Load-StateIndex
@@ -359,36 +427,31 @@ function Load-State {
         } catch {
             continue
         }
+        $stateFresh = Test-3CanStateFresh $state
+        $expiredExactTicket = (
+            $AllowExpiredExactTicket -and
+            $ExpectedTicketId -and
+            $state.ticket_id -eq $ExpectedTicketId
+        )
+        if (-not $stateFresh -and -not $expiredExactTicket) {
+            continue
+        }
         $score = Get-StateMatchScore `
             -State $state `
             -CurrentAgentId $CurrentAgentId `
             -CurrentBaseUrl $CurrentBaseUrl `
             -ExpectedScopeText $ExpectedScopeText `
-            -ExpectedTargetFiles $ExpectedTargetFiles
+            -ExpectedTargetFiles $ExpectedTargetFiles `
+            -ExpectedTicketId $ExpectedTicketId
         if ($score -ge 0) {
             $state | Add-Member -NotePropertyName selection_kind -NotePropertyValue 'scoped_index' -Force
             $state | Add-Member -NotePropertyName selection_score -NotePropertyValue $score -Force
+            $state | Add-Member -NotePropertyName state_fresh -NotePropertyValue $stateFresh -Force
             $candidates += $state
         }
     }
     if ($candidates.Count -gt 0) {
         return $candidates | Sort-Object -Property @{Expression='selection_score'; Descending=$true}, @{Expression='issued_at'; Descending=$true} | Select-Object -First 1
-    }
-    if (-not $AllowLegacyFallback) {
-        return $null
-    }
-    if (($ExpectedScopeText -and $ExpectedScopeText.Trim()) -or ($ExpectedTargetFiles -and $ExpectedTargetFiles.Count -gt 0)) {
-        return $null
-    }
-    if (Test-Path $StatePath) {
-        try {
-            $stateText = [System.IO.File]::ReadAllText($StatePath, [System.Text.Encoding]::UTF8)
-            $state = $stateText | ConvertFrom-Json
-            $state | Add-Member -NotePropertyName selection_kind -NotePropertyValue 'legacy_latest' -Force
-            return $state
-        } catch {
-            return $null
-        }
     }
     return $null
 }
@@ -402,9 +465,6 @@ function Clear-TicketState {
         $index = Load-StateIndex
         $index.entries = @($index.entries | Where-Object { $_.scope_key -ne $State.scope_key })
         Save-StateIndex $index
-    }
-    if (Test-Path $StatePath) {
-        Remove-Item -Path $StatePath -Force
     }
     Remove-Item Env:\THREECAN_TICKET_ID -ErrorAction SilentlyContinue
 }
@@ -442,6 +502,8 @@ function Issue-RouteTicket {
     $result = Invoke-HelperJson $args
     $state = [ordered]@{
         agent_id = $CurrentAgentId
+        workspace_key = $WorkspaceKey
+        worktree_root_sha256 = $WorktreeRootSha256
         ticket_id = $result.ticket_id
         task_description = $CurrentTaskDescription
         target_files = $CurrentTargetFiles
@@ -466,14 +528,18 @@ function Resolve-TicketContext {
         [string]$ExpectedScopeText,
         [string[]]$ExpectedTargetFiles = @(),
         [switch]$RequireLiveTicket,
-        [switch]$AllowInvalidCachedTicket
+        [switch]$AllowInvalidCachedTicket,
+        [switch]$RequireWorkspaceBinding,
+        [switch]$AllowExpiredExactTicketState
     )
 
     $state = Load-State `
         -CurrentAgentId $CurrentAgentId `
         -CurrentBaseUrl $CurrentBaseUrl `
         -ExpectedScopeText $ExpectedScopeText `
-        -ExpectedTargetFiles $ExpectedTargetFiles
+        -ExpectedTargetFiles $ExpectedTargetFiles `
+        -ExpectedTicketId $ExplicitTicketId `
+        -AllowExpiredExactTicket $AllowExpiredExactTicketState
     $resolvedTicketId = $ExplicitTicketId
     $resolvedFromCache = $false
     if (-not $resolvedTicketId -and $state) {
@@ -499,6 +565,17 @@ function Resolve-TicketContext {
             ticket_id = $null
             state = $state
             status = $null
+        }
+    }
+    if ($RequireWorkspaceBinding) {
+        if (-not $state) {
+            throw "Ticket '$resolvedTicketId' has no state bound to agent '$CurrentAgentId' in worktree '$WorkspaceKey'."
+        }
+        if ($state.workspace_key -ne $WorkspaceKey) {
+            throw "Stored wrapper state belongs to worktree '$($state.workspace_key)', not '$WorkspaceKey'."
+        }
+        if ($state.ticket_id -ne $resolvedTicketId) {
+            throw "Stored wrapper state is bound to ticket '$($state.ticket_id)', not '$resolvedTicketId'."
         }
     }
 
@@ -574,7 +651,7 @@ switch ($Command) {
             throw 'before-edit requires at least one -TargetFiles entry.'
         }
         $issued = Issue-RouteTicket -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -CurrentTaskDescription $TaskDescription -CurrentTargetFiles $TargetFiles -CurrentScopeKeywords $ScopeKeywords -CurrentTaskType $TaskType
-        $issued.ticket | Add-Member -NotePropertyName wrapper_state_path -NotePropertyValue $StatePath
+        $issued.ticket | Add-Member -NotePropertyName wrapper_state_path -NotePropertyValue $issued.state.state_path
         $issued.ticket | Add-Member -NotePropertyName wrapper_scoped_state_path -NotePropertyValue $issued.state.state_path
         $issued.ticket | ConvertTo-Json -Depth 6
     }
@@ -605,7 +682,7 @@ switch ($Command) {
         }
         $memoryPreflight = Invoke-HelperJson $preflightArgs
         $issued = Issue-RouteTicket -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -CurrentTaskDescription $TaskDescription -CurrentTargetFiles $TargetFiles -CurrentScopeKeywords $ScopeKeywords -CurrentTaskType $TaskType
-        $ticketContext = Resolve-TicketContext -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -ExplicitTicketId $issued.ticket.ticket_id -RequireLiveTicket
+        $ticketContext = Resolve-TicketContext -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -ExplicitTicketId $issued.ticket.ticket_id -RequireLiveTicket -RequireWorkspaceBinding
         $args = @(
             '--base-url', $BaseUrl,
             'ticket-consume',
@@ -620,7 +697,7 @@ switch ($Command) {
             ticket_status = $ticketContext.status
             memory_preflight = $memoryPreflight
             consume = $consumeResult
-            wrapper_state_path = $StatePath
+            wrapper_state_path = $issued.state.state_path
             wrapper_scoped_state_path = $issued.state.state_path
             wrapper_state_index_path = $StateIndexPath
         } | ConvertTo-Json -Depth 8
@@ -630,7 +707,7 @@ switch ($Command) {
         if (-not $ToolInputSummary) {
             throw 'before-mutate requires -ToolInputSummary.'
         }
-        $ticketContext = Resolve-TicketContext -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -ExplicitTicketId $TicketId -RequireLiveTicket
+        $ticketContext = Resolve-TicketContext -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -ExplicitTicketId $TicketId -RequireLiveTicket -RequireWorkspaceBinding
         $args = @(
             '--base-url', $BaseUrl,
             'ticket-consume',
@@ -644,7 +721,7 @@ switch ($Command) {
             $result | Add-Member -NotePropertyName ticket_status -NotePropertyValue $ticketContext.status
         }
         if ($ticketContext.state) {
-            $result | Add-Member -NotePropertyName wrapper_state_path -NotePropertyValue $StatePath
+            $result | Add-Member -NotePropertyName wrapper_state_path -NotePropertyValue $ticketContext.state.state_path
             $result | Add-Member -NotePropertyName wrapper_state_selection -NotePropertyValue $ticketContext.state.selection_kind
         }
         $result | ConvertTo-Json -Depth 8
@@ -675,7 +752,9 @@ switch ($Command) {
                 -CurrentBaseUrl $BaseUrl `
                 -ExplicitTicketId $TicketId `
                 -ExpectedScopeText $autoScopeText `
-                -ExpectedTargetFiles $autoTargetFiles
+                -ExpectedTargetFiles $autoTargetFiles `
+                -RequireWorkspaceBinding `
+                -AllowExpiredExactTicketState
         } else {
             $ticketContext = Resolve-TicketContext `
                 -CurrentAgentId $AgentId `
@@ -684,6 +763,7 @@ switch ($Command) {
                 -ExpectedScopeText $autoScopeText `
                 -ExpectedTargetFiles $autoTargetFiles `
                 -RequireLiveTicket `
+                -RequireWorkspaceBinding `
                 -AllowInvalidCachedTicket
         }
         $resolvedTicketId = $ticketContext.ticket_id
@@ -752,7 +832,6 @@ switch ($Command) {
         if (-not $TaskSummary) {
             throw 'before-compact requires -TaskSummary.'
         }
-        $state = $null
         $ticketContext = $null
         $compactFiles = @()
         foreach ($item in $Files) {
@@ -765,36 +844,15 @@ switch ($Command) {
                 $compactFiles += $item
             }
         }
-        if ($TargetFiles -and $TargetFiles.Count -gt 0) {
-            $state = Load-State `
-                -CurrentAgentId $AgentId `
-                -CurrentBaseUrl $BaseUrl `
-                -ExpectedScopeText $TaskSummary `
-                -ExpectedTargetFiles $TargetFiles
-            if ($state -and $state.target_files) {
-                foreach ($item in $state.target_files) {
-                    if ($item -and ($compactFiles -notcontains $item)) {
-                        $compactFiles += $item
-                    }
-                }
-            }
+        if ($TicketId) {
             $ticketContext = Resolve-TicketContext `
                 -CurrentAgentId $AgentId `
                 -CurrentBaseUrl $BaseUrl `
                 -ExplicitTicketId $TicketId `
                 -ExpectedScopeText $TaskSummary `
-                -ExpectedTargetFiles $TargetFiles
-            if ($ticketContext.status -and $false -eq $ticketContext.status.valid) {
-                $ticketContext = $null
-            }
-        } elseif ($TicketId) {
-            $ticketContext = Resolve-TicketContext `
-                -CurrentAgentId $AgentId `
-                -CurrentBaseUrl $BaseUrl `
-                -ExplicitTicketId $TicketId `
-                -ExpectedScopeText $TaskSummary `
-                -RequireLiveTicket
-            $state = $ticketContext.state
+                -ExpectedTargetFiles $TargetFiles `
+                -RequireLiveTicket `
+                -RequireWorkspaceBinding
             $ticketScope = $ticketContext.status.ticket.scope
             if ($ticketScope -and $ticketScope.target_files) {
                 foreach ($item in $ticketScope.target_files) {
@@ -828,25 +886,21 @@ switch ($Command) {
         $result = Invoke-HelperJson $args
         if ($ticketContext -and $ticketContext.ticket_id) {
             $result | Add-Member -NotePropertyName ticket_id_context -NotePropertyValue $ticketContext.ticket_id
-        } elseif ($state -and $state.ticket_id) {
-            $result | Add-Member -NotePropertyName ticket_id_context -NotePropertyValue $state.ticket_id
         }
         if ($ticketContext -and $ticketContext.status) {
             $result | Add-Member -NotePropertyName ticket_status -NotePropertyValue $ticketContext.status
         }
         $result | Add-Member -NotePropertyName compact_scope_files -NotePropertyValue $compactFiles
-        if (-not $TargetFiles -and -not $TicketId) {
+        if (-not $TicketId) {
             $result | Add-Member -NotePropertyName compact_scope_selection -NotePropertyValue 'explicit_files_only'
-        } elseif ($state -and $state.selection_kind) {
-            $result | Add-Member -NotePropertyName compact_scope_selection -NotePropertyValue $state.selection_kind
         } else {
-            $result | Add-Member -NotePropertyName compact_scope_selection -NotePropertyValue 'explicit_scope'
+            $result | Add-Member -NotePropertyName compact_scope_selection -NotePropertyValue 'explicit_live_ticket'
         }
         $result | ConvertTo-Json -Depth 8
     }
 
     'check-ticket' {
-        $ticketContext = Resolve-TicketContext -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -ExplicitTicketId $TicketId -RequireLiveTicket
+        $ticketContext = Resolve-TicketContext -CurrentAgentId $AgentId -CurrentBaseUrl $BaseUrl -ExplicitTicketId $TicketId -RequireLiveTicket -RequireWorkspaceBinding
         [ordered]@{
             ticket_id = $ticketContext.ticket_id
             state = $ticketContext.state
@@ -868,14 +922,8 @@ switch ($Command) {
     }
 
     'clear-state' {
-        if (Test-Path $StatePath) {
-            Remove-Item $StatePath -Force
-        }
-        if (Test-Path $StateIndexPath) {
-            Remove-Item $StateIndexPath -Force
-        }
-        if (Test-Path $ScopedStateDir) {
-            Remove-Item -LiteralPath $ScopedStateDir -Recurse -Force
+        if (Test-Path $AgentWorkspaceStateDir) {
+            Remove-Item -LiteralPath $AgentWorkspaceStateDir -Recurse -Force
         }
         Remove-Item Env:THREECAN_TICKET_ID -ErrorAction SilentlyContinue
         Write-Output '{"cleared":true}'

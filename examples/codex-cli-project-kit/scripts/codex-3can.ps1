@@ -18,7 +18,7 @@ param(
     })]
     [string]$Action,
 
-    [string]$AgentId = 'codex-main',
+    [string]$AgentId,
     [string]$Role = 'frontend',
     [string]$Task = 'codex session',
     [string]$TaskDescription,
@@ -72,6 +72,17 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8NoBom
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
+
+$AgentlessActions = @('doctor', 'pr-check', 'pr-create')
+if ($AgentlessActions -notcontains $Action) {
+    if ([string]::IsNullOrWhiteSpace($AgentId)) {
+        throw "$Action requires an explicit unique -AgentId."
+    }
+    $AgentId = $AgentId.Trim()
+    if ([string]::Equals($AgentId, 'codex-main', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Generic AgentId 'codex-main' is not allowed. Use a session- or workorder-specific id such as 'codex-main-<session-or-workorder>'."
+    }
+}
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Helper = Join-Path $ProjectRoot 'scripts\3can_codex.py'
