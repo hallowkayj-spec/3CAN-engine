@@ -27,16 +27,16 @@ The immutable `3can.runtime-ticket-fix-cutover/v1` receipt for run
 cutover and substantiates the generation-15 / `cb532da` production boundary.
 [`PRODUCTION_SOURCE_BOUNDARY_20260810.md`](PRODUCTION_SOURCE_BOUNDARY_20260810.md)
 remains the historical boundary showing that later `380804c` changes were
-candidate-only. This pointer adds the newer `f712563` candidate without
+candidate-only. This pointer adds the newer `8fa7242` candidate without
 retroactively claiming either candidate was deployed.
 
 ## New candidate
 
-- engine source commit: `f712563743ab39d7891a1b3ff99d70c0b5ad89af`
+- engine source commit: `8fa7242edf97b495e02d44ed79f8dc7c22b595e7`
 - parent reviewed source: `380804c040e8600288c68fe1878499f7cefe9609`
 - candidate deployed: `false`
 - candidate `backend/app.py`: `3570ae548ecc1e54bdcdba38366f860f5b4e94ef2542b5c0831d5cc0dc0e35e4`
-- candidate `backend/graph_engine.py`: `343b2d81e0ac554ecb2af47ad873e73f6fbca95901676282c1a36e486269298a`
+- candidate `backend/graph_engine.py`: `974849c4d9e0514ce6f1cf8762b4271cf626d7fe772e52d255e5818a3ebb95ed`
 - candidate `backend/models.py`: `66cfb869fc3e1c74ce9556b012d6832881e89549d8e408dd922644b640b4509a`
 
 Candidate validation is summarized in

@@ -3,7 +3,7 @@
 Status: `VERIFIED_CANDIDATE`
 
 This receipt covers candidate engine commit
-`f712563743ab39d7891a1b3ff99d70c0b5ad89af`. It does not claim that a private
+`8fa7242edf97b495e02d44ed79f8dc7c22b595e7`. It does not claim that a private
 production installation has deployed this candidate; see
 [`CURRENT_PRODUCTION.md`](CURRENT_PRODUCTION.md).
 
@@ -55,21 +55,26 @@ The private queries and graph are excluded from the public package. Aggregate
 receipts bind the same copied graph, BGE-M3 revision, engine file hashes, and
 reranker-off profile.
 
-| Suite | Metric | Parent `380804c` | Candidate `f712563` |
+| Suite | Metric | Parent `380804c` | Candidate `8fa7242` |
 | --- | --- | ---: | ---: |
 | original 12 | Hit@1 / Hit@3 / Hit@5 / Hit@10 | .3333 / .5000 / .7500 / .8333 | unchanged |
 | original 12 | MRR | .4591 | .4591 |
-| original 12 | p50 / p95 | 1901.6 / 4162.7 ms | 1673.1 / 3890.6 ms |
+| original 12 | p50 / p95 | 1901.6 / 4162.7 ms | 2490.2 / 7563.5 ms |
 | held-out 12 | Hit@1 / Hit@3 / Hit@5 / Hit@10 | .2500 / .5833 / .9167 / 1.0000 | unchanged |
 | held-out 12 | MRR | .4882 | .4882 |
-| held-out 12 | p50 / p95 | 1994.5 / 5107.6 ms | 1412.2 / 3591.1 ms |
+| held-out 12 | p50 / p95 | 1994.5 / 5107.6 ms | 2283.4 / 6148.5 ms |
 
 Cross-process ranks and expanded-query hashes were identical with
 `PYTHONHASHSEED=0` and `1`. Request-local reuse reduced superseded-set calls
 from `18.04` to `1.83` per route, superseded work from `60.35` to `5.28`
-ms/route, and hot edge-count work from `59.41` to `0.02` ms/route. BGE encoding
-remained the largest cost and varied between sequential processes, so the full
-end-to-end latency difference is an observation, not a universal speed claim.
+ms/route in the first candidate profile and `5.88` ms/route in the final
+profile; current-reality allow checks fell from `33.79` to `0.05` ms/route.
+The final seed-0 process spent `2128.33` ms/route in BGE encoding versus
+`1266.41` ms/route in the parent process, so its end-to-end p50/p95 regressed.
+The final seed-1 process produced the same ranks and expansion hashes with
+original p50/p95 `1485.2/3974.2` ms and held-out `1406.4/3188.9` ms. This wide
+process variance is reported as observed, not attributed to the request-local
+change and not called a universal performance improvement.
 
 ## Review
 
