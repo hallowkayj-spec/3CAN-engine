@@ -76,7 +76,7 @@ Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 
 ```
            ┌────────────────────────────────────────┐
            │                                        │
-           │  任何状态 → active (被 route 命中复活) │
+           │  dormant → active (近期明确使用后复活)   │
            ▼                                        │
   ┌────► active ───30d 未命中───► dormant ───60d───► archived
   │         │                         │                  │
@@ -89,8 +89,12 @@ Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 
 ```
 
 **关键规则**:
-- **永不删除**. archive 只是状态 (v9.3 起可用 archive_manager.py 物理隔离到 `graph/archive/nodes/`, 仍不删)
-- **复活**: dormant / archived 节点被 route 命中且 activation_count>0 且 last_touch ≥ stale_cutoff → 自动转回 active
+- **lifecycle sweep 永不自动删除**. `archived` 是图内真实状态；默认 route 排除，
+  明确历史查询和 `GET /api/nodes/{id}` 仍可读取。manual public DELETE 只适用于
+  unprotected、且不属于 supersession lineage 的节点。
+- **复活**: dormant 节点在带 route correlation 的 exact read 记录
+  `last_accessed_at` 后可由 sweep 恢复；archived 节点必须
+  显式更新 `status=active`，普通读取不会静默把历史重新变成 current。
 - **PROPOSED 审批流**:
   ```
   LLM 生成建议 (kw/edge/skill/short-code)
@@ -101,6 +105,51 @@ Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 
     - 通过 → PUT /api/nodes/{id} status=active + 改 id 去 PROPOSED- 前缀 (or 直接保留)
     - 拒绝 → PUT status=deprecated (不删, 留痕)
   ```
+
+## 3.1 Durable-current authority
+
+`POST /api/writeback` 对 `INTF` / `PROC` / `DEC` / `PRJ` 的
+`current_state`、`description`、`status`、`blockers`、`tech_stack` 使用三类
+来源声明：
+
+- `machine_verifiable`: 必须同时有 `verification_state=verified` 和至少一个
+  `evidence_refs` source pointer；该字段表示调用者声明该证据可独立复核，不表示
+  3CAN 已替调用者完成密码学验证；
+- `user_authoritative`: 必须有 `authorized_by=user`；这是 provenance/audit
+  assertion，不是 cryptographic authentication 或 security boundary；
+- `untrusted_inferred`（也包括缺失声明）: 不得直接修改 durable current。
+
+上述两类 metadata 都是 provenance/audit declaration，不是 credential、RBAC 或
+approval security boundary。`notes` 和 `last_session` 仍可低 ceremony 回写；它们
+不是 current authority。
+
+受保护 family 的公共 `POST /api/nodes` 与 `PUT /api/nodes/{id}` 继续可用，但
+`content.extra` 必须携带完整 project ID、namespace 与同一 `durable_authority`
+回执。公共 DELETE 不允许删除这些 durable-current 节点；状态变更走 authorized
+writeback，替代关系走 `supersedes`。这保留完整 NodeCreate/NodeUpdate 能力，且
+不新增第二套审批协议。
+
+项目已有 identity 时，durable-current writeback 必须携带并匹配 project ID 与
+namespace。合法来源回执记录在既有 `content.extra.durable_authority`，不新建
+审批数据库。writeback 不会把已有 unscoped/global 节点自动占为某个项目。
+通用 `supersedes` 只允许同 semantic family；任一端已有 project identity 时，
+双方必须完整且精确匹配。受保护 family 的 replacement source 还必须 active 并
+带合法 durable authority。`supersedes` 边不能从公共 DELETE 移除，受保护 family
+也不能通过 generic merge 绕过该契约。普通 route 默认排除 superseded target，
+只有明确 history 查询可恢复；supersedes 任一端点也不能通过 generic node DELETE
+抹去 lineage。lifecycle sweep 不会仅因低活跃度衰减尚未 supersede 的受保护 current
+节点。
+
+## 3.2 Serious-milestone recovery
+
+HTTP write success 不等于下一 Agent 可恢复。重要 durable milestone 应显式运行
+`neural-memory/benchmark/milestone_recovery_probe.py`：先绑定 deep readiness
+schema/mode 与 `expected_graph_root_sha256`，再用新的 AgentId 执行现有 skeleton
+route。它只对成功路由的 expected node 做不带 feedback correlation 的精确读取；
+每个 critical/evidence fact 必须以 `node_id` 绑定一个 expected node，不能跨节点
+拼接凑出 PASS。匹配范围只包含节点身份与 durable content 字段；低 ceremony 的
+`notes`、`last_session` 和学习关键词不能构成事实证明。任一缺失返回 `PARTIAL`；
+该工具不引入第二存储或后台任务。
 
 ## 4. R1 查重协议 (创节点前先查)
 
@@ -192,4 +241,5 @@ relations。它的 semantic quality 在有固定 gold 的真实查询基准完�
 | 404 | not_found | node_id / agent_id 不存在 | 先查 stats / 确认 id |
 | 409 | r1_duplicate | 查重拒绝建节点 | 改用 PUT 更新 existing |
 | 422 | quality_warning | strict=true 时节点质量不达标 | 补齐 description / kws |
+| 429 | writeback_rate_limited | 同一 agent/node 在 60 秒内已完成 5 次成功 mutation | 等待窗口；非法请求、同批重复 node 和 no-op 不计数 |
 | 503 | backend_unavailable | proxy 转发失败或 single-writer 切换窗口 | 保留请求上下文并重试；不要假设自动 failover |

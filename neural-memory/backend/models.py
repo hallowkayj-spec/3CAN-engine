@@ -104,8 +104,54 @@ class NodeType(str, Enum):
 class NodeStatus(str, Enum):
     active = "active"
     dormant = "dormant"
+    archived = "archived"
     blocked = "blocked"
     deprecated = "deprecated"
+
+
+class SourceAuthority(str, Enum):
+    machine_verifiable = "machine_verifiable"
+    user_authoritative = "user_authoritative"
+    untrusted_inferred = "untrusted_inferred"
+
+
+class DurableAuthority(BaseModel):
+    """Audit declaration for a durable-current knowledge write.
+
+    `authorized_by=user` and machine verification metadata are assertions
+    recorded for provenance. They are not authentication/signature checks and
+    must not be treated as a security boundary.
+    """
+
+    source_authority: SourceAuthority = SourceAuthority.untrusted_inferred
+    verification_state: str = "unverified"
+    evidence_refs: list[str] = Field(default_factory=list)
+    authorized_by: str = ""
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_evidence_refs(cls, value: list[str]) -> list[str]:
+        if len(value) > 20:
+            raise ValueError("durable_authority_evidence_refs_too_many")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("durable_authority_evidence_ref_invalid")
+            clean = item.strip()
+            if len(clean) > 500:
+                raise ValueError("durable_authority_evidence_ref_too_long")
+            normalized.append(clean)
+        return normalized
+
+    def permits_durable_current(self) -> bool:
+        if self.source_authority == SourceAuthority.user_authoritative:
+            return self.authorized_by.strip().casefold() == "user"
+        if self.source_authority == SourceAuthority.machine_verifiable:
+            return (
+                self.verification_state.strip().casefold() == "verified"
+                and bool(self.evidence_refs)
+            )
+        return False
 
 
 class EdgeType(str, Enum):

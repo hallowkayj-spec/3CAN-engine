@@ -56,7 +56,7 @@
 ### B1. Graphify (safishamsi/graphify)
 - **仓库**: https://github.com/safishamsi/graphify
 - **项目性质**: AI-coding-assistant skill (Claude Code / Cursor / OpenClaw 等平台插件), 把代码库/文档/视频转成 NetworkX 知识图谱
-- **许可**: (README 未明说, 默认 GitHub 公开 = 可参考)
+- **许可**: 未发现明确许可证；默认版权法适用，仅作公开思想研究，不复制代码或受保护表达
 - **借鉴了什么**:
   - (1) `--budget N` token 硬限 CLI 参数的思路
   - (2) Leiden topology-based 聚类不用 embedding 的思路

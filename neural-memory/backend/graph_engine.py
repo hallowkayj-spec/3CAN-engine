@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -33,7 +34,7 @@ from error_knowledge import deterministic_fingerprint, is_error_intent
 from graph_runtime_lock import GraphRuntimeLease, acquire_graph_runtime_lock
 from models import (
     ActivityEntry, AgentInfo, AgentStatus,
-    Edge, EdgeCreate, GraphStats, Node, NodeContent, NodeCreate,
+    DurableAuthority, Edge, EdgeCreate, GraphStats, Node, NodeContent, NodeCreate,
     NodeStatus, NodeUpdate, RoutingRequest, RoutingResponse,
     semantic_id_family, validate_node_identifier,
 )
@@ -62,7 +63,10 @@ _SESSION_WRITEBACK_FIELDS = frozenset(
         "tech_stack",
     }
 )
-
+_DURABLE_CURRENT_FIELDS = frozenset(
+    {"blockers", "current_state", "description", "status", "tech_stack"}
+)
+_AUTHORITY_PROTECTED_FAMILIES = frozenset({"INTF", "PROC", "DEC", "PRJ"})
 
 def _replace_with_windows_retry(source: Path, target: Path) -> None:
     """Retry transient Windows sharing violations, then fail closed."""
@@ -669,6 +673,10 @@ class GraphEngine:
     _ERROR_KNOWLEDGE_INTERNAL_OWNERS = frozenset(
         {"error-ledger", "error-migration"}
     )
+    _DURABLE_CURRENT_INTERNAL_OWNERS = frozenset(
+        {"durable-seed"}
+    )
+    _GRAPH_TRAVERSAL_ANCHOR_LIMIT = 10
     _RERANKER_POOL_LIMIT = 15
     _RERANKER_DEFAULT_CAP_BY_MODE = {
         "skeleton": 8,
@@ -770,9 +778,9 @@ class GraphEngine:
         re.IGNORECASE,
     )
     _HISTORY_ROUTE_TRIGGER = re.compile(
-        r"\bhistory\b|\bhistorical\b|\bprevious(?:ly)?\b|\bformerly\b|\bwhy\b|"
+        r"\bhistory\b|\bhistorical\b|\bprevious(?:ly)?\b|\bformerly\b|"
         r"\bhandoff\b|\bcontinuation\b|\barchaeology\b|"
-        r"历史|以前|过去|曾经|为什么|交接|续接|考古|旧契约|由什么替代",
+        r"历史|以前|过去|曾经|交接|续接|考古|旧契约|由什么替代",
         re.IGNORECASE,
     )
     _DURABLE_EVIDENCE_TRIGGER = re.compile(
@@ -1392,6 +1400,53 @@ class GraphEngine:
                 + ",".join(reserved)
             )
 
+    def _assert_durable_current_mutation_owner(
+        self,
+        *node_ids: str,
+        internal_owner: str | None = None,
+        authority_payload: dict[str, Any] | None = None,
+    ) -> None:
+        protected = [
+            node_id
+            for node_id in node_ids
+            if semantic_id_family(node_id) in _AUTHORITY_PROTECTED_FAMILIES
+        ]
+        if not protected or internal_owner in self._DURABLE_CURRENT_INTERNAL_OWNERS:
+            return
+        payload = authority_payload if isinstance(authority_payload, dict) else {}
+        project_id = str(payload.get("project_id") or "").strip().casefold()
+        project_namespace = str(
+            payload.get("project_namespace") or ""
+        ).strip().casefold()
+        try:
+            authority = DurableAuthority.model_validate(
+                payload.get("durable_authority")
+            )
+        except (TypeError, ValueError) as exc:
+            raise PermissionError(
+                "durable_current_authority_required:" + ",".join(protected)
+            ) from exc
+        if (
+            not authority.permits_durable_current()
+            or not project_id
+            or not project_namespace
+        ):
+            raise PermissionError(
+                "durable_current_authority_required:" + ",".join(protected)
+            )
+        for node_id in protected:
+            existing = self.nodes.get(node_id)
+            if existing is None:
+                continue
+            existing_project, existing_namespace = self._node_project_values(existing)
+            if (
+                (existing_project and existing_project != project_id)
+                or (existing_namespace and existing_namespace != project_namespace)
+            ):
+                raise PermissionError(
+                    "durable_current_project_identity_mismatch:" + node_id
+                )
+
     def _save_node(self, node: Node) -> None:
         conflict = self._casefold_conflict(node.id)
         if conflict is not None:
@@ -1421,6 +1476,11 @@ class GraphEngine:
         self._assert_error_knowledge_mutation_owner(
             node_id,
             internal_owner=internal_owner,
+        )
+        self._assert_durable_current_mutation_owner(
+            node_id,
+            internal_owner=internal_owner,
+            authority_payload=req.content.extra,
         )
         conflict = self._casefold_conflict(node_id)
         if node_id in self.nodes or conflict is not None:
@@ -1467,15 +1527,24 @@ class GraphEngine:
             node_id,
             internal_owner=internal_owner,
         )
+        self._assert_durable_current_mutation_owner(
+            node_id,
+            internal_owner=internal_owner,
+            authority_payload=(req.content.extra if req.content is not None else None),
+        )
         node = self.nodes.get(node_id)
         if not node:
             return None
         self._embedding_cache_state = "dirty"
-        update_data = req.model_dump(exclude_none=True)
+        update_data = req.model_dump(exclude_none=True, exclude_unset=True)
         update_data["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
         for k, v in update_data.items():
             if k == "content" and isinstance(v, dict):
                 existing = node.content.model_dump()
+                if isinstance(v.get("extra"), dict):
+                    merged_extra = dict(existing.get("extra") or {})
+                    merged_extra.update(v["extra"])
+                    v = {**v, "extra": merged_extra}
                 existing.update(v)
                 node.content = NodeContent(**existing)
             else:
@@ -1494,9 +1563,15 @@ class GraphEngine:
             node_id,
             internal_owner=internal_owner,
         )
+        self._assert_durable_current_mutation_owner(
+            node_id,
+            internal_owner=internal_owner,
+        )
         path = self._node_path(node_id)
         if node_id not in self.nodes:
             return False
+        if any(edge.source == node_id or edge.target == node_id for edge in self.edges if self._edge_type_value(edge.type) == "supersedes"):
+            raise PermissionError("supersedes_endpoint_delete_forbidden")
         self._embedding_cache_state = "dirty"
         path.unlink(missing_ok=True)
         del self.nodes[node_id]
@@ -1520,6 +1595,44 @@ class GraphEngine:
     def _edge_key(self, edge: Edge) -> tuple[str, str, str]:
         return (edge.source, edge.target, self._edge_type_value(edge.type))
 
+    def validate_supersession(self, source_id: str, target_id: str) -> None:
+        """Validate a public durable-current replacement before edge creation."""
+
+        source = self.nodes.get(source_id)
+        target = self.nodes.get(target_id)
+        if source is None or target is None:
+            raise ValueError("supersedes_node_not_found")
+        source_family = semantic_id_family(source_id)
+        target_family = semantic_id_family(target_id)
+        if source_family != target_family:
+            raise ValueError("supersedes_semantic_family_mismatch")
+        if source.status != NodeStatus.active:
+            raise ValueError("supersedes_source_must_be_active")
+        source_project, source_namespace = self._node_project_values(source)
+        target_project, target_namespace = self._node_project_values(target)
+        if any((source_project, source_namespace, target_project, target_namespace)):
+            if not all((source_project, source_namespace, target_project, target_namespace)):
+                raise ValueError("supersedes_project_identity_incomplete")
+            if (
+                source_project != target_project
+                or source_namespace != target_namespace
+            ):
+                raise ValueError("supersedes_project_identity_mismatch")
+        if source_family in _AUTHORITY_PROTECTED_FAMILIES:
+            if not source_project or not source_namespace:
+                raise ValueError("supersedes_source_project_identity_required")
+            authority_payload = source.content.extra.get("durable_authority")
+            try:
+                authority = DurableAuthority.model_validate(authority_payload)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("supersedes_source_authority_required") from exc
+            if not authority.permits_durable_current():
+                raise ValueError("supersedes_source_authority_required")
+        if target_id in self._superseded_node_ids():
+            raise ValueError("supersedes_target_already_superseded")
+        if source_id in self._superseded_node_ids():
+            raise ValueError("supersedes_source_already_superseded")
+
     def create_edge(
         self,
         req: EdgeCreate,
@@ -1533,6 +1646,14 @@ class GraphEngine:
         )
         if req.source == req.target:
             raise ValueError("self_edge_not_allowed")
+        if self._edge_type_value(req.type) == "supersedes":
+            error_lineage = (
+                internal_owner in self._ERROR_KNOWLEDGE_INTERNAL_OWNERS
+                and self._reserved_error_knowledge_id(req.source)
+                and self._reserved_error_knowledge_id(req.target)
+            )
+            if not error_lineage:
+                self.validate_supersession(req.source, req.target)
         requested_key = (req.source, req.target, self._edge_type_value(req.type))
         for existing in self.edges:
             if self._edge_key(existing) == requested_key:
@@ -1548,7 +1669,18 @@ class GraphEngine:
             return [e for e in self.edges if e.source == node_id or e.target == node_id]
         return self.edges
 
-    def delete_edge(self, source: str, target: str) -> bool:
+    def delete_edge(
+        self,
+        source: str,
+        target: str,
+    ) -> bool:
+        if any(
+            edge.source == source
+            and edge.target == target
+            and self._edge_type_value(edge.type) == "supersedes"
+            for edge in self.edges
+        ):
+            raise PermissionError("supersedes_delete_forbidden")
         before = len(self.edges)
         self.edges = [e for e in self.edges if not (e.source == source and e.target == target)]
         if len(self.edges) < before:
@@ -1716,6 +1848,8 @@ class GraphEngine:
         """
         cooc: dict[str, set[str]] = {}
         for node in self.nodes.values():
+            if node.status in {NodeStatus.dormant, NodeStatus.archived}:
+                continue
             kws = [kw.lower() for kw in node.activation_keywords if len(kw) >= 2]
             for kw in kws:
                 if kw not in cooc:
@@ -1733,8 +1867,9 @@ class GraphEngine:
         零配置，换项目自动重建。节点create/update时增量维护。
         """
         self._code_index.clear()
-        for nid, node in self.nodes.items():
-            if node.status == NodeStatus.dormant:
+        for nid in sorted(self.nodes):
+            node = self.nodes[nid]
+            if node.status in {NodeStatus.dormant, NodeStatus.archived}:
                 continue
             # 扫描所有文本字段
             text = f"{nid} {node.name} {node.content.description or ''} {' '.join(node.activation_keywords)}"
@@ -1753,7 +1888,7 @@ class GraphEngine:
         self._kw_df.clear()
         active_n = 0
         for node in self.nodes.values():
-            if node.status == NodeStatus.dormant:
+            if node.status in {NodeStatus.dormant, NodeStatus.archived}:
                 continue
             active_n += 1
             seen: set[str] = set()
@@ -1796,16 +1931,81 @@ class GraphEngine:
     def _save_click_log(self) -> None:
         _atomic_write_json(self._CLICK_LOG_FILE, self._click_log)
 
-    def record_outcome(self, query: str, used_node_id: str, signal: float = 1.0) -> None:
-        """Layer 2: 记录outcome信号。signal: +1=used, -1=skipped_then_grep, +0.3=partial。
-        outcome-gated: 不是click就学，是verified usage才学。
+    def record_route_feedback(
+        self,
+        query: str,
+        node_signals: list[tuple[str, float]],
+        *,
+        promote_keywords: bool = False,
+        allow_reserved: bool = False,
+    ) -> dict[str, Any]:
+        """Validate and record one explicit route-feedback batch.
+
+        The whole input is checked before click-log or keyword state changes.
+        Protected durable families are never changed through feedback; their
+        metadata changes go through canonical durable writeback.
         """
-        key = query.strip().upper()
-        if key not in self._click_log:
-            self._click_log[key] = {}
-        current = self._click_log[key].get(used_node_id, 0)
-        self._click_log[key][used_node_id] = round(current + signal, 2)
+
+        clean_query = str(query or "").strip()
+        if not clean_query:
+            raise ValueError("route_feedback_query_required")
+        if not isinstance(node_signals, list) or not node_signals:
+            raise ValueError("route_feedback_nodes_required")
+
+        normalized: list[tuple[str, float]] = []
+        seen: set[str] = set()
+        for node_id, raw_signal in node_signals:
+            clean_node_id = str(node_id or "").strip()
+            if not clean_node_id or clean_node_id not in self.nodes:
+                raise ValueError(f"route_feedback_node_not_found:{clean_node_id}")
+            if clean_node_id in seen:
+                raise ValueError(f"route_feedback_node_duplicate:{clean_node_id}")
+            if self._reserved_error_knowledge_id(clean_node_id) and not allow_reserved:
+                raise ValueError(
+                    f"route_feedback_reserved_node_forbidden:{clean_node_id}"
+                )
+            try:
+                signal = float(raw_signal)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("route_feedback_signal_invalid") from exc
+            if not math.isfinite(signal) or not -1.0 <= signal <= 1.0:
+                raise ValueError("route_feedback_signal_invalid")
+            normalized.append((clean_node_id, signal))
+            seen.add(clean_node_id)
+
+        key = clean_query.upper()
+        click_state = self._click_log.setdefault(key, {})
+        for node_id, signal in normalized:
+            current = click_state.get(node_id, 0)
+            click_state[node_id] = round(current + signal, 2)
         self._save_click_log()
+
+        promoted: list[dict[str, Any]] = []
+        if promote_keywords:
+            for node_id, signal in normalized:
+                protected = (
+                    semantic_id_family(node_id) in _AUTHORITY_PROTECTED_FAMILIES
+                )
+                if signal <= 0 or protected:
+                    continue
+                added = self._heal_keywords(clean_query, node_id)
+                if added:
+                    promoted.append({"node_id": node_id, "added_keywords": added})
+        return {"recorded": len(normalized), "promoted": promoted}
+
+    def record_outcome(
+        self,
+        query: str,
+        used_node_id: str,
+        signal: float = 1.0,
+    ) -> None:
+        """Compatibility wrapper over the canonical feedback owner."""
+
+        self.record_route_feedback(
+            query,
+            [(used_node_id, signal)],
+            allow_reserved=True,
+        )
 
     # ── Miss Healer: 自动keyword扩展 (v8.3) ──
 
@@ -1921,12 +2121,23 @@ class GraphEngine:
         accessed_node = self.nodes.get(accessed_node_id)
         if accessed_node is not None:
             accessed_node.activation_count += 1
+            if (
+                semantic_id_family(accessed_node_id)
+                not in _AUTHORITY_PROTECTED_FAMILIES
+            ):
+                accessed_node.content.extra["last_accessed_at"] = dt.datetime.now(
+                    dt.timezone.utc
+                ).isoformat()
             self._save_node(accessed_node)
 
         if accessed_node_id in routed_ids:
             # Route命中 → 弱positive
-            self.record_outcome(query, accessed_node_id, signal=0.5)
-            self._heal_keywords(query, accessed_node_id)
+            self.record_route_feedback(
+                query,
+                [(accessed_node_id, 0.5)],
+                promote_keywords=True,
+                allow_reserved=True,
+            )
             return {
                 "type": "hit",
                 "query": query,
@@ -1936,11 +2147,15 @@ class GraphEngine:
             }
         else:
             # Route未命中 → agent自己找到的, 记录correction + 扩展keyword
-            self.record_outcome(query, accessed_node_id, signal=1.0)
-            self._heal_keywords(query, accessed_node_id)
-            # 给route返回的top结果记负面信号
-            if routed_ids:
-                self.record_outcome(query, routed_ids[0], signal=-0.3)
+            node_signals = [(accessed_node_id, 1.0)]
+            if routed_ids and routed_ids[0] != accessed_node_id:
+                node_signals.append((routed_ids[0], -0.3))
+            self.record_route_feedback(
+                query,
+                node_signals,
+                promote_keywords=True,
+                allow_reserved=True,
+            )
             return {
                 "type": "miss_correction",
                 "query": query,
@@ -1957,6 +2172,8 @@ class GraphEngine:
         node = self.nodes.get(node_id)
         if not node:
             return []
+        if self._reserved_error_knowledge_id(node_id):
+            return []
 
         # 提取query中的有意义token
         tokens = re.findall(r"[\u4e00-\u9fa5]{2,}|[A-Za-z][A-Za-z0-9]{1,}", query)
@@ -1965,7 +2182,12 @@ class GraphEngine:
         _stopwords = {"the", "and", "for", "with", "how", "what", "why", "when", "this", "that",
                        "from", "about", "which", "where", "does", "have", "been", "will",
                        "是什么", "怎么", "如何", "什么", "为什么", "哪里", "哪个", "这个", "那个"}
-        novel = [t for t in tokens if t.lower() not in existing_kw and t.lower() not in _stopwords]
+        novel = {
+            token.casefold(): token
+            for token in tokens
+            if token.casefold() not in existing_kw
+            and token.casefold() not in _stopwords
+        }
         if not novel:
             return []
 
@@ -1975,14 +2197,13 @@ class GraphEngine:
         pending = self._pending_keywords[node_id]
 
         promoted = []
-        for tok in novel:
-            tok_lower = tok.lower()
+        for tok_lower, token in novel.items():
             pending[tok_lower] = pending.get(tok_lower, 0) + 1
             if pending[tok_lower] >= 3:
                 # 3次确认 → 正式添加
-                node.activation_keywords.append(tok)
+                node.activation_keywords.append(token)
                 del pending[tok_lower]
-                promoted.append(tok)
+                promoted.append(token)
 
         if promoted:
             self._embedding_cache_state = "dirty"
@@ -2008,13 +2229,26 @@ class GraphEngine:
         if code_upper in self._click_log:
             log = self._click_log[code_upper]
             # 只用signal >= 3的(至少3次positive confirmation)
-            confirmed = {nid: sig for nid, sig in log.items() if sig >= 3.0 and nid in self.nodes}
+            confirmed = {
+                nid: sig
+                for nid, sig in log.items()
+                if (
+                    sig >= 3.0
+                    and nid in self.nodes
+                    and semantic_id_family(nid) not in _AUTHORITY_PROTECTED_FAMILIES
+                )
+            }
             if confirmed:
-                return sorted(confirmed, key=lambda x: confirmed[x], reverse=True)
+                return sorted(
+                    confirmed,
+                    key=lambda node_id: (-confirmed[node_id], node_id),
+                )
 
         # 次优: code_index (自动提取)
         if code_upper in self._code_index:
-            candidates = [nid for nid in self._code_index[code_upper] if nid in self.nodes]
+            candidates = sorted(
+                nid for nid in self._code_index[code_upper] if nid in self.nodes
+            )
             if candidates:
                 return candidates
 
@@ -2040,7 +2274,8 @@ class GraphEngine:
                 kw_lower = kw.lower()
                 kw_node_count[kw_lower] = kw_node_count.get(kw_lower, 0) + 1
 
-        for kw, related in self._cooccurrence.items():
+        for kw in sorted(self._cooccurrence):
+            related = self._cooccurrence[kw]
             if kw in task_lower:
                 # 只取"专有"的共现词：出现在<15个节点里的
                 specific_related = [
@@ -2048,7 +2283,9 @@ class GraphEngine:
                     if kw_node_count.get(r, 0) < 15 and r not in task_lower and r not in seen and len(r) >= 2
                 ]
                 # 按稀有度排序(出现越少越专有)
-                specific_related.sort(key=lambda x: kw_node_count.get(x, 0))
+                specific_related.sort(
+                    key=lambda value: (kw_node_count.get(value, 0), value)
+                )
                 for r in specific_related[:3]:
                     expansions.append(r)
                     seen.add(r)
@@ -2304,8 +2541,10 @@ class GraphEngine:
             return parsed.replace(tzinfo=dt.timezone.utc)
         return parsed.astimezone(dt.timezone.utc)
 
-    def _temporal_task_policy(self, task: str, expanded_task: str) -> dict[str, Any]:
-        text = f"{task or ''} {expanded_task or ''}"
+    def _temporal_task_policy(self, task: str, _expanded_task: str) -> dict[str, Any]:
+        # Query expansion improves retrieval recall; it must not invent temporal
+        # governance intent that the caller did not express.
+        text = task or ""
         matches = sorted({match.group(0).lower() for match in self._TEMPORAL_ROUTE_TRIGGER.finditer(text)})[:16]
         freshness_required = bool(self._TEMPORAL_FRESHNESS_TRIGGER.search(text))
         validity_focus = bool(self._TEMPORAL_VALIDITY_TRIGGER.search(text))
@@ -2335,8 +2574,7 @@ class GraphEngine:
         )
         invalidated_by = extra.get("invalidated_by") or extra.get("superseded_by") or extra.get("replaced_by")
         observed_at = self._parse_route_datetime(
-            extra.get("last_accessed_at")
-            or extra.get("last_seen_at")
+            extra.get("last_seen_at")
             or extra.get("observed_at")
             or extra.get("updated_at")
             or node.updated_at
@@ -2534,6 +2772,7 @@ class GraphEngine:
                 else "history_or_specialized" if historical or explicit_error or exact_code else "ordinary"
             ),
             "durable_evidence_requested": durable_evidence,
+            "historical_requested": historical,
             "project_id": str(req.project_id or "").casefold(),
             "project_namespace": str(req.project_namespace or "").casefold(),
             "external_verification_required": bool(
@@ -2547,16 +2786,6 @@ class GraphEngine:
         rrf_scores: dict[str, float],
         policy: dict[str, Any],
     ) -> dict[str, Any]:
-        if not policy.get("enabled"):
-            return {
-                **policy,
-                "excluded_superseded_node_ids": [],
-                "excluded_project_mismatch_node_ids": [],
-                "demoted_sediment_node_ids": [],
-                "demoted_unproven_core_node_ids": [],
-                "boosted_durable_node_ids": [],
-            }
-
         requested_project = str(policy.get("project_id") or "").casefold()
         requested_namespace = str(policy.get("project_namespace") or "").casefold()
         superseded_ids = self._superseded_node_ids()
@@ -2571,9 +2800,14 @@ class GraphEngine:
             node = self.nodes.get(node_id)
             if not node:
                 continue
-            if self._node_is_superseded(node_id, node, superseded_ids):
+            if (
+                self._node_is_superseded(node_id, node, superseded_ids)
+                and not policy.get("historical_requested")
+            ):
                 excluded_superseded.append(node_id)
                 rrf_scores.pop(node_id, None)
+                continue
+            if not policy.get("enabled"):
                 continue
 
             node_project, node_namespace = self._node_project_values(node)
@@ -2658,11 +2892,16 @@ class GraphEngine:
         node_id: str,
         policy: dict[str, Any],
     ) -> bool:
+        node = self.nodes.get(node_id)
+        if not node:
+            return False
+        if (
+            self._node_is_superseded(node_id, node)
+            and not policy.get("historical_requested")
+        ):
+            return False
         if not policy.get("enabled"):
             return True
-        node = self.nodes.get(node_id)
-        if not node or self._node_is_superseded(node_id, node):
-            return False
         requested_project = str(policy.get("project_id") or "").casefold()
         requested_namespace = str(policy.get("project_namespace") or "").casefold()
         node_project, node_namespace = self._node_project_values(node)
@@ -3018,6 +3257,11 @@ class GraphEngine:
         if not evidence_id.casefold().startswith("evd-"):
             return None
         evidence = self.nodes.get(evidence_id)
+        if self._node_is_superseded(solution_id, solution) or self._node_is_superseded(
+            evidence_id,
+            evidence,
+        ):
+            return None
         evidence_extra = getattr(evidence.content, "extra", None) or {} if evidence else {}
         if (
             not isinstance(evidence_extra, dict)
@@ -3588,7 +3832,7 @@ class GraphEngine:
             # filter in that mode.
             return True
         node = nodes.get(node_id)
-        if not node or node.status == NodeStatus.dormant:
+        if not node or node.status in {NodeStatus.dormant, NodeStatus.archived}:
             return False
         if self._node_is_superseded(node_id, node, superseded_ids):
             return False
@@ -4173,6 +4417,11 @@ class GraphEngine:
 
         raw = req.task.strip()
         is_short_code = bool(re.fullmatch(r"[A-Za-z]+\d+[A-Za-z0-9]*", raw)) and len(raw) <= 8
+        query_codes = list(
+            dict.fromkeys(
+                code.upper() for code in self._CODE_PATTERN.findall(req.task)
+            )
+        )
         current_reality_policy = self._current_reality_policy(
             req,
             expanded_task,
@@ -4185,6 +4434,17 @@ class GraphEngine:
         code_resolved_ids: list[str] | None = None
         if is_short_code:
             code_resolved_ids = self._resolve_short_code(req.task)
+        elif query_codes:
+            embedded_code_ids: list[str] = []
+            for code in query_codes:
+                resolved = self._resolve_short_code(code) or []
+                if len(resolved) > self._RERANKER_POOL_LIMIT:
+                    continue
+                for node_id in resolved:
+                    if node_id not in embedded_code_ids:
+                        embedded_code_ids.append(node_id)
+            if len(embedded_code_ids) <= self._RERANKER_POOL_LIMIT:
+                code_resolved_ids = embedded_code_ids or None
 
         # ── Step 1: 3-path信号计算 (完整pipeline) ──
         weighted_queries = query_expansion_meta.get("weighted_queries") or [
@@ -4212,6 +4472,11 @@ class GraphEngine:
         for i, nid in enumerate(self._node_id_order):
             node = self.nodes.get(nid)
             if not node or node.status == NodeStatus.dormant:
+                continue
+            if (
+                node.status == NodeStatus.archived
+                and not current_reality_policy.get("historical_requested")
+            ):
                 continue
             if not self._error_node_allowed_for_route(
                 nid,
@@ -4289,6 +4554,10 @@ class GraphEngine:
         elif is_short_code:
             # Path A': 短代码但无auto-index命中 → 仅3信号
             rrf_weights = (0.5, 3.0, 0.0, 0.0)
+        elif code_resolved_ids:
+            # Natural-language queries may carry a discriminative project code.
+            # Reuse the exact index without treating the whole query as a code.
+            rrf_weights = (1.0, 1.0, 0.0, 5.0)
         elif precision_mode:
             # Path B-intf: 接口查询 → hybrid权重2x
             rrf_weights = (1.0, 1.5, 0.0, 0.0)
@@ -4396,11 +4665,14 @@ class GraphEngine:
         )
 
         # ── Step 3: Graph Traversal Boost ──
-        pre_sorted = sorted(
-            rrf_scores,
-            key=lambda node_id: (-rrf_scores[node_id], node_id),
-        )[:req.max_nodes * 3]
-        top_set = set(pre_sorted[:max(3, req.max_nodes // 2)])
+        # Traversal evidence must not change merely because the caller asks for
+        # a wider result packet. Keep one bounded seed set for every route size.
+        top_set = set(
+            sorted(
+                rrf_scores,
+                key=lambda node_id: (-rrf_scores[node_id], node_id),
+            )[: self._GRAPH_TRAVERSAL_ANCHOR_LIMIT]
+        )
         graph_traversal_boost = self._apply_graph_traversal_boost(
             rrf_scores,
             top_set,
@@ -4567,6 +4839,14 @@ class GraphEngine:
                 *protected_memory_ids,
             ],
         )
+        sorted_ids = [
+            node_id
+            for node_id in sorted_ids
+            if self._current_reality_node_allowed(
+                node_id,
+                current_reality_policy,
+            )
+        ]
 
         # dormant补全
         if len(sorted_ids) < req.max_nodes:
@@ -4655,6 +4935,17 @@ class GraphEngine:
             "activation_policy": "verified-consumption-only",
             "reranker_policy": reranker_policy,
             "rrf_weights": list(rrf_weights),
+            "code_signal": {
+                "mode": (
+                    "exact"
+                    if is_short_code and code_resolved_ids
+                    else "embedded"
+                    if code_resolved_ids
+                    else "none"
+                ),
+                "tokens": query_codes,
+                "resolved_count": len(code_resolved_ids or []),
+            },
             "fusion_policy": "independent-dense-lexical-exact-v1",
             "legacy_hybrid_vote": "disabled_correlated_signal",
             "expanded_query_changed": expanded_task != req.task,
@@ -4719,6 +5010,7 @@ class GraphEngine:
         changes: list[dict],
         agent_id: str = "unknown",
         execution_context: dict[str, str] | None = None,
+        authority: DurableAuthority | None = None,
     ) -> list[str]:
         """自动审计并回写节点变更。
 
@@ -4743,6 +5035,9 @@ class GraphEngine:
             and str(value).strip()
             and str(value).strip().casefold() != "unspecified"
         }
+        durable_authority = authority or DurableAuthority()
+        durable_authority_permitted = durable_authority.permits_durable_current()
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
 
         # Validate the whole batch before the first durable mutation.  Older
         # behavior silently counted unknown fields and missing nodes as
@@ -4768,6 +5063,7 @@ class GraphEngine:
                     cluster=change.get("cluster", "业务逻辑"),
                     content=NodeContent(
                         description=change.get("description", ""),
+                        current_state=change.get("current_state", ""),
                         extra=dict(context),
                     ),
                     activation_keywords=keywords,
@@ -4781,7 +5077,7 @@ class GraphEngine:
             if node is None:
                 raise ValueError(f"writeback_node_not_found:{nid}")
 
-            if semantic_id_family(nid) in {"INTF", "PROC", "DEC", "PRJ"}:
+            if semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES:
                 node_project, node_namespace = self._node_project_values(node)
                 incoming_project = str(context.get("project_id") or "").casefold()
                 incoming_namespace = str(
@@ -4799,6 +5095,22 @@ class GraphEngine:
             field = change.get("field")
             if field not in _SESSION_WRITEBACK_FIELDS:
                 raise ValueError(f"writeback_field_unsupported:{field}")
+
+            if (
+                semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES
+                and field in _DURABLE_CURRENT_FIELDS
+            ):
+                if not durable_authority_permitted:
+                    raise ValueError(f"writeback_durable_authority_required:{nid}")
+                node_project, node_namespace = self._node_project_values(node)
+                incoming_project = str(context.get("project_id") or "").casefold()
+                incoming_namespace = str(
+                    context.get("project_namespace") or ""
+                ).casefold()
+                if node_project and not incoming_project:
+                    raise ValueError(f"writeback_project_id_required:{nid}")
+                if node_namespace and not incoming_namespace:
+                    raise ValueError(f"writeback_project_namespace_required:{nid}")
             value = change.get("value")
 
             if field in {
@@ -4840,7 +5152,6 @@ class GraphEngine:
             normalized.append(("update", (node, field, action, value), change))
 
         updated = []
-        now = dt.datetime.now(dt.timezone.utc).isoformat()
 
         for operation, prepared, change in normalized:
             if operation == "create":
@@ -4887,13 +5198,30 @@ class GraphEngine:
                 changed = node.content.last_session != value
                 node.content.last_session = value
 
+            authority_refresh = False
+            if (
+                semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES
+                and field in _DURABLE_CURRENT_FIELDS
+            ):
+                stored_authority = node.content.extra.get("durable_authority")
+                expected_authority = durable_authority.model_dump(mode="json")
+                authority_refresh = not isinstance(stored_authority, dict) or any(
+                    stored_authority.get(key) != expected
+                    for key, expected in expected_authority.items()
+                )
+            changed = changed or authority_refresh
+
             if not changed:
                 continue
 
-            if semantic_id_family(nid) in {"INTF", "PROC", "DEC", "PRJ"}:
-                for key in ("project_id", "project_namespace"):
-                    if context.get(key) and not node.content.extra.get(key):
-                        node.content.extra[key] = context[key]
+            if semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES:
+                if field in _DURABLE_CURRENT_FIELDS:
+                    node.content.extra["durable_authority"] = {
+                        **durable_authority.model_dump(mode="json"),
+                        "agent_id": agent_id,
+                        "workorder_id": context.get("workorder_id", ""),
+                        "recorded_at": now,
+                    }
 
             node.updated_at = now
             writer = change.get("updated_by", agent_id or "auto-writeback")
@@ -5083,9 +5411,10 @@ class GraphEngine:
 
         Active  → Dormant:  stale_days天(默认30)未被route/writeback且activation=0
         Dormant → Archived: archive_days天(默认60)仍未命中
-        任何状态 → Active:  activation_count>0 且 最近被访问
+        Dormant → Active: activation_count>0 且最近被访问
 
-        Archived节点: 不参与route, 不加载embedding, 但 /api/nodes/{id} 仍可查。
+        Archived节点: 默认route不可见；明确历史查询和 /api/nodes/{id} 可查。
+        Archived → Active 需要显式 status 更新，普通读取不会静默复活。
         30天基准认知: 项目节奏下超30天未引用的数据大概率已降序严重。
         """
         now = dt.datetime.now(dt.timezone.utc)
@@ -5107,14 +5436,26 @@ class GraphEngine:
             if tgt_node and tgt_node.status == NodeStatus.active:
                 active_edges[e.target] += 1
 
+        superseded_ids = self._superseded_node_ids()
         for nid, node in self.nodes.items():
-            if self._reserved_error_knowledge_id(nid):
+            if (
+                self._reserved_error_knowledge_id(nid)
+                or (
+                    semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES
+                    and not self._node_is_superseded(nid, node, superseded_ids)
+                )
+            ):
                 protected.append(nid)
                 continue
             if node.status in (NodeStatus.blocked,):
                 continue
 
-            last_touch = node.updated_at or node.created_at or ""
+            last_touch = str(
+                node.content.extra.get("last_accessed_at")
+                or node.updated_at
+                or node.created_at
+                or ""
+            )
             has_active_edges = active_edges.get(nid, 0) > 0
 
             if node.status == NodeStatus.active:
@@ -5126,7 +5467,7 @@ class GraphEngine:
                     demoted.append(nid)
 
             elif node.status == NodeStatus.dormant:
-                # Dormant → Active: 复活 (有人查过)
+                # Dormant → Active: 复活 (近期 correlated exact read)
                 if node.activation_count > 0 and last_touch >= stale_cutoff:
                     node.status = NodeStatus.active
                     node.updated_by = "lifecycle-reactivated"
@@ -5134,7 +5475,9 @@ class GraphEngine:
                     promoted.append(nid)
                 # Dormant → Archived: 60天仍无命中
                 elif last_touch < archive_cutoff and node.activation_count == 0:
-                    node.content.current_state = f"archived by lifecycle at {now.isoformat()[:10]}"
+                    node.status = NodeStatus.archived
+                    node.content.extra["archived_at"] = now.isoformat()
+                    node.content.extra["archive_reason"] = "lifecycle_inactive"
                     node.updated_by = "lifecycle-archived-60d"
                     self._save_node(node)
                     archived.append(nid)
@@ -5147,8 +5490,8 @@ class GraphEngine:
             "demoted_ids": demoted[:30],
             "archived_ids": archived[:30],
             "promoted_ids": promoted[:20],
-            "protected_error_knowledge_count": len(protected),
-            "protected_error_knowledge_ids": protected[:30],
+            "protected_node_count": len(protected),
+            "protected_node_ids": protected[:30],
             "baseline": f"{stale_days}d dormant / {archive_days}d archive",
         }
 
@@ -5276,6 +5619,10 @@ class GraphEngine:
 
         永不删除。approver必须是Ka或admin。
         """
+        if not str(approver or "").strip() or str(approver).casefold() == "unknown":
+            return {"error": "merge_approver_required"}
+        if keep_id == remove_id:
+            return {"error": "merge_nodes_must_be_distinct"}
         try:
             self._assert_error_knowledge_mutation_owner(keep_id, remove_id)
         except PermissionError as exc:
@@ -5289,6 +5636,15 @@ class GraphEngine:
             return {"error": f"keep节点 {keep_id} 不存在"}
         if not remove:
             return {"error": f"remove节点 {remove_id} 不存在"}
+        if semantic_id_family(keep_id) in _AUTHORITY_PROTECTED_FAMILIES:
+            return {
+                "error": "durable_current_merge_forbidden",
+                "guidance": "create an authoritative replacement and add a supersedes edge",
+            }
+        try:
+            self.validate_supersession(keep_id, remove_id)
+        except ValueError as exc:
+            return {"error": str(exc)}
 
         now = dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -5334,17 +5690,15 @@ class GraphEngine:
             if edge.target == remove_id:
                 edge.target = keep_id
                 redirected += 1
+        cleanup = self.cleanup_edges(apply=True)
 
         # 建supersedes edge
         from models import EdgeCreate
-        try:
-            self.create_edge(EdgeCreate(
-                source=keep_id, target=remove_id,
-                type="supersedes", weight=1.0,
-                description=f"merged by {approver} at {now[:10]}",
-            ))
-        except Exception as _e:
-            logging.getLogger("3can").debug(f"Ignored: {_e}")
+        self.create_edge(EdgeCreate(
+            source=keep_id, target=remove_id,
+            type="supersedes", weight=1.0,
+            description=f"merged by {approver} at {now[:10]}",
+        ))
 
         # remove → dormant
         remove.status = NodeStatus.dormant
@@ -5366,6 +5720,10 @@ class GraphEngine:
             "approver": approver,
             "keywords_merged": len(keep.activation_keywords),
             "edges_redirected": redirected,
+            "edges_normalized": (
+                cleanup["removed_self_edges"]
+                + cleanup["removed_duplicate_edges"]
+            ),
             "remove_status": "dormant",
         }
 
@@ -5375,7 +5733,10 @@ class GraphEngine:
         done = []
         skipped_protected = []
         for nid in node_ids:
-            if self._reserved_error_knowledge_id(nid):
+            if (
+                self._reserved_error_knowledge_id(nid)
+                or semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES
+            ):
                 skipped_protected.append(nid)
                 continue
             node = self.nodes.get(nid)

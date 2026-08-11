@@ -33,6 +33,10 @@ PROJECT_KIT_CAPSULE_TEMPLATE = (
 ROUTE_BENCHMARK = ROOT / "benchmark" / "route_benchmark_v1.json"
 ROUTE_BENCHMARK_RUNNER = ROOT / "benchmark" / "run_benchmark.py"
 VERIFY_PROJECT = RELEASE_ROOT / "scripts" / "verify_project.py"
+CLAUDE_SUBAGENT_STOP_HOOK = (
+    RELEASE_ROOT / "examples" / "claude-code-hooks" / "3can-subagent-stop.js"
+)
+MCP_SERVER = ROOT / "mcp_server.py"
 
 
 def clear_3can_modules() -> None:
@@ -45,6 +49,14 @@ def load_verify_project():
         "release_verify_project",
         VERIFY_PROJECT,
     )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_mcp_server():
+    spec = importlib.util.spec_from_file_location("release_mcp_server", MCP_SERVER)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -64,6 +76,9 @@ def test_seed_nodes_are_current_schema_and_idempotent(tmp_path, monkeypatch):
     assert seed_nodes._seed_internal_owner("ERR-policy") == "error-migration"
     assert seed_nodes._seed_internal_owner("FIX-solution") == "error-migration"
     assert seed_nodes._seed_internal_owner("EVD-receipt") == "error-migration"
+    assert seed_nodes._seed_internal_owner("INTF-route") == "durable-seed"
+    assert seed_nodes._seed_internal_owner("PROC-bootstrap") == "durable-seed"
+    assert seed_nodes._seed_internal_owner("DEC-owner") == "durable-seed"
     assert seed_nodes._seed_internal_owner("DOC-quickstart") is None
 
     assert seed_nodes.main() == 0
@@ -147,6 +162,75 @@ def test_prerelease_scan_blocks_runtime_graph_artifacts(tmp_path):
     assert result.returncode == 1
     assert "runtime graph artifacts" in result.stdout
     assert "token_usage.sqlite3" in result.stdout
+
+
+def test_subagent_stop_hook_persists_only_content_free_metadata():
+    source = CLAUDE_SUBAGENT_STOP_HOOK.read_text(encoding="utf-8")
+
+    assert "response_length_bytes" in source
+    assert "response_sha256" in source
+    assert "detail: summary" not in source
+    assert ".slice(0, 300)" not in source
+
+
+def test_mcp_route_returns_exact_correlation_and_read_node_forwards_it(monkeypatch):
+    server = load_mcp_server()
+    posted = {}
+    fetched = {}
+
+    def fake_post(path, body):
+        posted.update({"path": path, "body": body})
+        return {
+            "total_nodes": 1,
+            "nodes": [{"id": "DOC-PUBLIC", "name": "Public node"}],
+            "route_meta": {"route_id": "route-public-1"},
+        }
+
+    def fake_get(path, params=None):
+        fetched.update({"path": path, "params": params})
+        return {"id": "DOC-PUBLIC", "name": "Public node", "content": {}}
+
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_get", fake_get)
+
+    route_text = server.route(
+        "public query",
+        session_instance_id="session-public-1",
+    )
+    server.read_node(
+        "DOC-PUBLIC",
+        session_instance_id="session-public-1",
+        route_id="route-public-1",
+    )
+
+    assert posted["body"]["session_instance_id"] == "session-public-1"
+    assert "route_id=route-public-1" in route_text
+    assert "session_instance_id=session-public-1" in route_text
+    assert fetched == {
+        "path": "/api/nodes/DOC-PUBLIC",
+        "params": {
+            "agent_id": "mcp-client",
+            "route_id": "route-public-1",
+            "session_instance_id": "session-public-1",
+        },
+    }
+
+
+def test_mcp_read_without_correlation_is_read_only(monkeypatch):
+    server = load_mcp_server()
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_get",
+        lambda path, params=None: (
+            calls.append((path, params))
+            or {"id": "DOC-PUBLIC", "name": "Public node", "content": {}}
+        ),
+    )
+
+    server.read_node("DOC-PUBLIC")
+
+    assert calls == [("/api/nodes/DOC-PUBLIC", None)]
 
 
 def load_project_kit_helper():

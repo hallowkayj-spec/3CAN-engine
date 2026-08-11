@@ -40,6 +40,7 @@ from error_knowledge import (
     deterministic_fingerprint,
 )
 from models import (
+    DurableAuthority,
     EdgeCreate,
     EdgeType,
     NodeContent,
@@ -592,6 +593,14 @@ async def get_node(
     session_instance_id: str | None = Query(None),
     route_id: str | None = Query(None),
 ):
+    if not agent_id and (session_instance_id is not None or route_id is not None):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "route_correlation_invalid",
+                "reason": "agent_id_required_with_route_correlation",
+            },
+        )
     node = engine.get_node(node_id)
     if not node:
         raise HTTPException(404, f"节点 {node_id} 不存在")
@@ -636,41 +645,6 @@ MAX_NOTES = 2000
 MAX_CURRENT_STATE = 400
 DUPLICATE_NODE_THRESHOLD = 0.030
 DUPLICATE_NODE_SCORE_RATIO = 1.15
-ROUTE_FEEDBACK_MAX_ADDED_KEYWORDS = 3
-ROUTE_FEEDBACK_MAX_KEYWORDS = 40
-ROUTE_FEEDBACK_STOPWORDS = frozenset({
-    "3can",
-    "api",
-    "agent",
-    "and",
-    "codex",
-    "correct",
-    "desktop",
-    "file",
-    "files",
-    "for",
-    "from",
-    "http",
-    "https",
-    "main",
-    "mnt",
-    "node",
-    "nodes",
-    "path",
-    "query",
-    "route",
-    "routing",
-    "script",
-    "scripts",
-    "session",
-    "task",
-    "that",
-    "the",
-    "this",
-    "users",
-    "with",
-    "wrong",
-})
 
 
 def _reserved_error_knowledge_id(node_id: str) -> bool:
@@ -762,9 +736,13 @@ async def create_node(req: NodeCreate, strict: bool = Query(False), force: bool 
 
     try:
         node = engine.create_node(req)
-    except ValueError as exc:
+    except (PermissionError, ValueError) as exc:
         message = str(exc)
-        status = 409 if "case_conflict" in message else 422
+        status = (
+            403
+            if isinstance(exc, PermissionError)
+            else (409 if "case_conflict" in message else 422)
+        )
         raise HTTPException(status, detail={"error": message}) from exc
     await manager.broadcast({"event": "node_created", "node": node.model_dump()})
     result = node.model_dump()
@@ -778,8 +756,9 @@ async def update_node(node_id: str, req: NodeUpdate):
     _guard_error_knowledge_crud(node_id)
     try:
         node = engine.update_node(node_id, req)
-    except ValueError as exc:
-        raise HTTPException(422, detail={"error": str(exc)}) from exc
+    except (PermissionError, ValueError) as exc:
+        status = 403 if isinstance(exc, PermissionError) else 422
+        raise HTTPException(status, detail={"error": str(exc)}) from exc
     if not node:
         raise HTTPException(404, f"节点 {node_id} 不存在")
     await manager.broadcast({"event": "node_updated", "node": node.model_dump()})
@@ -791,8 +770,9 @@ async def delete_node(node_id: str):
     _guard_error_knowledge_crud(node_id)
     try:
         ok = engine.delete_node(node_id)
-    except ValueError as exc:
-        raise HTTPException(422, detail={"error": str(exc)}) from exc
+    except (PermissionError, ValueError) as exc:
+        status = 403 if isinstance(exc, PermissionError) else 422
+        raise HTTPException(status, detail={"error": str(exc)}) from exc
     if not ok:
         raise HTTPException(404, f"节点 {node_id} 不存在")
     await manager.broadcast({"event": "node_deleted", "node_id": node_id})
@@ -844,7 +824,10 @@ async def cleanup_graph_edges(payload: dict):
 @app.delete("/api/edges")
 async def delete_edge(source: str = Query(...), target: str = Query(...)):
     _guard_error_knowledge_crud(source, target)
-    ok = engine.delete_edge(source, target)
+    try:
+        ok = engine.delete_edge(source, target)
+    except PermissionError as exc:
+        raise HTTPException(403, detail={"error": str(exc)}) from exc
     if not ok:
         raise HTTPException(404, "边不存在")
     await manager.broadcast({"event": "edge_deleted", "source": source, "target": target})
@@ -1840,60 +1823,32 @@ async def route_outcome(payload: dict):
     signal: +1.0=agent确认使用, -1.0=跳过后grep了别的, +0.3=部分使用
     query自动uppercase做key，3次positive后mapping进active。
     """
-    query = payload.get("query", "").strip()
-    node_id = payload.get("node_id", "")
-    signal = float(payload.get("signal", 1.0))
-    if not query or not node_id:
-        raise HTTPException(400, "query和node_id必填")
-    engine.record_outcome(query, node_id, signal)
-    return {"recorded": True, "query": query, "node_id": node_id, "signal": signal}
-
-
-# Route反馈循环 — 记录用户/agent纠正, 下次类似query加分目标节点
-ROUTE_FEEDBACK_FILE = GRAPH_DIR / "route_feedback.json"
-
-
-def _route_feedback_keyword_key(value: Any) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
-
-
-def _feedback_keywords_from_query(query: str) -> list[str]:
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for raw in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9][A-Za-z0-9_.-]{1,}", query or ""):
-        token = raw.strip("._-")
-        key = _route_feedback_keyword_key(token)
-        if not key or key in seen or key in ROUTE_FEEDBACK_STOPWORDS:
-            continue
-        if not any(ch.isalpha() or "\u4e00" <= ch <= "\u9fff" for ch in token):
-            continue
-        candidates.append(token)
-        seen.add(key)
-    return candidates
-
-
-def _append_route_feedback_keywords(existing_keywords: list[str], query_keywords: list[str]) -> list[str]:
-    existing_keys = {_route_feedback_keyword_key(value) for value in existing_keywords}
-    added: list[str] = []
-    remaining_slots = max(0, ROUTE_FEEDBACK_MAX_KEYWORDS - len(existing_keywords))
-    for keyword in query_keywords:
-        if len(added) >= ROUTE_FEEDBACK_MAX_ADDED_KEYWORDS or len(added) >= remaining_slots:
-            break
-        key = _route_feedback_keyword_key(keyword)
-        if not key or key in existing_keys or key in ROUTE_FEEDBACK_STOPWORDS:
-            continue
-        added.append(keyword)
-        existing_keys.add(key)
-    return added
+    query = str(payload.get("query") or "").strip()
+    node_id = str(payload.get("node_id") or "").strip()
+    raw_signal = payload.get("signal", 1.0)
+    try:
+        result = engine.record_route_feedback(query, [(node_id, raw_signal)])
+        signal = float(raw_signal)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, detail={"error": str(exc)}) from exc
+    return {
+        "recorded": result["recorded"],
+        "query": query,
+        "node_id": node_id,
+        "signal": signal,
+    }
 
 
 @app.post("/api/route/feedback")
 async def route_feedback(payload: dict):
-    """记录路由反馈: 某query应该命中某节点, 用于v8训练或运行时boost.
+    """Record an explicit route correction through the canonical outcome owner.
 
     Body: {query, correct_node_ids: [...], agent_id, wrong_node_ids?: [...]}
     """
-    query = payload.get("query", "").strip()
+    raw_query = payload.get("query")
+    if not isinstance(raw_query, str) or not raw_query.strip():
+        raise HTTPException(400, "query和correct_node_ids必填")
+    query = raw_query.strip()
     correct = payload.get("correct_node_ids", [])
     wrong = payload.get("wrong_node_ids", [])
     agent_id = payload.get("agent_id", "unknown")
@@ -1901,43 +1856,24 @@ async def route_feedback(payload: dict):
         raise HTTPException(400, "query和correct_node_ids必填")
     if not isinstance(correct, list) or not isinstance(wrong, list):
         raise HTTPException(400, "correct_node_ids和wrong_node_ids必须是list")
-    _guard_error_knowledge_crud(
-        *(str(node_id) for node_id in correct),
-    )
+    try:
+        result = engine.record_route_feedback(
+            query,
+            [
+                *((str(node_id), 1.0) for node_id in correct),
+                *((str(node_id), -1.0) for node_id in wrong),
+            ],
+            promote_keywords=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, detail={"error": str(exc)}) from exc
 
-    entry = {
-        "query": query,
-        "correct_node_ids": correct,
-        "wrong_node_ids": wrong,
+    return {
+        "recorded": result["recorded"],
         "agent_id": agent_id,
-        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "learning_owner": "graph_engine.route_feedback",
+        "boosted": result["promoted"],
     }
-    data = []
-    if ROUTE_FEEDBACK_FILE.exists():
-        try:
-            data = json.loads(ROUTE_FEEDBACK_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            data = []
-    data.append(entry)
-    ROUTE_FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ROUTE_FEEDBACK_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    # 即时生效: 给correct节点的keywords添加query中的专有词
-    query_words = _feedback_keywords_from_query(query)
-    boosted = []
-    for nid in correct:
-        node = engine.nodes.get(nid)
-        if not node:
-            continue
-        added = _append_route_feedback_keywords(node.activation_keywords, query_words)
-        if added:
-            node.activation_keywords.extend(added)
-            node.updated_at = dt.datetime.now(dt.timezone.utc).isoformat()
-            engine._save_node(node)
-            engine._update_single_embedding(nid)
-            boosted.append({"node_id": nid, "added_keywords": added})
-
-    return {"recorded": len(data), "boosted": boosted}
 
 
 # ── Route Ticket (SQLite transactional ledger) ──
@@ -5107,11 +5043,24 @@ async def handoff_pending(agent_id: str = Query(...)):
 @app.post("/api/handoff/{handoff_id}/ack")
 async def handoff_ack(handoff_id: str, payload: dict):
     """Agent确认已读handoff."""
-    agent_id = payload.get("agent_id", "unknown")
+    raw_agent_id = payload.get("agent_id")
+    if not isinstance(raw_agent_id, str) or not raw_agent_id.strip():
+        raise HTTPException(400, detail={"error": "handoff_agent_id_required"})
+    agent_id = raw_agent_id.strip()
     node = engine.nodes.get(handoff_id)
     if not node:
         raise HTTPException(404, "handoff不存在")
-    ack = node.content.extra.get("acknowledged_by", {})
+    extra = node.content.extra if isinstance(node.content.extra, dict) else {}
+    node_type = str(getattr(node.type, "value", node.type)).strip().casefold()
+    if (
+        not handoff_id.startswith("HO-")
+        or node_type != "session"
+        or not isinstance(extra.get("from_agent"), str)
+        or not isinstance(extra.get("to_agent"), str)
+        or not isinstance(extra.get("acknowledged_by"), dict)
+    ):
+        raise HTTPException(400, detail={"error": "handoff_identity_invalid"})
+    ack = dict(extra["acknowledged_by"])
     ack[agent_id] = _utc_now().isoformat()
     node.content.extra["acknowledged_by"] = ack
     node.updated_at = _utc_now().isoformat()
@@ -5127,37 +5076,64 @@ _WB_WINDOW_SEC = 60
 _WB_MAX_PER_WINDOW = 5
 
 
-def _check_rate_limit(agent_id: str, node_ids: list[str]) -> tuple[bool, list[str]]:
-    """对批量 writeback 的每个 node 检查同 agent 60s 内次数. 返 (ok, 超限节点列表)."""
+def _writeback_rate_limit_violators(agent_id: str, node_ids: list[str]) -> list[str]:
+    """Read the current window without consuming quota."""
     import time
     now = time.time()
     cutoff = now - _WB_WINDOW_SEC
     violators = []
-    for nid in node_ids:
+    for nid in dict.fromkeys(node_ids):
         key = (agent_id, nid)
         hist = [t for t in _WB_COUNTER.get(key, []) if t >= cutoff]
         if len(hist) >= _WB_MAX_PER_WINDOW:
             violators.append(nid)
+    return violators
+
+
+def _record_writeback_rate_limit(agent_id: str, node_ids: list[str]) -> None:
+    """Consume one quota unit only for nodes changed by a successful batch."""
+    import time
+    now = time.time()
+    cutoff = now - _WB_WINDOW_SEC
+    for nid in dict.fromkeys(node_ids):
+        key = (agent_id, nid)
+        hist = [t for t in _WB_COUNTER.get(key, []) if t >= cutoff]
         hist.append(now)
         _WB_COUNTER[key] = hist
-    return (len(violators) == 0, violators)
 
 
 @app.post("/api/writeback")
 async def session_writeback(payload: dict):
     """Session结束时批量回写节点变更。支持 agent_id 追踪。
     v9.4 基座#32: 同 agent+同 node 60s 内 ≤5 次, 超限 429 防刷."""
-    changes = payload.get("changes", payload if isinstance(payload, list) else [])
-    agent_id = payload.get("agent_id", "unknown")
     if isinstance(payload, list):
         changes = payload
         agent_id = "unknown"
+    elif isinstance(payload, dict):
+        changes = payload.get("changes", [])
+        raw_agent_id = payload.get("agent_id", "unknown")
+        if not isinstance(raw_agent_id, str):
+            raise HTTPException(400, detail={"error": "writeback_agent_id_invalid"})
+        agent_id = raw_agent_id.strip() or "unknown"
+    else:
+        raise HTTPException(400, detail={"error": "writeback_payload_invalid"})
+    if not isinstance(changes, list):
+        raise HTTPException(
+            400,
+            detail={"error": "writeback_changes_must_be_list"},
+        )
 
     # v9.4 #32 Rate limit 检查
-    target_nodes = [c.get("node_id") for c in changes if isinstance(c, dict) and c.get("node_id")]
+    target_nodes = [
+        node_id
+        for change in changes
+        if isinstance(change, dict)
+        and isinstance((node_id := change.get("node_id")), str)
+        and node_id
+    ]
     if target_nodes:
-        ok, violators = _check_rate_limit(agent_id, target_nodes)
-        if not ok:
+        violators = _writeback_rate_limit_violators(agent_id, target_nodes)
+        if violators:
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -5173,11 +5149,25 @@ async def session_writeback(payload: dict):
     execution_context = _execution_identity_context(
         payload if isinstance(payload, dict) else {}
     )
+    authority_payload = payload if isinstance(payload, dict) else {}
+    try:
+        authority = DurableAuthority(
+            source_authority=authority_payload.get("source_authority", "untrusted_inferred"),
+            verification_state=authority_payload.get("verification_state", "unverified"),
+            evidence_refs=authority_payload.get("evidence_refs", []),
+            authorized_by=authority_payload.get("authorized_by", ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "writeback_authority_invalid", "message": str(exc)},
+        ) from exc
     try:
         updated = engine.session_writeback(
             changes,
             agent_id=agent_id,
             execution_context=execution_context,
+            authority=authority,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -5187,6 +5177,8 @@ async def session_writeback(payload: dict):
                 "reason": str(exc),
             },
         ) from exc
+    if updated:
+        _record_writeback_rate_limit(agent_id, updated)
     await manager.broadcast({"event": "writeback", "updated": updated, "agent_id": agent_id})
     return {"updated": updated, "count": len(updated), "agent_id": agent_id}
 
@@ -5438,7 +5430,9 @@ async def merge_nodes(payload: dict):
     _guard_error_knowledge_crud(keep_id, remove_id)
     result = engine.merge_nodes(keep_id, remove_id, approver=approver)
     if "error" in result:
-        raise HTTPException(404, result["error"])
+        error = str(result["error"])
+        status = 404 if "不存在" in error else (403 if "forbidden" in error else 400)
+        raise HTTPException(status, detail={"error": error, "guidance": result.get("guidance")})
     await manager.broadcast({"event": "nodes_merged", "result": result})
     return result
 

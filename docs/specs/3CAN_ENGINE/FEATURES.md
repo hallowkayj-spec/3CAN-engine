@@ -8,11 +8,10 @@
 
 **代码**: `neural-memory/backend/graph_engine.py:683-880 route()`
 
-**实测**: 46-query 内部 benchmark (v9.2 稳态):
-- MRR 0.9239 (PASS ≥0.85 阈值)
-- R@1 0.7826 (76.3% 顶 1 精准)
-- Latency P50 4.4s / P95 5.6s
-- grep_replacement_ratio 0.9348
+**当前可复现证据**: 16-node public synthetic seed fixture 的内容寻址
+46-query receipt: MRR 0.9783, R@1 0.8261, Hit@3 1.0。它只证明 release seed
+graph，不代表真实 OPC 或 production graph。v9.2 的 MRR 0.9239 / P50 4.4s
+属于缺少冻结私有 graph 与逐题 receipt 的历史记录，不是当前 PASS。
 
 **归属**: RRF (Cormack 2009), BGE-M3 (BAAI 2024), bge-reranker-v2-m3 (BAAI 2024), FlashRank fallback (PrithivirajDamodaran)。 详见 [ATTRIBUTION.md](./ATTRIBUTION.md) A1-A3。
 
@@ -68,11 +67,15 @@
 
 ## 6. 生命周期自动衰减
 
-**是什么**: 30 天未 route 命中的 active 节点 → dormant; 60 天 → archive; 一旦被 route 到重新激活。
+**是什么**: 30 天未 route 命中的 active 节点 → dormant; 60 天 →
+`status=archived`。普通 route 默认排除 archived；明确 history 查询仍可读取。
+Archived 只有显式恢复为 active，普通读取不会静默复活。
+尚未 supersede 的 `INTF` / `PROC` / `DEC` / `PRJ` current 节点不会仅因低活跃度
+被自动衰减；已被 supersede 的受保护历史节点才进入该 lifecycle。
 
 **代码**: `graph_engine` lifecycle_sweep + `app.py:/api/lifecycle/sweep /api/lifecycle/stats`
 
-**数据**: 721 active / 664 dormant (2026-04-18)
+**历史数据**: 721 active / 664 dormant (2026-04-18，不是当前 release 验收)
 
 **归属**: Zep / Graphiti 的 activation decay 思路 (详见 ATTRIBUTION B4)
 

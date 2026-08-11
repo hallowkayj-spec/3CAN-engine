@@ -45,6 +45,7 @@ info:
     - 404: 资源不存在 (node_id / agent_id 查不到)
     - 409: R1 查重拒绝 (创节点时已有同类, top1 score ≥ 0.045)
     - 422: 质量不达标 (strict=true 时节点质量差)
+    - 429: writeback 成功变更速率超限；仅成功且去重的 mutated node 计数
     - 503: backend 不可达 (proxy 显示 active slot down)
   contact:
     name: 3CAN Engine
@@ -116,6 +117,40 @@ paths:
         - name: budget_tokens
           in: query
           schema: { type: integer }
+      responses:
+        '200': { description: Routing response in the requested projection mode. }
+
+  /api/route/outcome:
+    post:
+      tags: [route]
+      summary: Record one bounded route-outcome signal through the canonical feedback owner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteOutcomeRequest'
+      responses:
+        '200': { description: Outcome recorded. }
+        '400': { description: Query, node identity, or finite signal contract failed before write. }
+
+  /api/route/feedback:
+    post:
+      tags: [route]
+      summary: Record an explicit positive/negative correction as one validated batch.
+      description: >
+        Node IDs must be unique, exist, and not be ErrorKnowledge-reserved.
+        Keyword promotion needs three separate confirmations. Protected durable
+        families never change through feedback; use canonical durable writeback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteFeedbackRequest'
+      responses:
+        '200': { description: Feedback batch recorded. }
+        '400': { description: Entire batch rejected before learning state changed. }
 
   /api/retrieve/{node_id}:
     get:
@@ -129,6 +164,9 @@ paths:
         - name: agent_id
           in: query
           schema: { type: string }
+      responses:
+        '200': { description: Full node retrieval response. }
+        '404': { description: Node not found. }
 
   /api/route/ticket:
     post:
@@ -265,36 +303,106 @@ paths:
           schema: { type: boolean, default: false }
       responses:
         '200': { description: OK }
+        '403': { description: Protected INTF/PROC/DEC/PRJ lacks embedded project identity and durable authority. }
         '409': { description: R1 查重拒绝, 建议 PUT 更新 }
         '422': { description: 质量不达标 (strict=true) }
 
   /api/nodes/{node_id}:
+    parameters:
+      - name: node_id
+        in: path
+        required: true
+        schema: { type: string }
     get:
       tags: [nodes]
+      description: >
+        An agent_id without route correlation uses the legacy latest-route
+        projection. Exact feedback requires route_id; when session_instance_id
+        is supplied, route_id is mandatory. Clients that only need a read should
+        omit all three correlation parameters.
       parameters:
-        - name: node_id
-          in: path
-          required: true
-          schema: { type: string }
         - name: agent_id
           in: query
           schema: { type: string }
+        - name: session_instance_id
+          in: query
+          schema: { type: string }
+        - name: route_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: Node returned; exact correlated reads may include inferred outcome metadata. }
+        '400': { description: Route correlation parameters are incomplete or invalid. }
+        '404': { description: Node not found. }
     put:
       tags: [nodes]
       summary: 更新节点 (部分字段, 增量 embedding)
+      description: >
+        Protected INTF/PROC/DEC/PRJ updates must carry complete project identity
+        and durable_authority in content.extra.
+      responses:
+        '200': { description: Node updated. }
+        '403': { description: Protected durable-current authority missing or mismatched. }
+        '404': { description: Node not found. }
+    delete:
+      tags: [nodes]
+      summary: Delete an unprotected node.
+      responses:
+        '200': { description: Unprotected node deleted. }
+        '403': { description: Durable-current, ErrorKnowledge, or supersession endpoint requires its canonical lifecycle owner. }
+        '404': { description: Node not found. }
 
   /api/edges:
     post:
       tags: [edges]
+      summary: Create an edge.
+      description: >
+        supersedes requires the same semantic family; scoped endpoints require
+        exact project/namespace identity. Protected replacements additionally
+        require an active source carrying durable authority. Validation is owned
+        by GraphEngine, not only this HTTP handler.
+      responses:
+        '200': { description: Edge created. }
+        '400': { description: Supersession or edge identity contract failed. }
+        '409': { description: Duplicate edge. }
     get:
       tags: [edges]
+      responses:
+        '200': { description: Edge list. }
     delete:
       tags: [edges]
+      description: Ordinary edges may be deleted; supersedes lineage is immutable through this public endpoint.
+      parameters:
+        - name: source
+          in: query
+          required: true
+          schema: { type: string }
+        - name: target
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Ordinary edge deleted. }
+        '403': { description: supersedes lineage cannot be removed through public DELETE. }
 
   /api/writeback:
     post:
       tags: [nodes]
       summary: 批量字段更新
+      description: >
+        The 60-second limiter allows five successful mutations per
+        (agent_id, node_id). Invalid requests, duplicate node IDs within one
+        successful batch, and no-op updates do not consume quota.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DurableWritebackRequest'
+      responses:
+        '200': { description: Validated batch applied, including an empty updated list for a no-op. }
+        '400': { description: Input, project identity, authority, or change contract rejected before mutation. }
+        '429': { description: Successful mutation quota exceeded for this agent and node; retry after the 60-second window. }
 
   /api/skills:
     get:
@@ -304,29 +412,41 @@ paths:
         - name: active_only
           in: query
           schema: { type: boolean, default: true }
+      responses:
+        '200': { description: Skill nodes and usage statistics. }
 
   /api/skills/invoke:
     post:
       tags: [skills]
       summary: 记 skill 调用 (通常由 PostToolUse hook 触发)
+      responses:
+        '200': { description: Skill invocation recorded. }
 
   /api/audit/verify:
     get:
       tags: [audit]
       summary: 校验 activity_log hash chain 完整性
+      responses:
+        '200': { description: Hash-chain verification result. }
 
   /api/agents/checkin:
     post:
       tags: [agents]
+      responses:
+        '200': { description: Agent check-in projection. }
 
   /api/agents:
     get:
       tags: [agents]
+      responses:
+        '200': { description: Persisted agent registry with heartbeat-age projection. }
 
   /api/briefing:
     get:
       tags: [agents]
       summary: 冷启动 briefing (新 session 拉全局)
+      responses:
+        '200': { description: Bounded session briefing. }
 
   /api/activity:
     get:
@@ -335,6 +455,8 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, default: 50 }
+      responses:
+        '200': { description: Recent activity entries. }
 
   /api/activity/log:
     post:
@@ -378,32 +500,51 @@ paths:
     get:
       tags: [audit]
       summary: 图谱统计
+      responses:
+        '200': { description: Shallow or deep graph and readiness statistics. }
 
   /api/health/scan:
     get:
       tags: [audit]
       summary: 健康扫描 (孤立 / 零激活 / prefix 分布)
+      responses:
+        '200': { description: Graph health diagnostics. }
 
   /api/lifecycle/sweep:
     post:
       tags: [lifecycle]
-      summary: 生命周期扫描 (active→dormant 30d / dormant→archive 60d, 永不删除)
+      summary: 生命周期扫描 (active→dormant 30d / dormant→archived 60d, 永不删除)
+      description: >
+        archived is a persisted NodeStatus. Ordinary route excludes it; explicit
+        history route and exact GET can still read it. Protected families are not
+        mutated by generic batch-dormant, and unsuperseded protected current nodes
+        are not aged out by the sweep.
+      responses:
+        '200': { description: Lifecycle transition counts and bounded node samples. }
 
   /api/admin/state:
     get:
       tags: [admin]
+      responses:
+        '200': { description: Blue/green admin state. }
 
   /api/admin/deploy:
     post:
       tags: [admin]
+      responses:
+        '200': { description: Candidate deployment result. }
 
   /api/admin/switch:
     post:
       tags: [admin]
+      responses:
+        '200': { description: Active-slot switch result. }
 
   /api/admin/retire:
     post:
       tags: [admin]
+      responses:
+        '200': { description: Inactive-slot retirement result. }
 
 components:
   schemas:
@@ -415,6 +556,12 @@ components:
         max_nodes: { type: integer, default: 10 }
         include_edges: { type: boolean, default: true }
         agent_id: { type: string, default: unknown }
+        session_instance_id: { type: string, nullable: true }
+        route_id: { type: string, nullable: true }
+        project_id: { type: string, nullable: true }
+        project_namespace: { type: string, nullable: true }
+        workspace_id: { type: string, nullable: true }
+        workorder_id: { type: string, nullable: true }
         mode: { type: string, enum: [skeleton, slim, full], default: slim }
         budget_tokens: { type: integer, nullable: true }
         confirm_low_confidence:
@@ -440,6 +587,7 @@ components:
           items: { type: string }
         task_type: { type: string, default: Edit }
         project_id: { type: string, default: unspecified }
+        project_namespace: { type: string, default: unspecified }
         workspace_id: { type: string, default: unspecified }
         workorder_id: { type: string, default: unspecified }
         policy_version: { type: string, default: 3can.ticket-policy/v2 }
@@ -452,6 +600,7 @@ components:
         - issued_at
         - ttl_sec
         - project_id
+        - project_namespace
         - workspace_id
         - workorder_id
         - target_digest
@@ -465,6 +614,7 @@ components:
         issued_at: { type: string }
         ttl_sec: { type: integer, example: 900 }
         project_id: { type: string }
+        project_namespace: { type: string }
         workspace_id: { type: string }
         workorder_id: { type: string }
         target_digest: { type: string }
@@ -633,6 +783,7 @@ components:
         confidence: { type: string, enum: [high, medium, low] }
         confidence_meta: { type: object }
         fallback_hint: { type: string, nullable: true }
+        route_meta: { type: object }
 
     RoutingResponseFull:
       type: object
@@ -646,7 +797,55 @@ components:
         scores: { type: object }
         total_nodes: { type: integer }
         total_edges: { type: integer }
+        route_meta: { type: object }
 
+    DurableWritebackRequest:
+      type: object
+      required: [changes]
+      properties:
+        agent_id: { type: string, default: unknown }
+        source_authority:
+          type: string
+          enum: [machine_verifiable, user_authoritative, untrusted_inferred]
+          default: untrusted_inferred
+        verification_state: { type: string, default: unverified }
+        evidence_refs:
+          type: array
+          items: { type: string }
+        authorized_by:
+          type: string
+          description: Audit assertion; `user` is not cryptographic authentication.
+        project_id: { type: string, nullable: true }
+        project_namespace: { type: string, nullable: true }
+        workspace_id: { type: string, nullable: true }
+        workorder_id: { type: string, nullable: true }
+        changes:
+          type: array
+          items: { type: object }
+
+    RouteOutcomeRequest:
+      type: object
+      required: [query, node_id]
+      properties:
+        query: { type: string, minLength: 1 }
+        node_id: { type: string, minLength: 1 }
+        signal: { type: number, minimum: -1.0, maximum: 1.0, default: 1.0 }
+
+    RouteFeedbackRequest:
+      type: object
+      required: [query, correct_node_ids]
+      properties:
+        query: { type: string, minLength: 1 }
+        agent_id: { type: string, default: unknown }
+        correct_node_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string }
+        wrong_node_ids:
+          type: array
+          uniqueItems: true
+          items: { type: string }
     NodeSlim:
       type: object
       properties:

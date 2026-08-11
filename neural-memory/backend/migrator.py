@@ -255,7 +255,12 @@ def migrate() -> None:
             priority=priority,
         )
 
-        node = engine.create_node(req)
+        try:
+            node = engine.create_node(req)
+        except PermissionError as exc:
+            skipped += 1
+            print(f"  [SKIP] {node_id}: {exc}")
+            continue
         nodes[node.id] = node
         created += 1
         print(f"  [+] {node.id}: {node.name} ({cluster})")
