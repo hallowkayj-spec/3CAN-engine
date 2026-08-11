@@ -815,6 +815,8 @@ def test_verifier_exercises_project_isolation_writeback_and_error_lifecycle(
                     for node_id, node in created.items()
                     if node["content"]["extra"]["project_id"]
                     == payload["project_id"]
+                    and node["content"]["extra"]["project_namespace"]
+                    == payload["project_namespace"]
                 ]
                 return True, {"nodes": visible, "route_meta": {}}
             return True, {
@@ -859,12 +861,23 @@ def test_verifier_exercises_project_isolation_writeback_and_error_lifecycle(
             "--project-id",
             "public-rc",
             "--project-namespace",
-            "public-rc",
+            "public-scope",
         ],
     )
 
     assert verifier.main() == 0
     assert len(created) == 2
+    created_scopes = {
+        (
+            node["content"]["extra"]["project_id"],
+            node["content"]["extra"]["project_namespace"],
+        )
+        for node in created.values()
+    }
+    assert created_scopes == {
+        ("public-rc", "public-scope"),
+        ("public-rc-other", "public-scope-other"),
+    }
     assert error_calls == 2
 
 

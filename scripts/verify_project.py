@@ -199,7 +199,11 @@ def main() -> int:
         node_b = f"DOC-public-rc-b-{suffix}"
         common_keyword = f"publicrcisolation{suffix}"
 
-        def create_fixture(node_id: str, project_id: str) -> tuple[bool, Any]:
+        def create_fixture(
+            node_id: str,
+            project_id: str,
+            project_namespace: str,
+        ) -> tuple[bool, Any]:
             return request_json(
                 "POST",
                 f"{base_url}/api/nodes?force=true",
@@ -212,7 +216,7 @@ def main() -> int:
                         "description": f"{common_keyword} project isolation fixture",
                         "extra": {
                             "project_id": project_id,
-                            "project_namespace": project_id,
+                            "project_namespace": project_namespace,
                         },
                     },
                     "activation_keywords": [
@@ -226,9 +230,18 @@ def main() -> int:
                 timeout=10,
             )
 
-        create_a_ok, create_a = create_fixture(node_a, args.project_id)
+        create_a_ok, create_a = create_fixture(
+            node_a,
+            args.project_id,
+            args.project_namespace,
+        )
         other_project = f"{args.project_id}-other"
-        create_b_ok, create_b = create_fixture(node_b, other_project)
+        other_namespace = f"{args.project_namespace}-other"
+        create_b_ok, create_b = create_fixture(
+            node_b,
+            other_project,
+            other_namespace,
+        )
         isolated_ok, isolated = request_json(
             "POST",
             f"{base_url}/api/route",

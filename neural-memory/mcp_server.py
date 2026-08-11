@@ -260,6 +260,10 @@ def briefing(
     project_namespace: str = "",
 ) -> str:
     """获取Agent冷启动简报 — 高频节点+待处理handoff+近期活动."""
+    if bool(project_id) != bool(project_namespace):
+        raise ValueError(
+            "project_id and project_namespace must be supplied together"
+        )
     data = _get(
         "/api/briefing",
         {

@@ -447,6 +447,56 @@ def test_mcp_formats_compact_owner_defaults():
     )
 
 
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"project_id": "project-a"},
+        {"project_namespace": "project-a"},
+    ],
+)
+def test_mcp_briefing_rejects_partial_project_identity(monkeypatch, scope):
+    mcp = _load("owner_intent_mcp_scope_test", ROOT / "mcp_server.py")
+    calls = []
+    monkeypatch.setattr(mcp, "_get", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    with pytest.raises(
+        ValueError,
+        match="project_id and project_namespace must be supplied together",
+    ):
+        mcp.briefing(**scope)
+
+    assert calls == []
+
+
+def test_mcp_briefing_forwards_complete_project_identity(monkeypatch):
+    mcp = _load("owner_intent_mcp_complete_scope_test", ROOT / "mcp_server.py")
+    calls = []
+
+    def fake_get(path, params):
+        calls.append((path, params))
+        return {"agent_id": params["agent_id"]}
+
+    monkeypatch.setattr(mcp, "_get", fake_get)
+
+    mcp.briefing(
+        agent_id="mcp-project-a",
+        project_id="project-a",
+        project_namespace="namespace-a",
+    )
+
+    assert calls == [
+        (
+            "/api/briefing",
+            {
+                "agent_id": "mcp-project-a",
+                "max_nodes": 6,
+                "project_id": "project-a",
+                "project_namespace": "namespace-a",
+            },
+        )
+    ]
+
+
 def test_project_briefing_filters_activity_and_ranks_applicable_errors_first(
     tmp_path,
     monkeypatch,

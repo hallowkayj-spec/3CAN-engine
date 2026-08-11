@@ -92,7 +92,7 @@ jobs:
           $capsulePath = Join-Path $env:THREECAN_PROJECT_DIR '.agents/project.json'
           $capsule = Get-Content -LiteralPath $capsulePath -Raw | ConvertFrom-Json
           $capsule.project_id = 'public-rc'
-          $capsule.project_namespace = 'public-rc'
+          $capsule.project_namespace = 'public-scope'
           $capsule.project_name = '3CAN public RC fixture'
           $capsule.git_repository = 'github.com/public-rc/fixture'
           $capsule | ConvertTo-Json | Set-Content -LiteralPath $capsulePath -Encoding utf8NoBOM
@@ -127,7 +127,7 @@ jobs:
             if (-not $ready) {
               throw 'isolated 9701 did not become ready'
             }
-            python -B scripts/verify_project.py --base-url $env:THREECAN_BASE_URL --min-nodes 10 --project-id public-rc --project-namespace public-rc --exercise-writes
+            python -B scripts/verify_project.py --base-url $env:THREECAN_BASE_URL --min-nodes 10 --project-id public-rc --project-namespace public-scope --exercise-writes
             if ($LASTEXITCODE -ne 0) {
               throw 'verify_project failed'
             }
