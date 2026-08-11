@@ -3,16 +3,17 @@
 Status: `VERIFIED_CANDIDATE`
 
 This receipt covers candidate engine commit
-`8cef3c4ba36c833341cd423b0626aff4f4d75e32` and benchmark receipt commit
-`19e0752dde2d2c21eacd30d6d6710b00b1eb6b18`. It does not claim that a private
-production installation has deployed this candidate; see
+`8cef3c4ba36c833341cd423b0626aff4f4d75e32`, public client/verifier repair
+`a366f14209aa474b0e3d4f1171fe2b42ecd66846`, and refreshed benchmark and
+clean-clone source commit `c5d28fd4c5dc57215edfa2f9855552f538d045e2`.
+It does not claim that a private production installation has deployed this candidate; see
 [`CURRENT_PRODUCTION.md`](CURRENT_PRODUCTION.md).
 
 ## Gates
 
 | Gate | Command or evidence | Result |
 | --- | --- | --- |
-| Full release tests | `python -m pytest neural-memory/tests -q` | 427 passed |
+| Full release tests | `python -m pytest neural-memory/tests -q` | 430 passed |
 | Owner Intent and applicable-reality tests | `test_owner_intent.py` plus focused routing/release suites | passed |
 | Public Python lint | Ruff `0.15.7`: `python -m ruff check neural-memory examples scripts` | clean |
 | Release isolation | `python scripts/prerelease_scan.py --strict .` | clean |
@@ -22,7 +23,7 @@ production installation has deployed this candidate; see
 | Immutable candidate | release `03cf214a...`, 24-file manifest `ab5fa950...` | builder, bootstrap, handoff, finalizer, negative dependency, and post-UAT verification passed |
 | Isolated real-graph UAT | copied 5432-node / 6920-edge graph on `9701` | BGE-M3 5432x1024; Owner Intent `server_local_file`; compact default produced skeleton; partial identity returned 422; listener removed |
 | Private real-graph regression | frozen copied graph, original 12 + 12 held-out, four warm repeats | deterministic; correctness unchanged |
-| Clean-clone public RC | fresh clone at `24c6161`, fresh `requirements-min.txt` venv, new seed graph/project on `9701` | start, readiness, route, exact read, writeback, ErrorKnowledge, project isolation, project kit, and clean stop passed |
+| Clean-clone public RC | fresh clone at `c5d28fd`, fresh `requirements-min.txt` venv, new seed graph/project on `9701` | non-equal project/namespace scope, start, readiness, route, exact read, writeback, ErrorKnowledge, project isolation, project kit, and clean stop passed |
 | Bounded secret/private-path scan | candidate diff only | clean |
 | GitHub-hosted CI | final Draft PR head | required; GitHub is the live status owner |
 
@@ -58,6 +59,9 @@ Python or Setuptools upgrade.
   ErrorKnowledge evidence verifies a resolution but is not claim-bound to an
   arbitrary target node/field/value. Arbitrary valid or invalid pointers do not
   qualify.
+- MCP briefing rejects partial project identity before HTTP dispatch. The
+  generic verifier keeps project ID and namespace distinct and the clean-clone
+  fixture proves a non-equal pair instead of relying on coincident names.
 
 ## Real-graph route regression
 
@@ -87,6 +91,11 @@ identity of an earlier content-addressed candidate. It stopped cleanly, left
 production unchanged, and caused no code change. The corrected immutable-path
 expectation then passed the full UAT. Both receipts remain in the private task
 audit chain.
+
+The immutable 24-file runtime contains the engine surface frozen at `8cef3c4`.
+The later MCP client and generic verifier repair does not alter that runtime
+closure; it is instead covered by the full public test suite, refreshed seed
+receipt, and fresh clean-clone acceptance at `c5d28fd`.
 
 ## Review
 

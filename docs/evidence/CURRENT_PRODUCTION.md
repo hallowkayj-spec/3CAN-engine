@@ -27,23 +27,32 @@ cutover and substantiates the generation-15 / `cb532da` production boundary.
 [`PRODUCTION_SOURCE_BOUNDARY_20260810.md`](PRODUCTION_SOURCE_BOUNDARY_20260810.md)
 remains the historical boundary showing that later `380804c` changes were
 candidate-only. PR #4 repaired the project-identity pair gate at `b5abff7`;
-PR #5 builds on that reviewed boundary at `8cef3c4`. Neither candidate was
-retroactively treated as deployed.
+PR #5 adds its runtime engine at `8cef3c4`, then repairs the public MCP and
+verification boundary at `a366f14` with refreshed evidence at `c5d28fd`.
+Neither candidate was retroactively treated as deployed.
 
 ## New candidate
 
 - engine source commit: `8cef3c4ba36c833341cd423b0626aff4f4d75e32`
-- benchmark receipt commit: `19e0752dde2d2c21eacd30d6d6710b00b1eb6b18`
+- public client/verifier repair commit: `a366f14209aa474b0e3d4f1171fe2b42ecd66846`
+- benchmark receipt and clean-clone source commit: `c5d28fd4c5dc57215edfa2f9855552f538d045e2`
 - reviewed predecessor: `b53cd959420612a2c11fb831300ef9afce0f2ff8`
 - candidate deployed: `false`
 - candidate runtime release: `03cf214a6158bb34bb37e5dbc3831269ee453a90f5ed491c3bb1ba912ae21dff`
 - candidate runtime tree: `a4c48044c89f568939b4c863847d50492dcc68ffca69fac0e016769a4411521c`
 - candidate manifest: `ab5fa950418db3af19ca0735343a0b125792f9796a2585fc2803070d628a6a54`
 - isolated UAT: port `9701`, `development_ready=true`, `production_ready=false`, Owner Intent loaded from the server-local project file, partial project identity returned `422`, listener removed after test
+- clean-clone acceptance: fresh minimal venv at `c5d28fd`, non-equal `public-rc` / `public-scope` identity, write isolation, writeback, ErrorKnowledge, project kit, and clean stop all passed
 - candidate `backend/app.py`: `b9d6a7094805de7cd6981d2d8279020f7b23e53ca88709f0dabec581a91496cf`
 - candidate `backend/graph_engine.py`: `c07caec569d410dd30686d380db892d4f57c2c54506ba802e18694aa729a628c`
 - candidate `backend/models.py`: `a39efbf537a0b57b61adc45a67abcd3d17f12989159458d40ffa9d050b84f6b2`
 - candidate `backend/owner_intent.py`: `9a4fe56a1416b34f3819e896df88b05fe70f4054ce9276a6e152cd87696733f5`
+
+The MCP and generic verifier repair is outside the 24-file immutable runtime
+payload. The content-addressed runtime therefore remains bound to `8cef3c4`;
+the complete public package, focused tests, full suite, seed benchmark, and
+fresh clean clone bind the later public repair. This is a scope distinction,
+not a claim that `c5d28fd` is deployed.
 
 Candidate validation is summarized in
 [`RELEASE_VALIDATION_20260809.md`](RELEASE_VALIDATION_20260809.md). Production
