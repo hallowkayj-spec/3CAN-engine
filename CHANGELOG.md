@@ -15,9 +15,10 @@ claim that any private production graph has been migrated.
 
 - Renamed the unreleased durable-current source contract from misleading
   `Authority` terminology to one canonical `Provenance` contract. User direction
-  remains an explicit audit assertion, while machine claims now require an
-  existing server-verified ErrorKnowledge evidence bundle; arbitrary pointers
-  cannot promote protected current truth.
+  remains an explicit audit assertion. Existing ErrorKnowledge receipts verify
+  resolutions but do not bind an arbitrary target node/field/value, so machine
+  claims remain fail-closed for protected current writes instead of borrowing
+  an unrelated valid receipt.
 - Ordered project-scoped current retrieval as exact project, explicit
   shared/global, unscoped legacy fallback, then mismatch exclusion. Missing
   project metadata is never guessed to be global.

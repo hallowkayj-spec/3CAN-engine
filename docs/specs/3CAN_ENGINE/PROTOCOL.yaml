@@ -810,9 +810,10 @@ components:
           default: untrusted_inferred
           description: >
             Caller source claim. user_authoritative requires authorized_by=user
-            but is not authentication. machine_verifiable is eligible for
-            durable current only when every evidence_ref names an existing
-            server-verified ErrorKnowledge EVD bundle; arbitrary pointers fail.
+            but is not authentication. machine_verifiable remains fail-closed
+            for protected durable current because existing EVD receipts verify
+            resolutions but do not bind the target node, field, and value;
+            unrelated valid receipts and arbitrary pointers both fail.
         verification_state: { type: string, default: unverified }
         evidence_refs:
           type: array

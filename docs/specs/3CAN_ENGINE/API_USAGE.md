@@ -202,11 +202,13 @@ requests.post("/api/writeback", json={
 })
 ```
 
-机器事实使用 `source_provenance=machine_verifiable`、
-`verification_state=verified`，并把 `evidence_refs` 指向现有服务端已验证的
-ErrorKnowledge `EVD-*` bundle。任意 Git SHA、CI URL、runtime 路径、activity/done、
-网页内容或 Agent 推断都不能单独升级 durable current；未来的 Git/CI/runtime/test
-receipt 必须先接入现有 verifier，而不是仅靠调用者写一个看似可信的字符串。
+机器事实可声明 `source_provenance=machine_verifiable`、
+`verification_state=verified` 与 `evidence_refs`，但当前 ErrorKnowledge `EVD-*`
+只验证某个 resolution，并未把 target node/field/value 绑定到该证据。因此本版本的
+machine 路径对 protected durable current 保持 fail-closed；即使引用真实 EVD 也不能
+跨事实借用。任意 Git SHA、CI URL、runtime 路径、activity/done、网页内容或 Agent
+推断同样不能单独升级 durable current。未来只有 canonical evidence owner 产出的
+claim-bound receipt 才能开启该路径，不能靠调用者写一个看似可信的字符串。
 `user_authoritative + authorized_by=user` 仍只是“调用者声明来自用户明确方向”的审计
 记录，不是身份认证或安全边界。
 

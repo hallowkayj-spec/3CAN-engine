@@ -73,14 +73,14 @@ in the writeback JSON. User direction stays lightweight:
 }
 ```
 
-Machine facts use `source_provenance=machine_verifiable`,
-`verification_state=verified`, and references to existing server-verified
-ErrorKnowledge `EVD-*` bundles. Raw hashes, paths, URLs, web content, Agent
-guesses, activity completion, and Session summaries remain untrusted and cannot
-silently become current truth. `user_authoritative` records a caller assertion,
-not authentication or an approval subsystem. Protected `INTF` / `PROC` / `DEC`
-/ `PRJ` node POST/PUT calls put the same provenance plus project ID/namespace in
-`content.extra`; direct DELETE is not the lifecycle path.
+Machine facts may declare `source_provenance=machine_verifiable`, but the
+protected-current gate remains fail-closed until a canonical evidence owner
+binds the target node/field/value. Existing ErrorKnowledge resolution receipts,
+raw hashes, paths, URLs, web content, Agent guesses, activity completion, and
+Session summaries cannot be borrowed across facts. `user_authoritative` records
+a caller assertion, not authentication or an approval subsystem. Protected
+`INTF` / `PROC` / `DEC` / `PRJ` node POST/PUT calls put the same provenance plus
+project ID/namespace in `content.extra`; direct DELETE is not the lifecycle path.
 
 After a serious milestone, run the repository's
 `neural-memory/benchmark/milestone_recovery_probe.py` with a new AgentId and a

@@ -1400,25 +1400,6 @@ class GraphEngine:
                 + ",".join(reserved)
             )
 
-    def _machine_evidence_ref_verified(self, reference: str) -> bool:
-        """Accept only an existing server-verified ErrorKnowledge EVD bundle."""
-
-        evidence_id = str(reference or "").strip()
-        if not evidence_id.casefold().startswith("evd-"):
-            return False
-        evidence = self.nodes.get(evidence_id)
-        extra = self._node_extra(evidence)
-        case_id = str(extra.get("error_id") or "").strip()
-        resolution_id = str(extra.get("resolution_id") or "").strip()
-        if not case_id or not resolution_id:
-            return False
-        bundle = self._verified_solution_bundle_for_case(case_id, resolution_id)
-        return bool(
-            bundle
-            and bundle.get("evidence_id") == evidence_id
-            and self._error_case_has_verified_solution(self.nodes.get(case_id))
-        )
-
     def _durable_provenance_permits_current(
         self,
         provenance: DurableProvenance,
@@ -1431,10 +1412,11 @@ class GraphEngine:
         if source == "user_authoritative":
             return True
         if source == "machine_verifiable":
-            return all(
-                self._machine_evidence_ref_verified(reference)
-                for reference in provenance.evidence_refs
-            )
+            # Existing EVD bundles verify an ErrorKnowledge resolution, not the
+            # target node/field/value of an arbitrary durable-current claim.
+            # Until a canonical owner emits that binding, fail closed instead
+            # of treating an unrelated valid receipt as authority.
+            return False
         return False
 
     def _assert_durable_current_mutation_owner(
@@ -3745,7 +3727,7 @@ class GraphEngine:
         task: str,
         task_topics: set[str],
         *,
-        hot_edge_counts: dict[str, int] | None = None,
+        hot_edge_counts: dict[str, int],
     ) -> tuple[int, int, int, float, int, int, str]:
         node = self.nodes.get(node_id)
         topics = self._core_node_topics(node_id, node)
@@ -3757,11 +3739,7 @@ class GraphEngine:
         term_hits = sum(1 for term in task_terms if term in node_text)
         priority_weight = self._NODE_EXEC_PRIORITY.get(self._node_priority_value(node), 50.0) if node else 0.0
         activation = int(node.activation_count or 0) if node else 0
-        edge_count = self._node_edge_count(
-            node_id,
-            hot_only=True,
-            hot_edge_counts=hot_edge_counts,
-        )
+        edge_count = int(hot_edge_counts.get(node_id, 0))
         stable_bias = (
             1
             if lane == "error_warnings"
@@ -3777,7 +3755,7 @@ class GraphEngine:
         task: str,
         task_topics: set[str],
         *,
-        hot_edge_counts: dict[str, int] | None = None,
+        hot_edge_counts: dict[str, int],
     ) -> list[str]:
         ordered = sorted(
             node_ids,
@@ -3814,7 +3792,7 @@ class GraphEngine:
         task: str,
         task_topics: set[str],
         *,
-        hot_edge_counts: dict[str, int] | None = None,
+        hot_edge_counts: dict[str, int],
     ) -> list[str]:
         candidate_ids = list(node_ids) or list(self._CORE_LANE_FALLBACKS.get(lane, []))
         existing = [node_id for node_id in candidate_ids if node_id in self.nodes]
@@ -3968,29 +3946,6 @@ class GraphEngine:
             explicit_error=False,
         )
 
-    def _node_edge_count(
-        self,
-        node_id: str,
-        *,
-        hot_only: bool = False,
-        hot_edge_counts: dict[str, int] | None = None,
-    ) -> int:
-        if not hot_only:
-            return sum(
-                1 for edge in self.edges
-                if edge.source == node_id or edge.target == node_id
-            )
-        if hot_edge_counts is not None:
-            return int(hot_edge_counts.get(node_id, 0))
-        superseded_ids = self._superseded_node_ids()
-        return sum(
-            1
-            for edge in self.edges
-            if (edge.source == node_id or edge.target == node_id)
-            and self._node_is_hot_route_candidate(edge.source, superseded_ids)
-            and self._node_is_hot_route_candidate(edge.target, superseded_ids)
-        )
-
     def _hot_edge_counts(self, superseded_ids: set[str]) -> dict[str, int]:
         counts: Counter[str] = Counter()
         for edge in self.edges:
@@ -4010,21 +3965,13 @@ class GraphEngine:
         lanes: list[str],
         lane_weights: dict[str, float],
         *,
-        hot_edge_counts: dict[str, int] | None = None,
+        hot_edge_counts: dict[str, int],
     ) -> float:
         lane_base = max((lane_weights.get(lane, 50.0) for lane in lanes), default=50.0)
         priority_weight = self._NODE_EXEC_PRIORITY.get(self._node_priority_value(node), 50.0)
         type_bonus = self._NODE_EXEC_TYPE_BONUS.get(self._node_type_value(node), 0.0)
         heat = min(int(node.activation_count or 0) * 1.5, 8.0)
-        edge_bonus = min(
-            self._node_edge_count(
-                node.id,
-                hot_only=True,
-                hot_edge_counts=hot_edge_counts,
-            )
-            * 2.0,
-            8.0,
-        )
+        edge_bonus = min(int(hot_edge_counts.get(node.id, 0)) * 2.0, 8.0)
         raw = lane_base * 0.55 + priority_weight * 0.35 + type_bonus + heat + edge_bonus
         factor = self._NODE_EXEC_STATUS_FACTOR.get(self._node_status_value(node), 0.5)
         return round(max(0.0, min(100.0, raw * factor)), 2)
@@ -4276,11 +4223,7 @@ class GraphEngine:
                 "status": self._node_status_value(node),
                 "type": self._node_type_value(node),
                 "activation_count": node.activation_count,
-                "edge_count": self._node_edge_count(
-                    node_id,
-                    hot_only=True,
-                    hot_edge_counts=hot_edge_counts,
-                ),
+                "edge_count": int(hot_edge_counts.get(node_id, 0)),
             })
         node_weights.sort(key=lambda item: (-float(item["execution_weight"]), item["id"]))
 

@@ -44,8 +44,10 @@ Python or Setuptools upgrade.
   surface or a second state machine.
 - Project-scoped current retrieval orders exact project, explicit shared/global,
   unscoped fallback, then excludes explicit mismatch.
-- Protected durable-current machine writes require an existing server-verified
-  ErrorKnowledge evidence bundle. Arbitrary hashes or pointers do not qualify.
+- Protected durable-current machine writes remain fail-closed: existing
+  ErrorKnowledge evidence verifies a resolution but is not claim-bound to an
+  arbitrary target node/field/value. Arbitrary valid or invalid pointers do not
+  qualify.
 
 ## Real-graph route regression
 

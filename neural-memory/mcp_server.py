@@ -183,10 +183,10 @@ def writeback(
 ) -> str:
     """回写节点变更. field: current_state / notes / status / description.
 
-    Durable current fields require either machine_verifiable + a verified evidence
-    pointer, or user_authoritative + authorized_by=user. Both are audit declarations
-    at this surface, not authentication/signature verification. Notes/last_session
-    remain low-ceremony.
+    Durable current fields accept user_authoritative + authorized_by=user as an audit
+    assertion. machine_verifiable remains fail-closed until a canonical evidence owner
+    binds the target node/field/value; existing resolution receipts cannot be borrowed
+    across facts. Notes/last_session remain low-ceremony.
     """
     data = _post("/api/writeback", {
         "agent_id": agent_id,

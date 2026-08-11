@@ -1431,7 +1431,7 @@ def test_durable_writeback_rejects_project_identity_takeover(tmp_path, monkeypat
     assert engine.nodes["INTF-PUBLIC-current"].content.extra["project_id"] == "public-demo"
 
 
-def test_machine_verifiable_writeback_requires_server_verified_evidence(
+def test_machine_verifiable_writeback_rejects_unbound_evidence(
     tmp_path,
     monkeypatch,
 ):
@@ -1468,18 +1468,8 @@ def test_machine_verifiable_writeback_requires_server_verified_evidence(
         "project_namespace": "public-demo",
     }
 
-    updated = engine.session_writeback(
-        [change],
-        execution_context=context,
-        provenance=graph_engine.DurableProvenance(
-            source_provenance="machine_verifiable",
-            verification_state="verified",
-            evidence_refs=[evidence_id],
-        ),
-    )
-
-    assert updated == ["INTF-PUBLIC-current"]
     for unsupported_ref in [
+        evidence_id,
         "sha256:" + ("a" * 64),
         "EVD-PUBLIC-does-not-exist",
     ]:
@@ -1496,6 +1486,7 @@ def test_machine_verifiable_writeback_requires_server_verified_evidence(
                     evidence_refs=[unsupported_ref],
                 ),
             )
+    assert engine.nodes["INTF-PUBLIC-current"].content.current_state == ""
 
 
 def test_legacy_authority_names_do_not_create_a_compatibility_gate(

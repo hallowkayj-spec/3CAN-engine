@@ -112,19 +112,20 @@ Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 
 `current_state`、`description`、`status`、`blockers`、`tech_stack` 使用三类
 来源声明：
 
-- `machine_verifiable`: 必须同时有 `verification_state=verified`，且每个
-  `evidence_refs` 都指向现有 3CAN 服务端已验证的 ErrorKnowledge `EVD-*` bundle；
-  任意 SHA、路径、URL、activity self-hash 或调用者自述不构成验证；
+- `machine_verifiable`: 可记录 `verification_state=verified` 与 `evidence_refs`，
+  但当前现有 EVD 仅验证 ErrorKnowledge resolution，未绑定任意 durable-current
+  target node/field/value，因此该来源暂不得授权 protected current 写入；
+  任意 SHA、路径、URL、activity self-hash、无关真实 EVD 或调用者自述都不构成授权；
 - `user_authoritative`: 必须有 `authorized_by=user`；这是 provenance/audit
   assertion，不是 cryptographic authentication 或 security boundary；
 - `untrusted_inferred`（也包括缺失声明）: 不得直接修改 durable current。
 
 `user_authoritative` 是 provenance/audit declaration，不是 credential、RBAC 或
 approval security boundary。`machine_verifiable` 的来源分类仍由调用者声明，但
-durable-current eligibility 由现有服务端 EVD verifier 复核。Git/CI/runtime/test
-receipts 只有先被既有 verifier 投影成合法 EVD bundle 后才能用于该门；本版本不伪装
-支持尚未接入的 receipt 类型。`notes` 和 `last_session` 仍可低 ceremony 回写；它们
-不是 current provenance。
+protected durable-current eligibility 保持 fail-closed，直到 canonical evidence owner
+能够产出 target node/field/value claim binding。Git/CI/runtime/test receipts 或合法 EVD
+都不能被跨事实借用；本版本不伪装支持尚未接入的 claim-bound receipt 类型。`notes`
+和 `last_session` 仍可 low ceremony 回写；它们不是 current provenance。
 
 受保护 family 的公共 `POST /api/nodes` 与 `PUT /api/nodes/{id}` 继续可用，但
 `content.extra` 必须携带完整 project ID、namespace 与同一 `durable_provenance`
