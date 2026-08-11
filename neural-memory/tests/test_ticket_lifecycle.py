@@ -400,13 +400,23 @@ def test_target_manifest_accepts_only_capsule_bound_git_worktree(
 
     assert manifest[0]["kind"] == "file"
     assert str(repo) not in manifest[0]["path"]
-    wsl_target = "/mnt/c/" + str(target).replace("\\", "/").split(":/", 1)[1]
-    assert app._target_state_manifest(
-        [wsl_target],
-        project_id="public-demo",
-        project_namespace="public-demo",
-        workspace_id=workspace_id,
-    ) == manifest
+    windows_path = "C:" + "/".join(("", "Project", "backend", "app.py"))
+    wsl_path = "/" + "/".join(("mnt", "c", "Project", "backend", "app.py"))
+    assert app._canonical_physical_path(windows_path) == app._canonical_physical_path(
+        wsl_path
+    )
+    if sys.platform == "win32":
+        target_wire = str(target).replace("\\", "/")
+        target_drive, target_tail = target_wire.split(":/", 1)
+        wsl_target = "/" + "/".join(
+            ("mnt", target_drive.casefold(), target_tail.lstrip("/"))
+        )
+        assert app._target_state_manifest(
+            [wsl_target],
+            project_id="public-demo",
+            project_namespace="public-demo",
+            workspace_id=workspace_id,
+        ) == manifest
     with pytest.raises(HTTPException) as relative:
         app._target_state_manifest(
             ["backend/app.py"],
