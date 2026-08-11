@@ -84,6 +84,7 @@ jobs:
           THREECAN_PROJECT_DIR: ${{ runner.temp }}/public-rc-project
           THREECAN_ENGINE_ROOT: ${{ github.workspace }}/neural-memory
           PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONIOENCODING: utf-8
         run: |
           $ErrorActionPreference = 'Stop'
           Copy-Item -Recurse -LiteralPath 'examples/codex-cli-project-kit' -Destination $env:THREECAN_PROJECT_DIR
