@@ -346,7 +346,7 @@ v0.2 的固定消耗或节省比例。
 | 层 | 当前证据 | 后续验收门槛 | 状态 |
 |---|---|---|---|
 | **L1 Memory / Retrieval** | 2026-04-15 历史内部记录 MRR 0.9239；发布包缺冻结图谱/原始票据且 fixture 已漂移 | ≥ 0.75 on a reproducible public benchmark | ⚪ v0.2 未重跑 |
-| **L2 Project Substrate** | 历史私有 pilot 记过 top1 0.70，但无原始票据；当前 10-case fixture 为 synthetic_public，尚无 v0.2 receipt | ≥ 0.80 on a frozen 20+ case suite | ⚪ v0.2 未验收 |
+| **L2 Project Substrate** | 当前 [synthetic_public seed receipt](./evidence/SEED_GRAPH_BENCHMARK_20260809.json) 记录 10 cases、top1 1.0、mean top3 recall 0.8167；仅限 development fixture，不证明私有图或真实协作 | ≥ 0.80 on a frozen 20+ case suite | 🟡 PARTIAL：synthetic candidate only |
 | **L3 Harness / Governance** | 历史 denial-biased pilot 记过 8/8，但缺 valid-ticket allow 路径与原始票据 | 覆盖有效票据 allow、拒绝路径和生产触发证据 | ⚪ v0.2 未验收 |
 | **Real UAT** | recorder ready；发布包无当前 v0.2 receipt | ≥ 5 个冻结、可审计场景 | ⚪ 未验收 |
 | **No critical regression** | 以本候选当次 CI/测试票据为准 | 全部必需门槛通过 | ⚪ 发布前待确认 |

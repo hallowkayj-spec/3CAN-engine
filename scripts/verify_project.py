@@ -197,6 +197,7 @@ def main() -> int:
         suffix = uuid.uuid4().hex[:10]
         node_a = f"DOC-public-rc-a-{suffix}"
         node_b = f"DOC-public-rc-b-{suffix}"
+        node_c = f"DOC-public-rc-c-{suffix}"
         common_keyword = f"publicrcisolation{suffix}"
 
         def create_fixture(
@@ -240,6 +241,11 @@ def main() -> int:
         create_b_ok, create_b = create_fixture(
             node_b,
             other_project,
+            args.project_namespace,
+        )
+        create_c_ok, create_c = create_fixture(
+            node_c,
+            args.project_id,
             other_namespace,
         )
         isolated_ok, isolated = request_json(
@@ -266,18 +272,21 @@ def main() -> int:
             "ok": (
                 create_a_ok
                 and create_b_ok
+                and create_c_ok
                 and isolated_ok
                 and node_a in isolated_ids
                 and node_b not in isolated_ids
+                and node_c not in isolated_ids
             ),
             "project_node": node_a,
-            "excluded_node": node_b,
+            "excluded_nodes": [node_b, node_c],
             "returned_node_ids": sorted(isolated_ids),
             "errors": [
                 value
                 for ok, value in (
                     (create_a_ok, create_a),
                     (create_b_ok, create_b),
+                    (create_c_ok, create_c),
                     (isolated_ok, isolated),
                 )
                 if not ok

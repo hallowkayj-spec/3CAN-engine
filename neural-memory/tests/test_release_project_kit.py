@@ -866,7 +866,7 @@ def test_verifier_exercises_project_isolation_writeback_and_error_lifecycle(
     )
 
     assert verifier.main() == 0
-    assert len(created) == 2
+    assert len(created) == 3
     created_scopes = {
         (
             node["content"]["extra"]["project_id"],
@@ -876,7 +876,8 @@ def test_verifier_exercises_project_isolation_writeback_and_error_lifecycle(
     }
     assert created_scopes == {
         ("public-rc", "public-scope"),
-        ("public-rc-other", "public-scope-other"),
+        ("public-rc-other", "public-scope"),
+        ("public-rc", "public-scope-other"),
     }
     assert error_calls == 2
 
