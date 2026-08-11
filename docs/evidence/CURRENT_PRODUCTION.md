@@ -26,19 +26,24 @@ The immutable `3can.runtime-ticket-fix-cutover/v1` receipt for run
 cutover and substantiates the generation-15 / `cb532da` production boundary.
 [`PRODUCTION_SOURCE_BOUNDARY_20260810.md`](PRODUCTION_SOURCE_BOUNDARY_20260810.md)
 remains the historical boundary showing that later `380804c` changes were
-candidate-only. This pointer adds the repaired `b5abff7` candidate without
-retroactively claiming any candidate was deployed.
+candidate-only. PR #4 repaired the project-identity pair gate at `b5abff7`;
+PR #5 builds on that reviewed boundary at `8cef3c4`. Neither candidate was
+retroactively treated as deployed.
 
 ## New candidate
 
-- engine source commit: `b5abff7eaba5955a2928ea612d8f73e572fed78a`
-- reviewed predecessor: `16f5f585df13259ec421d71a38c91aaa2c4487ce`
+- engine source commit: `8cef3c4ba36c833341cd423b0626aff4f4d75e32`
+- benchmark receipt commit: `19e0752dde2d2c21eacd30d6d6710b00b1eb6b18`
+- reviewed predecessor: `b53cd959420612a2c11fb831300ef9afce0f2ff8`
 - candidate deployed: `false`
-- candidate runtime release: `b0cd06015388acf8ea0abf5bda62eb9b31ad62d832a459d9107e37f54a8d5a97`
-- isolated UAT: port `9701`, `development_ready=true`, `production_ready=false`, listener removed after test
-- candidate `backend/app.py`: `3570ae548ecc1e54bdcdba38366f860f5b4e94ef2542b5c0831d5cc0dc0e35e4`
-- candidate `backend/graph_engine.py`: `44cef0046c3feb48c77a0c9bff3ac15f3b7a02419348b5dec62672b3cae8fa6b`
-- candidate `backend/models.py`: `76c3d2ad1c7083ebd0c0647c388646af3b92213189bbc5aef30fbce29c789d8d`
+- candidate runtime release: `03cf214a6158bb34bb37e5dbc3831269ee453a90f5ed491c3bb1ba912ae21dff`
+- candidate runtime tree: `a4c48044c89f568939b4c863847d50492dcc68ffca69fac0e016769a4411521c`
+- candidate manifest: `ab5fa950418db3af19ca0735343a0b125792f9796a2585fc2803070d628a6a54`
+- isolated UAT: port `9701`, `development_ready=true`, `production_ready=false`, Owner Intent loaded from the server-local project file, partial project identity returned `422`, listener removed after test
+- candidate `backend/app.py`: `b9d6a7094805de7cd6981d2d8279020f7b23e53ca88709f0dabec581a91496cf`
+- candidate `backend/graph_engine.py`: `c07caec569d410dd30686d380db892d4f57c2c54506ba802e18694aa729a628c`
+- candidate `backend/models.py`: `a39efbf537a0b57b61adc45a67abcd3d17f12989159458d40ffa9d050b84f6b2`
+- candidate `backend/owner_intent.py`: `9a4fe56a1416b34f3819e896df88b05fe70f4054ce9276a6e152cd87696733f5`
 
 Candidate validation is summarized in
 [`RELEASE_VALIDATION_20260809.md`](RELEASE_VALIDATION_20260809.md). Production
