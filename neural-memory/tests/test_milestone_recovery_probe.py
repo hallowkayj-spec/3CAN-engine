@@ -340,6 +340,37 @@ def test_probe_rejects_one_character_fact_alternatives_before_network_access():
         )
 
 
+def test_probe_rejects_generic_status_facts_before_network_access():
+    runner = load_runner()
+    spec = probe_spec()
+    spec["critical_facts"][0]["any_of"] = ["current"]
+
+    with pytest.raises(
+        ValueError,
+        match="probe_fact_alternative_not_discriminative",
+    ):
+        runner.run_probe(
+            spec,
+            base_url="http://127.0.0.1:9701",
+            request_json=lambda *_args, **_kwargs: pytest.fail(
+                "non-discriminative spec must fail before network access"
+            ),
+        )
+
+
+def test_probe_uses_token_boundaries_and_full_digest_equality():
+    runner = load_runner()
+    digest = "a" * 64
+
+    assert runner._fact_matches_leaf("pass", "bypass") is False
+    assert runner._fact_matches_leaf("cb532da", "commit cb532da verified") is True
+    assert runner._fact_matches_leaf("cb532da", f"sha256:{digest}") is False
+    assert runner._fact_matches_leaf("a" * 8, f"sha256:{digest}") is False
+    assert runner._fact_matches_leaf(digest, f"sha256:{digest}") is True
+    assert runner._fact_matches_leaf(f"sha256:{digest}", digest) is True
+    assert runner._fact_matches_leaf("immutable runtime", "immutable runtime owner") is True
+
+
 def test_probe_requires_both_fact_classes_before_network_access():
     runner = load_runner()
     spec = probe_spec()

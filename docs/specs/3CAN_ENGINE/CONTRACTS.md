@@ -106,35 +106,38 @@ Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 
     - 拒绝 → PUT status=deprecated (不删, 留痕)
   ```
 
-## 3.1 Durable-current authority
+## 3.1 Durable-current provenance
 
 `POST /api/writeback` 对 `INTF` / `PROC` / `DEC` / `PRJ` 的
 `current_state`、`description`、`status`、`blockers`、`tech_stack` 使用三类
 来源声明：
 
-- `machine_verifiable`: 必须同时有 `verification_state=verified` 和至少一个
-  `evidence_refs` source pointer；该字段表示调用者声明该证据可独立复核，不表示
-  3CAN 已替调用者完成密码学验证；
+- `machine_verifiable`: 必须同时有 `verification_state=verified`，且每个
+  `evidence_refs` 都指向现有 3CAN 服务端已验证的 ErrorKnowledge `EVD-*` bundle；
+  任意 SHA、路径、URL、activity self-hash 或调用者自述不构成验证；
 - `user_authoritative`: 必须有 `authorized_by=user`；这是 provenance/audit
   assertion，不是 cryptographic authentication 或 security boundary；
 - `untrusted_inferred`（也包括缺失声明）: 不得直接修改 durable current。
 
-上述两类 metadata 都是 provenance/audit declaration，不是 credential、RBAC 或
-approval security boundary。`notes` 和 `last_session` 仍可低 ceremony 回写；它们
-不是 current authority。
+`user_authoritative` 是 provenance/audit declaration，不是 credential、RBAC 或
+approval security boundary。`machine_verifiable` 的来源分类仍由调用者声明，但
+durable-current eligibility 由现有服务端 EVD verifier 复核。Git/CI/runtime/test
+receipts 只有先被既有 verifier 投影成合法 EVD bundle 后才能用于该门；本版本不伪装
+支持尚未接入的 receipt 类型。`notes` 和 `last_session` 仍可低 ceremony 回写；它们
+不是 current provenance。
 
 受保护 family 的公共 `POST /api/nodes` 与 `PUT /api/nodes/{id}` 继续可用，但
-`content.extra` 必须携带完整 project ID、namespace 与同一 `durable_authority`
+`content.extra` 必须携带完整 project ID、namespace 与同一 `durable_provenance`
 回执。公共 DELETE 不允许删除这些 durable-current 节点；状态变更走 authorized
 writeback，替代关系走 `supersedes`。这保留完整 NodeCreate/NodeUpdate 能力，且
 不新增第二套审批协议。
 
 项目已有 identity 时，durable-current writeback 必须携带并匹配 project ID 与
-namespace。合法来源回执记录在既有 `content.extra.durable_authority`，不新建
+namespace。合法来源回执记录在既有 `content.extra.durable_provenance`，不新建
 审批数据库。writeback 不会把已有 unscoped/global 节点自动占为某个项目。
 通用 `supersedes` 只允许同 semantic family；任一端已有 project identity 时，
 双方必须完整且精确匹配。受保护 family 的 replacement source 还必须 active 并
-带合法 durable authority。`supersedes` 边不能从公共 DELETE 移除，受保护 family
+带合法 durable provenance。`supersedes` 边不能从公共 DELETE 移除，受保护 family
 也不能通过 generic merge 绕过该契约。普通 route 默认排除 superseded target，
 只有明确 history 查询可恢复；supersedes 任一端点也不能通过 generic node DELETE
 抹去 lineage。lifecycle sweep 不会仅因低活跃度衰减尚未 supersede 的受保护 current
@@ -150,6 +153,12 @@ route。它只对成功路由的 expected node 做不带 feedback correlation �
 拼接凑出 PASS。匹配范围只包含节点身份与 durable content 字段；低 ceremony 的
 `notes`、`last_session` 和学习关键词不能构成事实证明。任一缺失返回 `PARTIAL`；
 该工具不引入第二存储或后台任务。
+
+Project-scoped current route 的 applicability 顺序固定为：精确 project + namespace、
+显式 `content.extra.applicability.scope=global|shared`、unscoped legacy/unknown fallback、
+显式 mismatch 排除。缺 project metadata 不会被猜成 global；scope 与 project identity
+同时声明属于冲突 metadata 并被排除。project-scoped must-consume core lane 仍只接受
+精确 project + namespace。
 
 ## 4. R1 查重协议 (创节点前先查)
 

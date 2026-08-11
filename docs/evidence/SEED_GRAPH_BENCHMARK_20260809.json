@@ -1,7 +1,7 @@
 {
   "schema_version": "3can.benchmark-receipt/v1",
   "status": "VERIFIED_CANDIDATE",
-  "observed_at_utc": "2026-08-11T11:24:16Z",
+  "observed_at_utc": "2026-08-11T13:35:36Z",
   "scope": "fresh release seed graph",
   "runtime": {
     "python": "3.14.0",
@@ -13,7 +13,10 @@
     "edges": 12
   },
   "source_sha256": {
-    "neural-memory/backend/graph_engine.py": "ba3b74b0ea8c68167820a7bc50775ae401b1dd1749df3a04ccd56f84fc474cd8",
+    "neural-memory/backend/app.py": "3570ae548ecc1e54bdcdba38366f860f5b4e94ef2542b5c0831d5cc0dc0e35e4",
+    "neural-memory/backend/graph_engine.py": "343b2d81e0ac554ecb2af47ad873e73f6fbca95901676282c1a36e486269298a",
+    "neural-memory/backend/models.py": "66cfb869fc3e1c74ce9556b012d6832881e89549d8e408dd922644b640b4509a",
+    "neural-memory/backend/query_expander.py": "3cd31b0dd03715973ffbcb610554222d01cd18644fb5c76b0f6b3b1593124b60",
     "neural-memory/backend/seed_nodes.py": "12e6696421852c44b9eee1465f1d46d1e684c1386e86d508d0df34a188686fab",
     "neural-memory/benchmark/route_benchmark_v1.json": "3f7a39bf30c48f7706f5d3086c1882cd0f6f0ffa7cad967e1552a4aecd832868",
     "neural-memory/benchmark/substrate_bench_v1.json": "88c1d33dfc992bca86475d58baccf1d83c7668789d4b451ad9e5ba4ec764d63e"
@@ -34,7 +37,7 @@
     "Recall@1": 0.8261,
     "Recall@3": 1.0,
     "Hit@3": 1.0,
-    "latency_p95_ms": 35,
+    "latency_p95_ms": 38,
     "grep_fallback_rate": 0.0,
     "verdict": "coordination"
   },
@@ -43,7 +46,7 @@
     "top1_accuracy": 1.0,
     "top3_recall_mean": 0.8167,
     "err_proactive_rate_at_top3": 1.0,
-    "latency_p95_ms": 31
+    "latency_p95_ms": 47
   },
   "limitations": [
     "This receipt proves the public synthetic seed fixture, not a private production graph.",

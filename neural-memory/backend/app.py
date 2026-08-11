@@ -40,7 +40,7 @@ from error_knowledge import (
     deterministic_fingerprint,
 )
 from models import (
-    DurableAuthority,
+    DurableProvenance,
     EdgeCreate,
     EdgeType,
     NodeContent,
@@ -5149,25 +5149,25 @@ async def session_writeback(payload: dict):
     execution_context = _execution_identity_context(
         payload if isinstance(payload, dict) else {}
     )
-    authority_payload = payload if isinstance(payload, dict) else {}
+    provenance_payload = payload if isinstance(payload, dict) else {}
     try:
-        authority = DurableAuthority(
-            source_authority=authority_payload.get("source_authority", "untrusted_inferred"),
-            verification_state=authority_payload.get("verification_state", "unverified"),
-            evidence_refs=authority_payload.get("evidence_refs", []),
-            authorized_by=authority_payload.get("authorized_by", ""),
+        provenance = DurableProvenance(
+            source_provenance=provenance_payload.get("source_provenance", "untrusted_inferred"),
+            verification_state=provenance_payload.get("verification_state", "unverified"),
+            evidence_refs=provenance_payload.get("evidence_refs", []),
+            authorized_by=provenance_payload.get("authorized_by", ""),
         )
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail={"error": "writeback_authority_invalid", "message": str(exc)},
+            detail={"error": "writeback_provenance_invalid", "message": str(exc)},
         ) from exc
     try:
         updated = engine.session_writeback(
             changes,
             agent_id=agent_id,
             execution_context=execution_context,
-            authority=authority,
+            provenance=provenance,
         )
     except ValueError as exc:
         raise HTTPException(

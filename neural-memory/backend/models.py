@@ -109,21 +109,21 @@ class NodeStatus(str, Enum):
     deprecated = "deprecated"
 
 
-class SourceAuthority(str, Enum):
+class SourceProvenance(str, Enum):
     machine_verifiable = "machine_verifiable"
     user_authoritative = "user_authoritative"
     untrusted_inferred = "untrusted_inferred"
 
 
-class DurableAuthority(BaseModel):
+class DurableProvenance(BaseModel):
     """Audit declaration for a durable-current knowledge write.
 
-    `authorized_by=user` and machine verification metadata are assertions
-    recorded for provenance. They are not authentication/signature checks and
-    must not be treated as a security boundary.
+    The fields are caller provenance claims, not authentication or signature
+    proof. The graph owner validates supported machine evidence before a
+    protected current write can proceed.
     """
 
-    source_authority: SourceAuthority = SourceAuthority.untrusted_inferred
+    source_provenance: SourceProvenance = SourceProvenance.untrusted_inferred
     verification_state: str = "unverified"
     evidence_refs: list[str] = Field(default_factory=list)
     authorized_by: str = ""
@@ -132,21 +132,21 @@ class DurableAuthority(BaseModel):
     @classmethod
     def _validate_evidence_refs(cls, value: list[str]) -> list[str]:
         if len(value) > 20:
-            raise ValueError("durable_authority_evidence_refs_too_many")
+            raise ValueError("durable_provenance_evidence_refs_too_many")
         normalized: list[str] = []
         for item in value:
             if not isinstance(item, str) or not item.strip():
-                raise ValueError("durable_authority_evidence_ref_invalid")
+                raise ValueError("durable_provenance_evidence_ref_invalid")
             clean = item.strip()
             if len(clean) > 500:
-                raise ValueError("durable_authority_evidence_ref_too_long")
+                raise ValueError("durable_provenance_evidence_ref_too_long")
             normalized.append(clean)
         return normalized
 
-    def permits_durable_current(self) -> bool:
-        if self.source_authority == SourceAuthority.user_authoritative:
+    def has_required_claim_fields(self) -> bool:
+        if self.source_provenance == SourceProvenance.user_authoritative:
             return self.authorized_by.strip().casefold() == "user"
-        if self.source_authority == SourceAuthority.machine_verifiable:
+        if self.source_provenance == SourceProvenance.machine_verifiable:
             return (
                 self.verification_state.strip().casefold() == "verified"
                 and bool(self.evidence_refs)

@@ -156,8 +156,8 @@ requests.post("/api/nodes", json={
         "extra": {
             "project_id": "project-id",
             "project_namespace": "project-namespace",
-            "durable_authority": {
-                "source_authority": "user_authoritative",
+            "durable_provenance": {
+                "source_provenance": "user_authoritative",
                 "verification_state": "unverified",
                 "evidence_refs": [],
                 "authorized_by": "user"  # audit assertion, 不是身份认证
@@ -171,7 +171,7 @@ requests.post("/api/nodes", json={
 ```
 
 上例的 `DEC` 属于受保护 durable family，因此必须带完整 project identity 与
-authority 回执；`INTF` / `PROC` / `PRJ` 相同。它们的 `PUT` 更新也必须在
+provenance 回执；`INTF` / `PROC` / `PRJ` 相同。它们的 `PUT` 更新也必须在
 `content.extra` 继续携带该回执。公共 DELETE 被拒绝；请用 authorized writeback
 更新状态，或创建 replacement 后添加 `supersedes`。
 
@@ -192,7 +192,7 @@ requests.post("/api/writeback", json={
     "agent_id": "codex-project-W1",
     "project_id": "project-id",
     "project_namespace": "project-namespace",
-    "source_authority": "user_authoritative",
+    "source_provenance": "user_authoritative",
     "authorized_by": "user",  # audit assertion, 不是身份认证
     "changes": [{
         "node_id": "DEC-project-current-owner",
@@ -202,11 +202,13 @@ requests.post("/api/writeback", json={
 })
 ```
 
-Git/CI/runtime 等机器事实使用 `source_authority=machine_verifiable`、
-`verification_state=verified` 和至少一个非敏感 `evidence_refs`。未经验证的
-网页、Agent 推断、activity/done 不得直接成为 durable current。这里的
-`machine_verifiable` 同样是可审计声明，不是 3CAN 的认证或签名验证结论；引用的
-receipt 必须能由后续 Reviewer 独立复核。
+机器事实使用 `source_provenance=machine_verifiable`、
+`verification_state=verified`，并把 `evidence_refs` 指向现有服务端已验证的
+ErrorKnowledge `EVD-*` bundle。任意 Git SHA、CI URL、runtime 路径、activity/done、
+网页内容或 Agent 推断都不能单独升级 durable current；未来的 Git/CI/runtime/test
+receipt 必须先接入现有 verifier，而不是仅靠调用者写一个看似可信的字符串。
+`user_authoritative + authorized_by=user` 仍只是“调用者声明来自用户明确方向”的审计
+记录，不是身份认证或安全边界。
 
 ### POST /api/skills/invoke (skill 执行记录)
 

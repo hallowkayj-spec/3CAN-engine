@@ -172,7 +172,7 @@ def writeback(
     field: str,
     value: str,
     agent_id: str = "mcp-client",
-    source_authority: str = "untrusted_inferred",
+    source_provenance: str = "untrusted_inferred",
     verification_state: str = "unverified",
     evidence_refs: list[str] | None = None,
     authorized_by: str = "",
@@ -190,7 +190,7 @@ def writeback(
     """
     data = _post("/api/writeback", {
         "agent_id": agent_id,
-        "source_authority": source_authority,
+        "source_provenance": source_provenance,
         "verification_state": verification_state,
         "evidence_refs": evidence_refs or [],
         "authorized_by": authorized_by,

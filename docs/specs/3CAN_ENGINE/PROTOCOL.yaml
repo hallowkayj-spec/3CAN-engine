@@ -303,7 +303,7 @@ paths:
           schema: { type: boolean, default: false }
       responses:
         '200': { description: OK }
-        '403': { description: Protected INTF/PROC/DEC/PRJ lacks embedded project identity and durable authority. }
+        '403': { description: Protected INTF/PROC/DEC/PRJ lacks embedded project identity and durable provenance. }
         '409': { description: R1 查重拒绝, 建议 PUT 更新 }
         '422': { description: 质量不达标 (strict=true) }
 
@@ -339,10 +339,10 @@ paths:
       summary: 更新节点 (部分字段, 增量 embedding)
       description: >
         Protected INTF/PROC/DEC/PRJ updates must carry complete project identity
-        and durable_authority in content.extra.
+        and durable_provenance in content.extra.
       responses:
         '200': { description: Node updated. }
-        '403': { description: Protected durable-current authority missing or mismatched. }
+        '403': { description: Protected durable-current provenance missing, unverified, or mismatched. }
         '404': { description: Node not found. }
     delete:
       tags: [nodes]
@@ -359,7 +359,7 @@ paths:
       description: >
         supersedes requires the same semantic family; scoped endpoints require
         exact project/namespace identity. Protected replacements additionally
-        require an active source carrying durable authority. Validation is owned
+        require an active source carrying durable provenance. Validation is owned
         by GraphEngine, not only this HTTP handler.
       responses:
         '200': { description: Edge created. }
@@ -401,7 +401,7 @@ paths:
               $ref: '#/components/schemas/DurableWritebackRequest'
       responses:
         '200': { description: Validated batch applied, including an empty updated list for a no-op. }
-        '400': { description: Input, project identity, authority, or change contract rejected before mutation. }
+        '400': { description: Input, project identity, provenance, or change contract rejected before mutation. }
         '429': { description: Successful mutation quota exceeded for this agent and node; retry after the 60-second window. }
 
   /api/skills:
@@ -804,10 +804,15 @@ components:
       required: [changes]
       properties:
         agent_id: { type: string, default: unknown }
-        source_authority:
+        source_provenance:
           type: string
           enum: [machine_verifiable, user_authoritative, untrusted_inferred]
           default: untrusted_inferred
+          description: >
+            Caller source claim. user_authoritative requires authorized_by=user
+            but is not authentication. machine_verifiable is eligible for
+            durable current only when every evidence_ref names an existing
+            server-verified ErrorKnowledge EVD bundle; arbitrary pointers fail.
         verification_state: { type: string, default: unverified }
         evidence_refs:
           type: array
