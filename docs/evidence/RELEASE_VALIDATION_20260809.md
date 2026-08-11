@@ -3,7 +3,7 @@
 Status: `VERIFIED_CANDIDATE`
 
 This receipt covers candidate engine commit
-`8fa7242edf97b495e02d44ed79f8dc7c22b595e7`. It does not claim that a private
+`b5abff7eaba5955a2928ea612d8f73e572fed78a`. It does not claim that a private
 production installation has deployed this candidate; see
 [`CURRENT_PRODUCTION.md`](CURRENT_PRODUCTION.md).
 
@@ -11,13 +11,15 @@ production installation has deployed this candidate; see
 
 | Gate | Command or evidence | Result |
 | --- | --- | --- |
-| Full release tests | `python -m pytest neural-memory/tests -q` | 406 passed |
-| Focused provenance/project/probe tests | two focused modules | 78 passed |
+| Full release tests | `python -m pytest neural-memory/tests -q` | 411 passed |
+| Focused project identity tests | `test_route_feedback_hardening.py` | 72 passed |
 | Public Python lint | Ruff `0.15.7`: `python -m ruff check neural-memory examples scripts` | clean |
 | Release isolation | `python scripts/prerelease_scan.py --strict .` | clean |
 | Syntax compilation | in-memory `compile()` over tracked Python | 80 files |
 | JSON / YAML / OpenAPI parse | tracked JSON plus release CI/protocol YAML | clean |
 | Seed-graph benchmark | `SEED_GRAPH_BENCHMARK_20260809.json` | verified candidate |
+| Immutable candidate | release `b0cd0601...`, 23-file manifest `4c98f50d...` | strict pre/post-UAT verification passed |
+| Isolated real-graph UAT | copied graph on `9701` | paired identity route passed; partial identity returned 422; listener removed |
 | Private real-graph regression | frozen copied graph, original 12 + 12 held-out, four warm repeats | deterministic; correctness unchanged |
 | Bounded secret/private-path scan | candidate diff only | clean |
 | GitHub-hosted CI | final Draft PR head | required; GitHub is the live status owner |
@@ -50,6 +52,13 @@ Python or Setuptools upgrade.
   qualify.
 
 ## Real-graph route regression
+
+The comparative 24-case profile below remains bound to predecessor `8fa7242`.
+It was not relabelled as evidence for `b5abff7`. The repaired candidate changes
+only the paired project-identity gate and was revalidated by the full suite,
+focused counterexamples, and isolated `9701` UAT against a copied 5411-node /
+6916-edge graph. Performance comparison for the repaired candidate therefore
+remains `UNAVAILABLE`, rather than inferred from the predecessor run.
 
 The private queries and graph are excluded from the public package. Aggregate
 receipts bind the same copied graph, BGE-M3 revision, engine file hashes, and
