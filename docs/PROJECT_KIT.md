@@ -50,7 +50,24 @@ pinned production profile.
 ## Codex Kit
 
 Copy `examples/codex-cli-project-kit/` into the target project, then rename
-`AGENTS.template.md` to `AGENTS.md` and adjust the port if needed.
+`AGENTS.template.md` to `AGENTS.md`.
+
+Before any mutation, also rename
+`.agents/project.template.json` to `.agents/project.json`, fill the project
+ID/namespace/name, and set `git_repository` to the normalized origin
+(`github.com/owner/repository`). Keep transport endpoints, ports, engine paths,
+and agent-specific values out of this durable project capsule. This is
+especially important for a shared authority or cross-worktree mutation. Then
+run:
+
+```powershell
+python scripts\3can_codex.py doctor
+```
+
+Require `project_identity.status=pass` before requesting a mutation ticket.
+The capsule is optional only for read-only routing; project-owned sidecar
+mutations require the same durable identity. Configure the runtime port and
+graph path through environment/runtime configuration.
 
 The kit includes optional adapters:
 

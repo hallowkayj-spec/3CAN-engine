@@ -7,6 +7,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +22,13 @@ PROJECT_KIT_HELPER = (
     / "codex-cli-project-kit"
     / "scripts"
     / "3can_codex.py"
+)
+PROJECT_KIT_CAPSULE_TEMPLATE = (
+    RELEASE_ROOT
+    / "examples"
+    / "codex-cli-project-kit"
+    / ".agents"
+    / "project.template.json"
 )
 ROUTE_BENCHMARK = ROOT / "benchmark" / "route_benchmark_v1.json"
 ROUTE_BENCHMARK_RUNNER = ROOT / "benchmark" / "run_benchmark.py"
@@ -149,6 +159,420 @@ def load_project_kit_helper():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_project_kit_documents_durable_capsule_setup_without_runtime_state():
+    capsule = json.loads(PROJECT_KIT_CAPSULE_TEMPLATE.read_text(encoding="utf-8"))
+    assert set(capsule) == {
+        "schema_version",
+        "project_id",
+        "project_namespace",
+        "project_name",
+        "project_root",
+        "git_repository",
+    }
+    assert capsule["schema_version"] == 1
+    assert capsule["project_root"] == "."
+    assert not {
+        "threecan_base_url",
+        "threecan_engine_root",
+        "agent_id_prefixes",
+        "frontend_ports",
+    }.intersection(capsule)
+
+    readme = (RELEASE_ROOT / "README.md").read_text(encoding="utf-8")
+    kit_doc = (RELEASE_ROOT / "docs" / "PROJECT_KIT.md").read_text(
+        encoding="utf-8"
+    )
+    for document in (readme, kit_doc):
+        assert ".agents/project.template.json" in document
+        assert ".agents/project.json" in document
+        assert "project_identity.status=pass" in document
+
+
+def make_project_kit_identity_worktrees(tmp_path: Path) -> tuple[Path, Path]:
+    repository = tmp_path / "repository"
+    linked = tmp_path / "linked-worktree"
+    repository.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return result.stdout.strip()
+
+    git("init")
+    git("config", "user.email", "project-kit@example.invalid")
+    git("config", "user.name", "Project Kit Test")
+    git("remote", "add", "origin", "git@github.com:Example/Project-Kit.git")
+    capsule = repository / ".agents" / "project.json"
+    capsule.parent.mkdir()
+    capsule.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project_id": "project-kit",
+                "project_namespace": "project-kit",
+                "project_name": "Project Kit",
+                "project_root": ".",
+                "git_repository": "github.com/example/project-kit",
+                # These legacy environment fields must not govern identity.
+                "threecan_base_url": "http://127.0.0.1:1",
+                "agent_id_prefixes": ["some-other-agent"],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (repository / "root-target.txt").write_text("root target\n", encoding="utf-8")
+    git("add", ".agents/project.json", "root-target.txt")
+    git("commit", "-m", "test fixture")
+    git("worktree", "add", "-b", "test/linked", str(linked))
+    return repository, linked
+
+
+def project_kit_ticket_args(target_file: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        agent_id="codex-project-kit-test",
+        base_url="http://3can.test",
+        scope_keywords=["identity"],
+        target_files=[target_file],
+        task_description="Verify linked worktree identity",
+        task_type="Edit",
+    )
+
+
+def assert_project_execution_payload(
+    helper,
+    payload: dict[str, object],
+    linked: Path,
+) -> None:
+    context = helper._execution_context()
+    assert payload["project_id"] == "project-kit"
+    assert payload["project_namespace"] == "project-kit"
+    assert payload["workspace_id"] == context["workspace_id"]
+    assert payload["target_files"] == [
+        helper._canonical_physical_path(linked / "root-target.txt")
+    ]
+
+
+def test_project_kit_binds_linked_worktree_identity_and_rejects_outside_target(
+    tmp_path,
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    _, linked = make_project_kit_identity_worktrees(tmp_path)
+    monkeypatch.setattr(helper, "PROJECT_ROOT", linked)
+
+    context = helper._execution_context()
+    common_dir = Path(
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(linked),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+    )
+    expected_workspace = (
+        f"git-{helper._local_path_sha256(common_dir)[:12]}-"
+        f"{helper._local_path_sha256(linked)[:12]}"
+    )
+    assert context == {
+        "project_id": "project-kit",
+        "project_namespace": "project-kit",
+        "workspace_id": expected_workspace,
+    }
+    windows_path = "\\".join(("C:", "Users", "Example", "Project", ".git"))
+    wsl_path = "/" + "/".join(("mnt", "c", "Users", "Example", "Project", ".git"))
+    assert helper._canonical_physical_path(
+        windows_path
+    ) == helper._canonical_physical_path(wsl_path)
+
+    root_target = helper._resolved_target_files(["root-target.txt"])
+    assert root_target == [helper._canonical_physical_path(linked / "root-target.txt")]
+    assert helper._resolved_target_files([str(linked / "root-target.txt")]) == root_target
+    with pytest.raises(ValueError, match="target_path_outside_project_root"):
+        helper._resolved_target_files([str(tmp_path / "outside.txt")])
+
+    gate = helper._project_identity_gate(
+        "http://127.0.0.1:9701",
+        {"selected": "", "source": "test"},
+        agent_id="unrelated-agent",
+        command="route",
+    )
+    assert gate["status"] == "pass"
+    assert {check["name"] for check in gate["checks"]}.isdisjoint(
+        {"base_url", "agent_id"}
+    )
+
+
+@pytest.mark.parametrize(
+    "repository_value",
+    [
+        "https://github.com/Example/Project-Kit.git",
+        "git@github.com:Example/Project-Kit.git",
+        "github.com/example/project-kit.git",
+        "github.com/example/project-kit/",
+    ],
+)
+def test_project_kit_rejects_noncanonical_capsule_repository(
+    tmp_path,
+    monkeypatch,
+    repository_value,
+):
+    helper = load_project_kit_helper()
+    _, linked = make_project_kit_identity_worktrees(tmp_path)
+    capsule_path = linked / ".agents" / "project.json"
+    capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
+    capsule["git_repository"] = repository_value
+    capsule_path.write_text(json.dumps(capsule), encoding="utf-8")
+    monkeypatch.setattr(helper, "PROJECT_ROOT", linked)
+
+    gate = helper._project_identity_gate(
+        "http://127.0.0.1:9701",
+        {"selected": "", "source": "test"},
+        command="doctor",
+    )
+
+    repository_check = next(
+        check for check in gate["checks"] if check["name"] == "git_repository"
+    )
+    assert gate["status"] == "block"
+    assert repository_check["error"] == "git_repository_not_normalized"
+
+
+def test_project_kit_rejects_missing_capsule_repository_and_origin(
+    tmp_path,
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    repository, linked = make_project_kit_identity_worktrees(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(repository), "remote", "remove", "origin"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    capsule_path = linked / ".agents" / "project.json"
+    capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
+    capsule["git_repository"] = ""
+    capsule_path.write_text(json.dumps(capsule), encoding="utf-8")
+    monkeypatch.setattr(helper, "PROJECT_ROOT", linked)
+
+    gate = helper._project_identity_gate(
+        "http://127.0.0.1:9701",
+        {"selected": "", "source": "test"},
+        command="doctor",
+    )
+
+    repository_check = next(
+        check for check in gate["checks"] if check["name"] == "git_repository"
+    )
+    assert gate["status"] == "block"
+    assert repository_check["error"] == "git_repository_missing"
+
+
+def test_project_kit_blocks_missing_capsule_mutation_before_http(
+    tmp_path,
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    _, linked = make_project_kit_identity_worktrees(tmp_path)
+    (linked / ".agents" / "project.json").unlink()
+    output: list[dict[str, object]] = []
+    monkeypatch.setattr(helper, "PROJECT_ROOT", linked)
+    monkeypatch.setattr(helper, "_print_json", output.append)
+    monkeypatch.setattr(
+        helper,
+        "resolve_engine_root",
+        lambda _override=None: {"selected": "", "source": "test"},
+    )
+    monkeypatch.setattr(
+        helper,
+        "ticket",
+        lambda _args: pytest.fail("missing capsule mutation must not run"),
+    )
+
+    result = helper.main(
+        [
+            "ticket",
+            "--agent-id",
+            "codex-project-kit-test",
+            "--task-description",
+            "blocked unbound mutation",
+            "--target-file",
+            "root-target.txt",
+        ]
+    )
+
+    assert result == 1
+    assert output[0]["error"]["kind"] == "project_identity_gate_blocked"
+    assert output[0]["project_identity"]["reason"] == (
+        "project_capsule_required_for_mutation"
+    )
+
+
+def test_project_kit_ticket_prepare_and_supervise_send_bound_identity(
+    tmp_path,
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    _, linked = make_project_kit_identity_worktrees(tmp_path)
+    monkeypatch.setattr(helper, "PROJECT_ROOT", linked)
+    monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
+    monkeypatch.setattr(helper, "_record_local_token_estimate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(helper, "_record_error_disposition_ticket", lambda *args, **kwargs: None)
+    monkeypatch.setattr(helper, "_record_route_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(helper, "_record_supervise_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        helper,
+        "build_memory_preflight",
+        lambda *args, **kwargs: {
+            "status": "pass",
+            "memory_quality": {},
+            "policy_hits": [],
+            "must_do_next": [],
+            "must_not_do": [],
+        },
+    )
+
+    captured: list[tuple[str, dict[str, object] | None]] = []
+    expected_target = helper._canonical_physical_path(linked / "root-target.txt")
+
+    def request(_base_url, path, *, method="GET", payload=None, timeout=8.0):
+        assert timeout > 0
+        captured.append((path, payload))
+        if path == "/api/stats":
+            return True, {"total_nodes": 100, "healthy": True}
+        if path == "/api/route":
+            return True, {"confidence": "high", "nodes": [], "total_nodes": 100}
+        if path == "/api/route/ticket":
+            return True, {
+                "ticket_id": "TKT-project-kit",
+                "agent_id": "codex-project-kit-test",
+                "task_description": "Verify linked worktree identity",
+                "target_digest": "a" * 64,
+                "scope_digest": "b" * 64,
+                "scope": {
+                    "target_files": [expected_target],
+                    "scope_keywords": ["identity"],
+                },
+            }
+        if path.endswith("/consume"):
+            return True, {"ok": True}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(helper, "_try_json_request", request)
+    args = project_kit_ticket_args("root-target.txt")
+    assert helper.ticket(args) == 0
+    ticket_payload = next(payload for path, payload in captured if path == "/api/route/ticket")
+    assert ticket_payload is not None
+    assert_project_execution_payload(helper, ticket_payload, linked)
+
+    captured.clear()
+    prepare_args = SimpleNamespace(
+        **vars(args),
+        tool_name="apply_patch",
+        tool_input_summary="Update root target",
+    )
+    assert helper.prepare(prepare_args) == 0
+    prepare_payload = next(payload for path, payload in captured if path == "/api/route/ticket")
+    assert prepare_payload is not None
+    assert_project_execution_payload(helper, prepare_payload, linked)
+
+    captured.clear()
+    engine_root = tmp_path / "engine"
+    monkeypatch.setattr(
+        helper,
+        "resolve_engine_root",
+        lambda override=None: {"selected": str(engine_root), "source": "test"},
+    )
+    monkeypatch.setattr(helper, "_selected_graph_root", lambda _root: engine_root / "graph")
+    monkeypatch.setattr(helper, "_validate_stats", lambda *args, **kwargs: (True, None))
+    supervise_args = SimpleNamespace(
+        **vars(prepare_args),
+        engine_root=None,
+        min_nodes=10,
+        max_nodes=8,
+        mode="slim",
+        budget_tokens=1200,
+        timeout_seconds=10.0,
+        ticket_id="",
+        no_consume_ticket=True,
+        skip_ticket=False,
+    )
+    assert helper.supervise(supervise_args) == 0
+    route_payload = next(payload for path, payload in captured if path == "/api/route")
+    supervise_payload = next(
+        payload for path, payload in captured if path == "/api/route/ticket"
+    )
+    assert route_payload is not None
+    assert route_payload["project_id"] == "project-kit"
+    assert route_payload["project_namespace"] == "project-kit"
+    assert route_payload["workspace_id"] == helper._execution_context()["workspace_id"]
+    assert supervise_payload is not None
+    assert_project_execution_payload(helper, supervise_payload, linked)
+
+
+def test_project_kit_rejects_mutation_project_mismatch_bypass(monkeypatch):
+    helper = load_project_kit_helper()
+    output: list[dict[str, object]] = []
+    monkeypatch.setattr(helper, "_print_json", output.append)
+    monkeypatch.setattr(
+        helper,
+        "ticket",
+        lambda _args: pytest.fail("mutation command must not run"),
+    )
+
+    result = helper.main(
+        [
+            "--allow-project-mismatch",
+            "ticket",
+            "--agent-id",
+            "codex-project-kit-test",
+            "--task-description",
+            "blocked bypass",
+            "--target-file",
+            "root-target.txt",
+        ]
+    )
+
+    assert result == 2
+    assert output[0]["error"]["kind"] == (
+        "project_mismatch_bypass_not_allowed_for_mutation"
+    )
+
+    def mismatched_context():
+        raise RuntimeError("git_repository_mismatch")
+
+    monkeypatch.setattr(helper, "_execution_context", mismatched_context)
+    assert helper._with_execution_context(
+        {"task": "read-only diagnosis"},
+        allow_project_mismatch=True,
+    ) == {"task": "read-only diagnosis"}
+    with pytest.raises(RuntimeError, match="git_repository_mismatch"):
+        helper._with_execution_context({"task": "mutation"})
+
+    assert helper._project_mismatch_bypass_is_read_only(
+        SimpleNamespace(command="failure-gate-sync", apply=False)
+    )
+    assert not helper._project_mismatch_bypass_is_read_only(
+        SimpleNamespace(command="failure-gate-sync", apply=True)
+    )
 
 
 def test_project_kit_has_no_direct_runtime_launcher():

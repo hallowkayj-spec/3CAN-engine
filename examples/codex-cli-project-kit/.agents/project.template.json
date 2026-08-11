@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "project_id": "replace-with-project-id",
+  "project_namespace": "replace-with-project-namespace",
+  "project_name": "Replace with project name",
+  "project_root": ".",
+  "git_repository": "github.com/owner/repository"
+}

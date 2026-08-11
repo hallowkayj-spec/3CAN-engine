@@ -222,9 +222,21 @@ Codex CLI:
 2. Merge `.gitignore.template` into the target project's `.gitignore`; it
    excludes local tickets, error outboxes, route state, and test receipts.
 3. Rename `AGENTS.template.md` to `AGENTS.md`.
-4. Adjust the port and graph path.
-5. If you use the wrapper workflow, bootstrap the session with
+4. Before any mutation, rename
+   `.agents/project.template.json` to `.agents/project.json`, fill the project
+   ID/namespace/name, and set `git_repository` to the normalized origin
+   (`github.com/owner/repository`). Do not put ports or runtime paths in this
+   durable project capsule. This is especially important for a shared 3CAN
+   authority or cross-worktree mutation.
+5. Run `python scripts/3can_codex.py doctor` and require
+   `project_identity.status=pass` before requesting a mutation ticket.
+6. Adjust the runtime port and graph path through environment configuration.
+7. If you use the wrapper workflow, bootstrap the session with
    `scripts/codex-3can.cmd bootstrap ...`.
+
+The capsule is optional only for read-only routing. Mutation commands require it
+so the authority can bind the write to a repository and physical Git worktree,
+including when the runtime is a project-owned sidecar.
 
 Route tickets, prepare/done wrappers, and hooks are optional policy adapters.
 Use them for a specific guarded-write or evidence requirement, not as a
