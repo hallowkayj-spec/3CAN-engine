@@ -21,6 +21,7 @@
     "requirements-min.txt",
     "requirements.txt",
     "docs/ERROR_KNOWLEDGE_LIFECYCLE.md",
+    "docs/evidence/CURRENT_PRODUCTION.md",
     "docs/evidence/CURRENT_3CAN_CAPABILITY_BASELINE.md",
     "docs/evidence/PRIOR_ART_CAPABILITY_MATRIX.md",
     "docs/evidence/PRIOR_ART_CONVERGENCE_20260811.md",
