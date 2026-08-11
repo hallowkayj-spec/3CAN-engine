@@ -4,8 +4,9 @@ Status: `VERIFIED_CANDIDATE`
 
 This receipt covers candidate engine commit
 `8cef3c4ba36c833341cd423b0626aff4f4d75e32`, public client/verifier repair
-`a366f14209aa474b0e3d4f1171fe2b42ecd66846`, and refreshed benchmark and
-clean-clone source commit `c5d28fd4c5dc57215edfa2f9855552f538d045e2`.
+`a366f14209aa474b0e3d4f1171fe2b42ecd66846`, two-dimensional verifier closure
+`452c1042c14974606533e0451984a6e42857fdec`, and refreshed benchmark and
+clean-clone source commit `8050d4cae4688701942e52be70845e7ff3dcdce5`.
 It does not claim that a private production installation has deployed this candidate; see
 [`CURRENT_PRODUCTION.md`](CURRENT_PRODUCTION.md).
 
@@ -23,7 +24,7 @@ It does not claim that a private production installation has deployed this candi
 | Immutable candidate | release `03cf214a...`, 24-file manifest `ab5fa950...` | builder, bootstrap, handoff, finalizer, negative dependency, and post-UAT verification passed |
 | Isolated real-graph UAT | copied 5432-node / 6920-edge graph on `9701` | BGE-M3 5432x1024; Owner Intent `server_local_file`; compact default produced skeleton; partial identity returned 422; listener removed |
 | Private real-graph regression | frozen copied graph, original 12 + 12 held-out, four warm repeats | deterministic; correctness unchanged |
-| Clean-clone public RC | fresh clone at `c5d28fd`, fresh `requirements-min.txt` venv, new seed graph/project on `9701` | non-equal project/namespace scope, start, readiness, route, exact read, writeback, ErrorKnowledge, project isolation, project kit, and clean stop passed |
+| Clean-clone public RC | fresh clone at `8050d4c`, fresh `requirements-min.txt` venv, new seed graph/project on `9701` | non-equal project/namespace scope plus project-only and namespace-only mismatch fixtures, start, readiness, route, exact read, writeback, ErrorKnowledge, project isolation, project kit, and clean stop passed |
 | Bounded secret/private-path scan | candidate diff only | clean |
 | GitHub-hosted CI | final Draft PR head | required; GitHub is the live status owner |
 
@@ -60,8 +61,9 @@ Python or Setuptools upgrade.
   arbitrary target node/field/value. Arbitrary valid or invalid pointers do not
   qualify.
 - MCP briefing rejects partial project identity before HTTP dispatch. The
-  generic verifier keeps project ID and namespace distinct and the clean-clone
-  fixture proves a non-equal pair instead of relying on coincident names.
+  generic verifier keeps project ID and namespace distinct; the clean-clone
+  fixture proves each dimension independently with one orthogonal mismatch per
+  dimension instead of relying on coincident names or one combined negative.
 
 ## Real-graph route regression
 
@@ -95,7 +97,7 @@ audit chain.
 The immutable 24-file runtime contains the engine surface frozen at `8cef3c4`.
 The later MCP client and generic verifier repair does not alter that runtime
 closure; it is instead covered by the full public test suite, refreshed seed
-receipt, and fresh clean-clone acceptance at `c5d28fd`.
+receipt, and fresh clean-clone acceptance at `8050d4c`.
 
 ## Review
 
