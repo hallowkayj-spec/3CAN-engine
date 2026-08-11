@@ -49,8 +49,10 @@ pinned production profile.
 
 ## Codex Kit
 
-Copy `examples/codex-cli-project-kit/` into the target project, then rename
-`AGENTS.template.md` to `AGENTS.md`.
+Copy `examples/codex-cli-project-kit/` into the target project, rename
+`AGENTS.template.md` to `AGENTS.md`, and copy the release root `3CAN.md` to the
+target project root. `3CAN.md` is the only Owner steering file; keep its flat
+front matter small and do not add a policy/profile directory.
 
 Before any mutation, also rename
 `.agents/project.template.json` to `.agents/project.json`, fill the project
@@ -68,6 +70,16 @@ Require `project_identity.status=pass` before requesting a mutation ticket.
 The capsule is optional only for read-only routing; project-owned sidecar
 mutations require the same durable identity. Configure the runtime port and
 graph path through environment/runtime configuration.
+
+The helper binds `3CAN.md` to the same project ID/namespace as the capsule. It
+uses the engine's single standard-library parser, caches unchanged content by
+file stat, and sends only a digest plus seven effective defaults. The Markdown
+body and absolute path never enter normal route/briefing payloads. An explicit
+current Owner instruction may scope a governable default, while evidence truth,
+hard safety, project isolation, credentials, and destructive production gates
+remain unchanged. A projection sent to a shared authority is explicitly
+`client_asserted`; the server reserves `server_local_file` for a file it read
+itself. These are audit origins, not authentication.
 
 The kit includes optional adapters:
 
@@ -114,8 +126,9 @@ python ..\3CAN-engine\scripts\prerelease_scan.py --strict
 ```
 
 Default scan mode fails on high-confidence secrets and reports path rebinding
-warnings. `--strict` also fails on maintainer-local absolute paths and private
-project names.
+warnings. `--strict` also fails on user-profile absolute paths. Maintainers must
+run their own untracked project-specific private-term audit before publishing;
+private terms do not belong in this public scanner's source.
 
 Strict mode also fails if runtime graph artifacts such as node JSON, SQLite
 ledgers, embeddings, activity logs, or agent state are present inside the

@@ -36,6 +36,23 @@ def _get(path: str, params: dict | None = None) -> dict:
     return r.json()
 
 
+def _owner_defaults_line(payload: dict) -> str:
+    owner = payload.get("owner_defaults") or {}
+    defaults = owner.get("defaults") or {}
+    if owner.get("status") != "applied" or not isinstance(defaults, dict):
+        return ""
+    pairs = " ".join(
+        f"{key}={defaults[key]}"
+        for key, value in defaults.items()
+        if value
+    )
+    origin = str(owner.get("assertion_origin") or "unspecified")
+    return (
+        f"owner defaults ({owner.get('source', '3CAN.md')}; {origin}): "
+        f"{pairs}"
+    )
+
+
 # ── Core Tools ──
 
 
@@ -77,9 +94,10 @@ def route(
     # Handle both slim ("nodes") and full ("activated_nodes") response formats
     raw_nodes = data.get("nodes") or data.get("activated_nodes", [])
     scores = data.get("scores", {})
-    if not raw_nodes:
-        return "未找到匹配节点"
     route_meta = data.get("route_meta") or {}
+    owner_line = _owner_defaults_line(route_meta)
+    if not raw_nodes:
+        return "\n".join(item for item in (owner_line, "未找到匹配节点") if item)
     actual_route_id = str(
         route_meta.get("route_id") or data.get("route_id") or ""
     ).strip()
@@ -87,6 +105,7 @@ def route(
     if session_instance_id:
         correlation += f" session_instance_id={session_instance_id}"
     lines = [
+        f"{owner_line}\n" if owner_line else "",
         f"共{data.get('total_nodes', '?')}节点, 返回{len(raw_nodes)}个:\n",
         f"correlation: {correlation}\n" if actual_route_id else "",
     ]
@@ -234,10 +253,32 @@ def stats() -> str:
 
 
 @mcp.tool()
-def briefing(agent_id: str = "mcp-client", max_nodes: int = 6) -> str:
+def briefing(
+    agent_id: str = "mcp-client",
+    max_nodes: int = 6,
+    project_id: str = "",
+    project_namespace: str = "",
+) -> str:
     """获取Agent冷启动简报 — 高频节点+待处理handoff+近期活动."""
-    data = _get("/api/briefing", {"agent_id": agent_id, "max_nodes": max_nodes})
+    data = _get(
+        "/api/briefing",
+        {
+            "agent_id": agent_id,
+            "max_nodes": max_nodes,
+            **(
+                {
+                    "project_id": project_id,
+                    "project_namespace": project_namespace,
+                }
+                if project_id and project_namespace
+                else {}
+            ),
+        },
+    )
     lines = [f"Agent: {data.get('agent_id', agent_id)} | role: {data.get('role', 'N/A')}"]
+    owner_line = _owner_defaults_line(data)
+    if owner_line:
+        lines.append(owner_line)
     lines.append(f"活跃节点: {data.get('total_active', '?')} | 休眠: {data.get('total_dormant', '?')}\n")
 
     hot = data.get("hot_nodes", [])

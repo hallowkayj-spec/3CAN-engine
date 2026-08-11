@@ -61,6 +61,24 @@ A local HTTP service (`localhost:9700`) that agents query to:
 
 Not a chat-memory tool, not an autonomous agent runtime, not an IDE replacement.
 
+## One project steering file
+
+Each project may keep one root `3CAN.md`. Its small flat front matter describes
+Owner working defaults such as caution, autonomy, external-change confirmation,
+context size, history, review, and meaningful writeback. The project kit binds
+the file to `.agents/project.json`, caches it by file stat, and sends only a
+compact digest-backed projection to route/briefing. The Markdown body, local
+path, and unrelated project defaults are never injected.
+
+Shared-authority projections are typed as `client_asserted`; only a file read
+by the serving process is `server_local_file`. Owner defaults are preferences,
+not authentication or objective evidence.
+
+Current explicit Owner instructions take precedence only for governable task
+preferences. Git/CI/Runtime/Provider/Evidence truth, project isolation,
+credentials, destructive-production protections, and durable provenance remain
+hard boundaries. `3CAN.md` is not a policy engine or a second state database.
+
 ## Quickstart
 
 ```bash

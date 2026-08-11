@@ -40,6 +40,8 @@ def _bundled_engine_root() -> Path:
 
 
 STAGING_ENGINE_ROOT = _bundled_engine_root()
+_OWNER_INTENT_MODULE: Any | None = None
+_OWNER_INTENT_MODULE_PATH: Path | None = None
 LOG_DIR = Path(
     os.environ.get("THREECAN_LOG_DIR")
     or PROJECT_ROOT / "test-results" / "3can"
@@ -582,6 +584,71 @@ def _execution_context(project_root: Path | None = None) -> dict[str, str]:
             raise RuntimeError("workorder_id_invalid")
         context["workorder_id"] = workorder_id
     return context
+
+
+def _owner_intent_module() -> Any:
+    """Load the engine's single stdlib 3CAN.md parser implementation."""
+
+    global _OWNER_INTENT_MODULE, _OWNER_INTENT_MODULE_PATH
+    candidates: list[Path] = []
+    configured_root = os.environ.get("THREECAN_ENGINE_ROOT", "").strip()
+    if configured_root:
+        candidates.append(Path(configured_root).expanduser() / "backend" / "owner_intent.py")
+    candidates.append(STAGING_ENGINE_ROOT / "backend" / "owner_intent.py")
+    module_path = next(
+        (candidate.resolve(strict=False) for candidate in candidates if candidate.is_file()),
+        None,
+    )
+    if module_path is None:
+        raise RuntimeError("owner_intent_loader_unavailable")
+    if _OWNER_INTENT_MODULE is not None and _OWNER_INTENT_MODULE_PATH == module_path:
+        return _OWNER_INTENT_MODULE
+    spec = importlib.util.spec_from_file_location(
+        "threecan_owner_intent",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("owner_intent_loader_unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _OWNER_INTENT_MODULE = module
+    _OWNER_INTENT_MODULE_PATH = module_path
+    return module
+
+
+def _owner_intent_projection(
+    project_root: Path | None = None,
+    *,
+    context: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    root = _actual_project_root(project_root)
+    if not (root / "3CAN.md").is_file():
+        return None
+    execution_context = context or _execution_context(root)
+    module = _owner_intent_module()
+    projection = module.load_owner_intent(
+        root,
+        project_id=execution_context.get("project_id", ""),
+        project_namespace=execution_context.get("project_namespace", ""),
+    )
+    if projection and projection.get("status") != "applied":
+        raise RuntimeError(str(projection.get("reason") or "owner_intent_not_applicable"))
+    return projection
+
+
+def _with_owner_intent(payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    project_id = str(merged.get("project_id") or "")
+    project_namespace = str(merged.get("project_namespace") or "")
+    if not project_id or not project_namespace:
+        return merged
+    projection = _owner_intent_projection(context={
+        "project_id": project_id,
+        "project_namespace": project_namespace,
+    })
+    if projection:
+        merged["owner_intent"] = projection
+    return merged
 
 
 def _with_execution_context(
@@ -3021,6 +3088,12 @@ def session_start(args: argparse.Namespace) -> int:
         "session_id": session_id,
     }
     project_meta = _current_project_metadata(base_url=args.base_url)
+    owner_defaults = _owner_intent_projection(
+        context={
+            "project_id": str(project_meta.get("project_id") or ""),
+            "project_namespace": str(project_meta.get("project_namespace") or ""),
+        }
+    ) if project_meta else None
     if args.meta:
         checkin_payload["meta"] = json.loads(args.meta)
     if project_meta:
@@ -3039,12 +3112,22 @@ def session_start(args: argparse.Namespace) -> int:
         _print_json({"status": status, "checkin_error": checkin})
         return 1
 
-    briefing_path = f"/api/briefing?agent_id={args.agent_id}&role={args.role}&max_nodes={args.max_nodes}"
+    briefing_path = f"/api/briefing?agent_id={quote(args.agent_id)}&role={quote(args.role)}&max_nodes={args.max_nodes}"
+    if project_meta:
+        briefing_path += (
+            f"&project_id={quote(str(project_meta['project_id']))}"
+            f"&project_namespace={quote(str(project_meta['project_namespace']))}"
+        )
     ok, briefing = _try_json_request(args.base_url, briefing_path, timeout=30.0)
     if not ok:
         _print_json({"status": status, "checkin": checkin, "briefing_error": briefing})
         return 1
 
+    if owner_defaults and isinstance(briefing, dict):
+        briefing["owner_defaults"] = {
+            **owner_defaults,
+            "assertion_origin": "client_asserted",
+        }
     result = {"status": status, "checkin": checkin, "briefing": briefing}
     _record_local_token_estimate(
         args.base_url,
@@ -3063,19 +3146,20 @@ def session_start(args: argparse.Namespace) -> int:
 
 
 def route(args: argparse.Namespace) -> int:
-    payload = _with_execution_context(
+    payload = _with_owner_intent(_with_execution_context(
         {
             "task": args.task,
             "max_nodes": args.max_nodes,
             "agent_id": args.agent_id,
-            "mode": args.mode,
             "confirm_low_confidence": args.confirm_low_confidence,
             "allow_degraded": args.allow_degraded,
         },
         allow_project_mismatch=bool(
             getattr(args, "allow_project_mismatch", False)
         ),
-    )
+    ))
+    if args.mode:
+        payload["mode"] = args.mode
     if args.budget_tokens is not None:
         payload["budget_tokens"] = args.budget_tokens
     ok, response = _try_json_request(
@@ -3251,16 +3335,17 @@ def supervise(args: argparse.Namespace) -> int:
         runtime_gate["error"] = stats
     gates.append(runtime_gate)
 
-    route_payload = _with_execution_context({
+    route_payload = _with_owner_intent(_with_execution_context({
         "task": args.task_description,
         "max_nodes": args.max_nodes,
         "include_edges": True,
         "agent_id": args.agent_id,
-        "mode": args.mode,
         "budget_tokens": args.budget_tokens,
         "confirm_low_confidence": True,
         "allow_degraded": True,
-    })
+    }))
+    if args.mode:
+        route_payload["mode"] = args.mode
     route_ok, route_response = _try_json_request(
         args.base_url,
         "/api/route",
@@ -5213,7 +5298,7 @@ def build_parser() -> argparse.ArgumentParser:
     route_parser.add_argument("--agent-id", required=True)
     route_parser.add_argument("--task", required=True)
     route_parser.add_argument("--max-nodes", type=int, default=6)
-    route_parser.add_argument("--mode", default="slim", choices=["skeleton", "slim", "full"])
+    route_parser.add_argument("--mode", choices=["skeleton", "slim", "full"])
     route_parser.add_argument("--budget-tokens", type=int)
     route_parser.add_argument("--confirm-low-confidence", action="store_true")
     route_parser.add_argument("--allow-degraded", action="store_true")
@@ -5247,7 +5332,7 @@ def build_parser() -> argparse.ArgumentParser:
     supervise_parser.add_argument("--tool-name", default="codex-mutate")
     supervise_parser.add_argument("--tool-input-summary", default="")
     supervise_parser.add_argument("--ticket-id", default="")
-    supervise_parser.add_argument("--mode", default="slim", choices=["skeleton", "slim", "full"])
+    supervise_parser.add_argument("--mode", choices=["skeleton", "slim", "full"])
     supervise_parser.add_argument("--max-nodes", type=int, default=8)
     supervise_parser.add_argument("--budget-tokens", type=int, default=1400)
     supervise_parser.add_argument("--timeout-seconds", type=float, default=90.0)

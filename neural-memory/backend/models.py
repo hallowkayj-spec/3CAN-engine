@@ -12,6 +12,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
+from owner_intent import (
+    OWNER_INTENT_DEFAULT_VALUES,
+    OWNER_INTENT_FILENAME,
+    OWNER_INTENT_PRECEDENCE,
+    OWNER_INTENT_PROJECTION_KEYS,
+    OWNER_INTENT_SCHEMA,
+)
+
 
 _WINDOWS_FORBIDDEN_NODE_ID_CHARS = frozenset('<>:"/\\|?*')
 _WINDOWS_RESERVED_NODE_ID_BASENAMES = frozenset(
@@ -297,6 +305,15 @@ class RoutingRequest(BaseModel):
     )
     workspace_id: str | None = None           # path-free physical writer binding
     workorder_id: str | None = None            # existing task context; never fabricated
+    owner_intent: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Compact project-bound projection of 3CAN.md defaults. A caller "
+            "projection is an audit assertion unless the server replaces it "
+            "from its local file; never the Markdown body, authentication, or "
+            "an objective-truth override."
+        ),
+    )
     # v9.0 Wave 1 — Entroly CCR 风格两段式
     mode: str = "slim"                      # skeleton / slim / full
     budget_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
@@ -325,10 +342,73 @@ class RoutingRequest(BaseModel):
             field_name=info.field_name,
         )
 
+    @field_validator("owner_intent")
+    @classmethod
+    def _validate_owner_intent_projection(
+        cls,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("owner_intent_must_be_object")
+        if set(value) != OWNER_INTENT_PROJECTION_KEYS:
+            raise ValueError("owner_intent_projection_keys_invalid")
+        if value.get("schema") != OWNER_INTENT_SCHEMA:
+            raise ValueError("owner_intent_schema_invalid")
+        if (
+            value.get("status") != "applied"
+            or value.get("source") != OWNER_INTENT_FILENAME
+        ):
+            raise ValueError("owner_intent_projection_not_applied")
+        digest = str(value.get("digest") or "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("owner_intent_digest_invalid")
+        project_id = validate_routing_context_identifier(
+            value.get("project_id"),
+            field_name="owner_intent.project_id",
+        )
+        namespace = validate_routing_context_identifier(
+            value.get("project_namespace"),
+            field_name="owner_intent.project_namespace",
+        )
+        defaults = value.get("defaults")
+        if not isinstance(defaults, dict) or set(defaults) != set(
+            OWNER_INTENT_DEFAULT_VALUES
+        ):
+            raise ValueError("owner_intent_defaults_invalid")
+        normalized_defaults: dict[str, str] = {}
+        for key, allowed in OWNER_INTENT_DEFAULT_VALUES.items():
+            item = defaults.get(key)
+            if not isinstance(item, str) or item not in allowed:
+                raise ValueError(f"owner_intent_default_invalid:{key}")
+            normalized_defaults[key] = item
+        if (
+            value.get("precedence") != OWNER_INTENT_PRECEDENCE
+            or value.get("hard_gates_unchanged") is not True
+        ):
+            raise ValueError("owner_intent_boundary_invalid")
+        return {
+            **value,
+            "project_id": project_id,
+            "project_namespace": namespace,
+            "defaults": normalized_defaults,
+        }
+
     @model_validator(mode="after")
     def _validate_project_identity_pair(self) -> RoutingRequest:
         if bool(self.project_id) != bool(self.project_namespace):
             raise ValueError("project_identity_pair_required")
+        if self.owner_intent:
+            if not self.project_id or not self.project_namespace:
+                raise ValueError("owner_intent_project_identity_required")
+            if (
+                str(self.owner_intent["project_id"]).casefold()
+                != self.project_id.casefold()
+                or str(self.owner_intent["project_namespace"]).casefold()
+                != self.project_namespace.casefold()
+            ):
+                raise ValueError("owner_intent_project_identity_mismatch")
         return self
 
 

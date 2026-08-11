@@ -41,6 +41,24 @@ def test_real_release_package_manifest_is_complete() -> None:
     ) == []
 
 
+def test_public_scanner_detects_generic_user_profile_paths_without_self_exemption(
+    tmp_path: Path,
+) -> None:
+    fixture = tmp_path / "fixture.txt"
+    fixture.write_text(
+        "C:" + "/Users/example/private.txt\n",
+        encoding="utf-8",
+    )
+
+    secrets, rebinding = SCANNER.scan(tmp_path)
+
+    assert secrets == []
+    assert len(rebinding) == 1
+    assert "fixture.txt:1" in rebinding[0]
+    source = SCANNER_PATH.read_text(encoding="utf-8")
+    assert "rel_posix ==" not in source
+
+
 def test_manifest_rejects_missing_duplicate_and_escaping_paths(tmp_path: Path) -> None:
     required = tmp_path / "present.txt"
     required.write_text("ok", encoding="utf-8")

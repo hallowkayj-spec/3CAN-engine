@@ -1,7 +1,10 @@
 # 3CAN Current Production Pointer
 
-Observed at `2026-08-11T17:15:40Z`. This is the small current-state pointer;
-older evidence remains immutable and is not rewritten to predict later events.
+Pointer refreshed from the read-only observation at `2026-08-11T17:15:40Z`.
+This file records immutable selector/release identity only. Live readiness,
+node/edge counts, embedding alignment, listener identity, claim/permit, and
+runtime/graph path identity must be read from the runtime endpoint and bound
+operator receipts; this Markdown file is not their live authority.
 
 ## Current production
 
@@ -10,10 +13,6 @@ older evidence remains immutable and is not rewritten to predict later events.
 - runtime manifest SHA-256: `7bd56658a2de3006cf4c78f5c82af71a5a88e96a30c17e4736b3b1433dd938c3`
 - runtime tree SHA-256: `0d5a7cf8a096fbb54f6ea4358f0ac5fc3dfae029be87e523b51c27cd3e970cf6`
 - selector SHA-256: `33d25e9066cfe6b0d25d2d3ef4c6e471f32c3897e43a567080605c953bb5e7e0`
-- deep readiness: `production_ready=true`, `verification_state=verified`
-- graph observation: `5429` nodes, `6916` edges
-- embedding observation: BGE-M3, `5429 x 1024`, synchronized and non-degraded
-- runtime identity: engine-path `b7a5127742727e6028dbb31c6288642c855d84702442f2784485550e10fc0711`, graph-path `c14d3d2e9dd7df2b3fddd734816a29599c00f8432e3168b0bbc5b387e36aa8bb`
 
 The immutable runtime manifest does not contain a Git commit. A normalized
 source audit found its public semantic core content-equivalent to checkpoint

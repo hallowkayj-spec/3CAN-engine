@@ -3,7 +3,8 @@
 
 The default mode fails on high-confidence secrets and reports portability
 findings. Use --strict when preparing a public or cross-project package; strict
-mode also fails on maintainer-local absolute paths and private project names.
+mode also fails on user-profile absolute paths. Project-specific private terms
+belong in an untracked release audit, not in this public scanner.
 """
 from __future__ import annotations
 
@@ -52,20 +53,8 @@ SECRET_PATTERNS = [
 ]
 
 REBINDING_PATTERNS = [
-    re.compile(r"C:\\Users\\", re.I),
-    re.compile(r"C:/Users/", re.I),
-    re.compile(r"/mnt/c/Users/", re.I),
-    re.compile(r"潘鼎"),
-    re.compile(r"木文化亲子工坊"),
-    re.compile(r"螺钿垂直模型"),
-    re.compile(r"生命倒计时"),
-    re.compile(r"\bUSR-ka(?:\b|-)", re.I),
-    re.compile(r"\bPRJ-zeven-wu-store-coach\b", re.I),
-    re.compile(r"\bERR-repeated-life-flow\b", re.I),
-    re.compile(r"Ka用户画像"),
-    re.compile(r"\bZeven-SaaS\b", re.I),
-    re.compile(r"\bpandingjue\b", re.I),
-    re.compile(r"\bwoodculture\.com\b", re.I),
+    re.compile("C:" + r"[/\\]Users[/\\]", re.I),
+    re.compile("/mnt/" + r"c/Users/", re.I),
 ]
 PACKAGE_MANIFEST = "RELEASE_PACKAGE_MANIFEST.json"
 POLYFORM_HEADER = "# PolyForm Noncommercial License 1.0.0"
@@ -472,14 +461,11 @@ def scan(root: Path) -> tuple[list[str], list[str]]:
             rebinding_hits.append(f"{path}: read failed: {exc}")
             continue
         rel = path.relative_to(root)
-        rel_posix = rel.as_posix()
         for idx, line in enumerate(text.splitlines(), 1):
             for pattern in SECRET_PATTERNS:
                 if pattern.search(line):
                     secret_hits.append(f"{rel}:{idx}: {masked(line)}")
                     break
-            if rel_posix == "scripts/prerelease_scan.py":
-                continue
             for pattern in REBINDING_PATTERNS:
                 if pattern.search(line):
                     rebinding_hits.append(f"{rel}:{idx}: {masked(line)}")

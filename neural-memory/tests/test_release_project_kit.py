@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -743,7 +744,20 @@ def test_verifier_types_development_readiness_and_can_require_production(
                 },
             }
         if url.endswith("/api/route"):
-            return True, {"nodes": [{"id": "DOC-3can-quickstart"}]}
+            assert "project_id" not in (_payload or {})
+            assert "project_namespace" not in (_payload or {})
+            return True, {
+                "nodes": [{"id": "DOC-3can-quickstart"}],
+                "route_meta": {
+                    "owner_defaults": {
+                        "status": "applied",
+                        "source": "3CAN.md",
+                        "digest": "sha256:" + "a" * 64,
+                    }
+                },
+            }
+        if url.endswith("/api/nodes/DOC-3can-quickstart"):
+            return True, {"id": "DOC-3can-quickstart"}
         if url.endswith("/api/token-usage/health"):
             return True, {}
         raise AssertionError(url)
@@ -767,6 +781,91 @@ def test_verifier_types_development_readiness_and_can_require_production(
         ],
     )
     assert verifier.main() == 1
+
+
+def test_verifier_exercises_project_isolation_writeback_and_error_lifecycle(
+    monkeypatch,
+):
+    verifier = load_verify_project()
+    created: dict[str, dict] = {}
+    error_calls = 0
+
+    def request(method, url, payload=None, timeout=10):
+        nonlocal error_calls
+        assert timeout > 0
+        if url.endswith("/api/health/live"):
+            return True, {"alive": True}
+        if url.endswith("/api/stats?deep=true"):
+            return True, {
+                "total_nodes": 14,
+                "total_edges": 12,
+                "readiness": {
+                    "mode": "development",
+                    "development_ready": True,
+                    "production_ready": False,
+                },
+            }
+        if method == "POST" and url.endswith("/api/nodes?force=true"):
+            created[payload["id"]] = payload
+            return True, {"id": payload["id"]}
+        if method == "POST" and url.endswith("/api/route"):
+            if payload["task"].startswith("publicrcisolation"):
+                visible = [
+                    {"id": node_id}
+                    for node_id, node in created.items()
+                    if node["content"]["extra"]["project_id"]
+                    == payload["project_id"]
+                ]
+                return True, {"nodes": visible, "route_meta": {}}
+            return True, {
+                "nodes": [{"id": "DOC-3can-quickstart"}],
+                "route_meta": {
+                    "owner_defaults": {
+                        "status": "applied",
+                        "source": "3CAN.md",
+                        "digest": "sha256:" + "b" * 64,
+                    }
+                },
+            }
+        if method == "POST" and url.endswith("/api/writeback"):
+            node_id = payload["changes"][0]["node_id"]
+            created[node_id]["content"]["notes"] = payload["changes"][0][
+                "value"
+            ]
+            return True, {"updated": [node_id]}
+        if method == "POST" and url.endswith("/api/errors/occurrences"):
+            error_calls += 1
+            return True, {
+                "status": "RECORDED" if error_calls == 1 else "PROMOTED"
+            }
+        if method == "GET" and "/api/nodes/" in url:
+            node_id = urllib.parse.unquote(url.rsplit("/", 1)[-1])
+            if node_id == "DOC-3can-quickstart":
+                return True, {"id": node_id}
+            return True, {"id": node_id, "content": created[node_id]["content"]}
+        if url.endswith("/api/token-usage/health"):
+            return True, {}
+        raise AssertionError((method, url, payload))
+
+    monkeypatch.setattr(verifier, "request_json", request)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_project.py",
+            "--base-url",
+            "http://3can.test",
+            "--exercise-writes",
+            "--project-id",
+            "public-rc",
+            "--project-namespace",
+            "public-rc",
+        ],
+    )
+
+    assert verifier.main() == 0
+    assert len(created) == 2
+    assert error_calls == 2
 
 
 def test_route_benchmark_rejects_the_wrong_graph_fixture():
