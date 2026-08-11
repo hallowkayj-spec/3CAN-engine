@@ -3839,15 +3839,18 @@ class GraphEngine:
             return True, "global_or_query_scoped"
 
         node_project, node_namespace = self._node_project_values(node)
-        if not project_id or not node_project:
+        requested_project = str(project_id or "").strip().casefold()
+        requested_namespace = str(project_namespace or "").strip().casefold()
+        if not requested_project or not requested_namespace:
             return False, "project_applicability_unproven"
-        if node_project != project_id.casefold():
+        if not node_project:
+            return False, "project_applicability_unproven"
+        if not node_namespace:
+            return False, "project_namespace_unproven"
+        if node_project != requested_project:
             return False, "project_mismatch"
-        if project_namespace:
-            if not node_namespace:
-                return False, "project_namespace_unproven"
-            if node_namespace != project_namespace.casefold():
-                return False, "project_namespace_mismatch"
+        if node_namespace != requested_namespace:
+            return False, "project_namespace_mismatch"
         return True, "project_match"
 
     def _core_dynamic_edge_node_relevant(

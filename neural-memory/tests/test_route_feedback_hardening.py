@@ -836,6 +836,60 @@ def test_core_memory_project_mismatch_falls_back_to_optional_semantic_retrieval(
     } in graph["optional_semantic_nodes"]
 
 
+@pytest.mark.parametrize(
+    ("project_id", "project_namespace"),
+    [("public-demo", None), (None, "public-demo")],
+)
+def test_routing_request_rejects_partial_project_identity(
+    project_id,
+    project_namespace,
+):
+    graph_engine = load_graph_engine()
+
+    with pytest.raises(ValueError, match="project_identity_pair_required"):
+        graph_engine.RoutingRequest(
+            task="current project reality",
+            project_id=project_id,
+            project_namespace=project_namespace,
+        )
+
+
+@pytest.mark.parametrize(
+    ("request_namespace", "node_namespace", "expected_reason"),
+    [
+        ("", "other-namespace", "project_applicability_unproven"),
+        ("public-demo", "", "project_namespace_unproven"),
+        ("public-demo", "other-namespace", "project_namespace_mismatch"),
+    ],
+)
+def test_core_memory_requires_complete_exact_project_identity(
+    tmp_path,
+    monkeypatch,
+    request_namespace,
+    node_namespace,
+    expected_reason,
+):
+    engine = _make_core_memory_engine(tmp_path, monkeypatch, [])
+    candidate = engine.nodes["ENV-PUBLIC-runtime"]
+    candidate.content.extra["project_id"] = "public-demo"
+    candidate.content.extra["project_namespace"] = node_namespace
+
+    graph = engine._build_core_memory_route_graph(
+        "current runtime and project environment",
+        ["ENV-PUBLIC-runtime"],
+        project_id="public-demo",
+        project_namespace=request_namespace,
+    )
+
+    assert "ENV-PUBLIC-runtime" not in graph["must_consume_node_ids"]
+    assert graph["lane_selected_nodes"]["environment_constraints"] == []
+    assert {
+        "node_id": "ENV-PUBLIC-runtime",
+        "lane": "environment_constraints",
+        "reason": expected_reason,
+    } in graph["optional_semantic_nodes"]
+
+
 def _make_current_reality_engine(tmp_path: Path, monkeypatch):
     graph_dir = tmp_path / "current-reality-graph"
     nodes_dir = graph_dir / "nodes"

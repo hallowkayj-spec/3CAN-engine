@@ -558,8 +558,14 @@ components:
         agent_id: { type: string, default: unknown }
         session_instance_id: { type: string, nullable: true }
         route_id: { type: string, nullable: true }
-        project_id: { type: string, nullable: true }
-        project_namespace: { type: string, nullable: true }
+        project_id:
+          type: string
+          nullable: true
+          description: Must be supplied together with project_namespace, or both omitted.
+        project_namespace:
+          type: string
+          nullable: true
+          description: Must be supplied together with project_id, or both omitted.
         workspace_id: { type: string, nullable: true }
         workorder_id: { type: string, nullable: true }
         mode: { type: string, enum: [skeleton, slim, full], default: slim }

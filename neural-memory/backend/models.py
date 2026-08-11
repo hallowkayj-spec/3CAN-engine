@@ -10,7 +10,7 @@ import re
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 _WINDOWS_FORBIDDEN_NODE_ID_CHARS = frozenset('<>:"/\\|?*')
@@ -287,8 +287,14 @@ class RoutingRequest(BaseModel):
     agent_id: str = "unknown"               # 哪个Agent发起的路由
     session_instance_id: str | None = None   # 并行 session 隔离键；缺失时走 legacy 兼容
     route_id: str | None = None              # 可由客户端绑定；缺失时由引擎生成
-    project_id: str | None = None             # repo capsule project identity
-    project_namespace: str | None = None      # repo capsule namespace
+    project_id: str | None = Field(
+        default=None,
+        description="Supply with project_namespace, or omit both.",
+    )
+    project_namespace: str | None = Field(
+        default=None,
+        description="Supply with project_id, or omit both.",
+    )
     workspace_id: str | None = None           # path-free physical writer binding
     workorder_id: str | None = None            # existing task context; never fabricated
     # v9.0 Wave 1 — Entroly CCR 风格两段式
@@ -318,6 +324,12 @@ class RoutingRequest(BaseModel):
             value,
             field_name=info.field_name,
         )
+
+    @model_validator(mode="after")
+    def _validate_project_identity_pair(self) -> RoutingRequest:
+        if bool(self.project_id) != bool(self.project_namespace):
+            raise ValueError("project_identity_pair_required")
+        return self
 
 
 class RoutingResponse(BaseModel):
