@@ -22,6 +22,7 @@ production installation has deployed this candidate; see
 | Immutable candidate | release `03cf214a...`, 24-file manifest `ab5fa950...` | builder, bootstrap, handoff, finalizer, negative dependency, and post-UAT verification passed |
 | Isolated real-graph UAT | copied 5432-node / 6920-edge graph on `9701` | BGE-M3 5432x1024; Owner Intent `server_local_file`; compact default produced skeleton; partial identity returned 422; listener removed |
 | Private real-graph regression | frozen copied graph, original 12 + 12 held-out, four warm repeats | deterministic; correctness unchanged |
+| Clean-clone public RC | fresh clone at `24c6161`, fresh `requirements-min.txt` venv, new seed graph/project on `9701` | start, readiness, route, exact read, writeback, ErrorKnowledge, project isolation, project kit, and clean stop passed |
 | Bounded secret/private-path scan | candidate diff only | clean |
 | GitHub-hosted CI | final Draft PR head | required; GitHub is the live status owner |
 
