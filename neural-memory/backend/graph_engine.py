@@ -14,6 +14,7 @@ v3 保留:
 from __future__ import annotations
 
 import ast
+import copy
 import datetime as dt
 import hashlib
 import io
@@ -25,6 +26,7 @@ import threading
 import time
 import uuid
 from collections import Counter, defaultdict
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +69,26 @@ _DURABLE_CURRENT_FIELDS = frozenset(
     {"blockers", "current_state", "description", "status", "tech_stack"}
 )
 _AUTHORITY_PROTECTED_FAMILIES = frozenset({"INTF", "PROC", "DEC", "PRJ"})
+
+
+def _serialized_graph_state(method):
+    """Run one public graph operation against a coherent in-process state."""
+
+    @wraps(method)
+    def synchronized(self, *args, **kwargs):
+        state_lock = getattr(self, "_state_lock", None)
+        if state_lock is None:
+            return method(self, *args, **kwargs)
+        with state_lock:
+            if getattr(self, "_closed", False) or getattr(
+                self,
+                "_closing",
+                False,
+            ):
+                raise RuntimeError("graph_engine_closed")
+            return method(self, *args, **kwargs)
+
+    return synchronized
 
 def _replace_with_windows_retry(source: Path, target: Path) -> None:
     """Retry transient Windows sharing violations, then fail closed."""
@@ -806,6 +828,9 @@ class GraphEngine:
     )
 
     def __init__(self) -> None:
+        self._state_lock = threading.RLock()
+        self._closed = False
+        self._closing = False
         self._graph_runtime_lease: GraphRuntimeLease | None = (
             acquire_graph_runtime_lock(GRAPH_DIR, owner_kind="3can-engine")
         )
@@ -824,6 +849,11 @@ class GraphEngine:
         self._route_buffer_lock = threading.Lock()
         self._pending_keywords: dict[str, dict[str, int]] = {}  # v8.3 Miss Healer: node_id → {token: confirm_count}
         self._PENDING_KW_FILE = GRAPH_DIR / "pending_keywords.json"
+        self._file_hashes: dict[str, str] = {}
+        self._sync_thread: threading.Thread | None = None
+        self._sync_running = False
+        self._sync_stopping = False
+        self._sync_stop_event = threading.Event()
         self._embedding_cache_state = "uninitialized"
         self._embedding_cache_backend_id = ""
         self._embedding_cache_source_manifest = ""
@@ -843,6 +873,11 @@ class GraphEngine:
     def close(self) -> None:
         """Release exclusive graph ownership during a graceful shutdown."""
 
+        with self._state_lock:
+            if self._closed or self._closing:
+                return
+            self._closing = True
+        self.stop_sync_watcher()
         warmup_thread = getattr(self, "_cn_reranker_warmup_thread", None)
         if (
             warmup_thread is not None
@@ -864,10 +899,23 @@ class GraphEngine:
                     wait_seconds,
                 )
 
-        lease = getattr(self, "_graph_runtime_lease", None)
-        if lease is not None:
-            lease.release()
-            self._graph_runtime_lease = None
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._closing = False
+            lease = getattr(self, "_graph_runtime_lease", None)
+            if lease is not None:
+                lease.release()
+                self._graph_runtime_lease = None
+
+    def run_consistent(self, operation, /, *args, **kwargs):
+        """Run one bounded compound operation inside the canonical state lane."""
+
+        with self._state_lock:
+            if self._closed or self._closing:
+                raise RuntimeError("graph_engine_closed")
+            return operation(*args, **kwargs)
 
     # ── 初始化 ──
 
@@ -1040,6 +1088,7 @@ class GraphEngine:
         self._embedding_cache_backend_id = backend_id
         self._embedding_cache_source_manifest = source_manifest
 
+    @_serialized_graph_state
     def embedding_status(self, *, deep: bool = False) -> dict[str, Any]:
         """Return retrieval diagnostics without scanning the graph by default.
 
@@ -1479,12 +1528,14 @@ class GraphEngine:
             [edge.model_dump() for edge in self.edges],
         )
 
+    @_serialized_graph_state
     def reload(self) -> None:
         self._load()
         self._load_or_build_embeddings()  # 智能加载: 节点集合未变则用cache, 秒级完成
 
     # ── 节点 CRUD ──
 
+    @_serialized_graph_state
     def create_node(
         self,
         req: NodeCreate,
@@ -1510,8 +1561,9 @@ class GraphEngine:
         author = getattr(req, "primary_author", "system") or "system"
         node = Node(
             id=node_id, name=req.name, cluster=req.cluster, layer=req.layer,
-            type=req.type, status=req.status, content=req.content,
-            activation_keywords=req.activation_keywords, priority=req.priority,
+            type=req.type, status=req.status,
+            content=req.content.model_copy(deep=True),
+            activation_keywords=list(req.activation_keywords), priority=req.priority,
             created_at=now, updated_at=now,
             updated_by=author, primary_author=author,
         )
@@ -1519,11 +1571,14 @@ class GraphEngine:
         self._save_node(node)
         self.nodes[node.id] = node
         self._update_single_embedding(node.id)
-        return node
+        return node.model_copy(deep=True)
 
+    @_serialized_graph_state
     def get_node(self, node_id: str) -> Node | None:
-        return self.nodes.get(node_id)
+        node = self.nodes.get(node_id)
+        return node.model_copy(deep=True) if node is not None else None
 
+    @_serialized_graph_state
     def list_nodes(self, cluster=None, status=None, node_type=None) -> list[Node]:
         result = list(self.nodes.values())
         if cluster:
@@ -1532,8 +1587,12 @@ class GraphEngine:
             result = [n for n in result if n.status == status]
         if node_type:
             result = [n for n in result if n.type == node_type]
-        return sorted(result, key=lambda n: n.updated_at, reverse=True)
+        return [
+            node.model_copy(deep=True)
+            for node in sorted(result, key=lambda n: n.updated_at, reverse=True)
+        ]
 
+    @_serialized_graph_state
     def update_node(
         self,
         node_id: str,
@@ -1554,8 +1613,24 @@ class GraphEngine:
         node = self.nodes.get(node_id)
         if not node:
             return None
+        expected_updated_at = req.expected_updated_at
+        protected_family = (
+            semantic_id_family(node_id) in _AUTHORITY_PROTECTED_FAMILIES
+        )
+        if (
+            protected_family
+            and internal_owner is None
+            and expected_updated_at is None
+        ):
+            raise ValueError(f"node_expected_updated_at_required:{node_id}")
+        if (
+            expected_updated_at is not None
+            and str(expected_updated_at) != str(node.updated_at)
+        ):
+            raise ValueError(f"node_version_conflict:{node_id}")
         self._embedding_cache_state = "dirty"
         update_data = req.model_dump(exclude_none=True, exclude_unset=True)
+        update_data.pop("expected_updated_at", None)
         update_data["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
         for k, v in update_data.items():
             if k == "content" and isinstance(v, dict):
@@ -1570,8 +1645,9 @@ class GraphEngine:
                 setattr(node, k, v)
         self._save_node(node)
         self._update_single_embedding(node_id)
-        return node
+        return node.model_copy(deep=True)
 
+    @_serialized_graph_state
     def delete_node(
         self,
         node_id: str,
@@ -1614,6 +1690,7 @@ class GraphEngine:
     def _edge_key(self, edge: Edge) -> tuple[str, str, str]:
         return (edge.source, edge.target, self._edge_type_value(edge.type))
 
+    @_serialized_graph_state
     def validate_supersession(self, source_id: str, target_id: str) -> None:
         """Validate a public durable-current replacement before edge creation."""
 
@@ -1652,6 +1729,7 @@ class GraphEngine:
         if source_id in self._superseded_node_ids():
             raise ValueError("supersedes_source_already_superseded")
 
+    @_serialized_graph_state
     def create_edge(
         self,
         req: EdgeCreate,
@@ -1663,6 +1741,10 @@ class GraphEngine:
             req.target,
             internal_owner=internal_owner,
         )
+        if req.source not in self.nodes:
+            raise ValueError(f"source_node_not_found:{req.source}")
+        if req.target not in self.nodes:
+            raise ValueError(f"target_node_not_found:{req.target}")
         if req.source == req.target:
             raise ValueError("self_edge_not_allowed")
         if self._edge_type_value(req.type) == "supersedes":
@@ -1676,18 +1758,22 @@ class GraphEngine:
         requested_key = (req.source, req.target, self._edge_type_value(req.type))
         for existing in self.edges:
             if self._edge_key(existing) == requested_key:
-                return existing
+                return existing.model_copy(deep=True)
         edge = Edge(source=req.source, target=req.target, type=req.type,
                     weight=req.weight, description=req.description)
         self.edges.append(edge)
         self._save_edges()
-        return edge
+        return edge.model_copy(deep=True)
 
+    @_serialized_graph_state
     def list_edges(self, node_id=None) -> list[Edge]:
         if node_id:
-            return [e for e in self.edges if e.source == node_id or e.target == node_id]
-        return self.edges
+            edges = [e for e in self.edges if e.source == node_id or e.target == node_id]
+        else:
+            edges = self.edges
+        return [edge.model_copy(deep=True) for edge in edges]
 
+    @_serialized_graph_state
     def delete_edge(
         self,
         source: str,
@@ -1707,6 +1793,7 @@ class GraphEngine:
             return True
         return False
 
+    @_serialized_graph_state
     def cleanup_edges(self, apply: bool = False, sample_limit: int = 50) -> dict:
         original_count = len(self.edges)
         kept: list[Edge] = []
@@ -1950,6 +2037,7 @@ class GraphEngine:
     def _save_click_log(self) -> None:
         _atomic_write_json(self._CLICK_LOG_FILE, self._click_log)
 
+    @_serialized_graph_state
     def record_route_feedback(
         self,
         query: str,
@@ -2012,6 +2100,7 @@ class GraphEngine:
                     promoted.append({"node_id": node_id, "added_keywords": added})
         return {"recorded": len(normalized), "promoted": promoted}
 
+    @_serialized_graph_state
     def record_outcome(
         self,
         query: str,
@@ -2081,6 +2170,7 @@ class GraphEngine:
             }
             self._prune_route_buffer_locked(now)
 
+    @_serialized_graph_state
     def infer_outcome(
         self,
         agent_id: str,
@@ -4514,6 +4604,7 @@ class GraphEngine:
             "warmup": self._reranker_warmup_meta(),
         }
 
+    @_serialized_graph_state
     def route(self, req: RoutingRequest) -> RoutingResponse:
         """分层路由 v8.0 (3-path SymRAG + RRF fusion + FlashRank re-ranking)。
 
@@ -5041,7 +5132,7 @@ class GraphEngine:
         activated = []
         for nid in sorted_ids:
             node = self.nodes[nid]
-            activated.append(node)
+            activated.append(node.model_copy(deep=True))
 
         # 相关边 + 1-hop扩展
         relevant_edges = []
@@ -5055,7 +5146,10 @@ class GraphEngine:
             # Every edge endpoint must be present in activated_nodes.  One-hop
             # solution edges previously leaked ERR/FIX identifiers through
             # relevant_edges and packed edge_evidence on ordinary routes.
-            relevant_edges = internal_edges[: self._ROUTE_RELEVANT_EDGE_MAX]
+            relevant_edges = [
+                edge.model_copy(deep=True)
+                for edge in internal_edges[: self._ROUTE_RELEVANT_EDGE_MAX]
+            ]
 
         route_meta = {
             "route_id": route_id,
@@ -5147,6 +5241,7 @@ class GraphEngine:
 
     # ── 自动回写（session结束时调用） ──
 
+    @_serialized_graph_state
     def session_writeback(
         self,
         changes: list[dict],
@@ -5220,8 +5315,17 @@ class GraphEngine:
             node = self.nodes.get(nid)
             if node is None:
                 raise ValueError(f"writeback_node_not_found:{nid}")
+            expected_updated_at = change.get("expected_updated_at")
+            if (
+                expected_updated_at is not None
+                and str(expected_updated_at) != str(node.updated_at)
+            ):
+                raise ValueError(f"writeback_node_version_conflict:{nid}")
 
-            if semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES:
+            protected_family = (
+                semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES
+            )
+            if protected_family:
                 node_project, node_namespace = self._node_project_values(node)
                 incoming_project = str(context.get("project_id") or "").casefold()
                 incoming_namespace = str(
@@ -5241,7 +5345,7 @@ class GraphEngine:
                 raise ValueError(f"writeback_field_unsupported:{field}")
 
             if (
-                semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES
+                protected_family
                 and field in _DURABLE_CURRENT_FIELDS
             ):
                 if not durable_provenance_permitted:
@@ -5255,6 +5359,8 @@ class GraphEngine:
                     raise ValueError(f"writeback_project_id_required:{nid}")
                 if node_namespace and not incoming_namespace:
                     raise ValueError(f"writeback_project_namespace_required:{nid}")
+            if protected_family and expected_updated_at is None:
+                raise ValueError(f"writeback_expected_updated_at_required:{nid}")
             value = change.get("value")
 
             if field in {
@@ -5423,6 +5529,7 @@ class GraphEngine:
             ),
         }
 
+    @_serialized_graph_state
     def learn_preference(self, key: str, value: str, context: str = "") -> Node:
         """Persist a preference into the configured generic profile node.
 
@@ -5434,13 +5541,14 @@ class GraphEngine:
         profile_id = profile["node_id"]
         user_node = self.nodes.get(profile_id)
         if not user_node:
-            user_node = self.create_node(NodeCreate(
+            self.create_node(NodeCreate(
                 id=profile_id,
                 name=profile["name"],
                 cluster=profile["cluster"],
                 type="feedback", priority="high",
                 content=NodeContent(description="Automatically retained user preferences"),
             ))
+            user_node = self.nodes[profile_id]
 
         # 追加到extra字段
         prefs = user_node.content.extra.get("preferences", {})
@@ -5455,10 +5563,11 @@ class GraphEngine:
         user_node.updated_at = dt.datetime.now(dt.timezone.utc).isoformat()
         self._save_node(user_node)
         self._update_single_embedding(profile_id)
-        return user_node
+        return user_node.model_copy(deep=True)
 
     # ── 统计 ──
 
+    @_serialized_graph_state
     def stats(self) -> GraphStats:
         clusters: dict[str, int] = Counter()
         types: dict[str, int] = Counter()
@@ -5487,6 +5596,7 @@ class GraphEngine:
             last_updated=max((n.updated_at for n in self.nodes.values()), default=""),
         )
 
+    @_serialized_graph_state
     def project_reality_diagnostics(self) -> dict[str, Any]:
         """Logical hot/history projection; diagnostic only, never readiness."""
 
@@ -5550,6 +5660,7 @@ class GraphEngine:
     # FEATURE 5: 节点生命周期管理
     # ═══════════════════════════════════════════════
 
+    @_serialized_graph_state
     def lifecycle_sweep(self, stale_days: int = 30, archive_days: int = 60) -> dict:
         """R13 生命周期扫描 (30天基准线, 永不删除)。
 
@@ -5639,6 +5750,7 @@ class GraphEngine:
             "baseline": f"{stale_days}d dormant / {archive_days}d archive",
         }
 
+    @_serialized_graph_state
     def get_lifecycle_stats(self) -> dict:
         """节点生命周期分布统计。"""
         status_counts = Counter()
@@ -5667,6 +5779,7 @@ class GraphEngine:
 
     # ── R12-R16 节点瘦身体系 (v2.3) ──
 
+    @_serialized_graph_state
     def health_scan(self) -> dict[str, Any]:
         """只读体检: 孤节点/零激活/相似名/prefix倾斜/合并候选。不修改数据。"""
         # 1. 连通性: 有edge的节点集合
@@ -5758,6 +5871,7 @@ class GraphEngine:
             ],
         }
 
+    @_serialized_graph_state
     def merge_nodes(self, keep_id: str, remove_id: str, approver: str = "system") -> dict:
         """合并两个节点: keep保留, remove的keywords/notes/edges/contributors并入keep, remove转dormant。
 
@@ -5871,6 +5985,7 @@ class GraphEngine:
             "remove_status": "dormant",
         }
 
+    @_serialized_graph_state
     def batch_dormant(self, node_ids: list[str], reason: str = "health-scan") -> dict:
         """批量将节点转dormant (不删除)。"""
         now = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -5896,19 +6011,23 @@ class GraphEngine:
             "skipped_protected_ids": skipped_protected[:30],
         }
 
+    @_serialized_graph_state
     def export_graph(self) -> dict[str, Any]:
         nodes_data = []
         for n in self.nodes.values():
             nodes_data.append({
                 "id": n.id, "name": n.name, "cluster": n.cluster, "layer": n.layer,
                 "type": n.type, "status": n.status, "priority": n.priority,
-                "activation_count": n.activation_count, "keywords": n.activation_keywords,
+                "activation_count": n.activation_count,
+                "keywords": list(n.activation_keywords),
                 "description": n.content.description, "current_state": n.content.current_state,
-                "tech_stack": n.content.tech_stack, "key_files": n.content.key_files,
-                "blockers": n.content.blockers, "last_session": n.content.last_session,
+                "tech_stack": list(n.content.tech_stack),
+                "key_files": list(n.content.key_files),
+                "blockers": list(n.content.blockers),
+                "last_session": n.content.last_session,
                 "notes": n.content.notes, "updated_at": n.updated_at, "updated_by": n.updated_by,
                 "primary_author": getattr(n, "primary_author", "system"),
-                "contributors": getattr(n, "contributors", []),
+                "contributors": list(getattr(n, "contributors", [])),
             })
         links_data = [{"source": e.source, "target": e.target, "type": e.type,
                         "weight": e.weight, "description": e.description} for e in self.edges]
@@ -5932,38 +6051,74 @@ class GraphEngine:
     # FEATURE 1: 同步层 — memory/目录变更检测
     # ═══════════════════════════════════════════════
 
-    _file_hashes: dict[str, str] = {}  # path → md5
-    _sync_thread: threading.Thread | None = None
-    _sync_running = False
-
     def start_sync_watcher(self, watch_dirs: list[Path], interval: int = 30) -> None:
         """启动后台线程，定期扫描目录变更并更新节点。"""
-        if self._sync_running:
-            return
-        self._sync_running = True
+        with self._state_lock:
+            if self._closed or self._closing:
+                raise RuntimeError("graph_engine_closed")
+            if self._sync_stopping:
+                raise RuntimeError("sync_watcher_stopping")
+            if self._sync_running:
+                return
+            self._sync_running = True
+            self._sync_stop_event.clear()
 
-        # 初始快照
-        for d in watch_dirs:
-            if d.exists():
-                for f in d.glob("*.md"):
-                    self._file_hashes[str(f)] = self._hash_file(f)
-                for f in d.glob("*.json"):
-                    self._file_hashes[str(f)] = self._hash_file(f)
+            # Initial snapshot is part of watcher ownership state.
+            for directory in watch_dirs:
+                if directory.exists():
+                    for pattern in ("*.md", "*.json"):
+                        for path in directory.glob(pattern):
+                            self._file_hashes[str(path)] = self._hash_file(path)
 
         def _watch_loop():
-            while self._sync_running:
+            while self._sync_running and not self._sync_stop_event.is_set():
                 changes = self._detect_changes(watch_dirs)
                 if changes:
                     print(f"[3CAN Sync] Detected {len(changes)} file changes")
                     self._apply_file_changes(changes)
-                time.sleep(interval)
+                self._sync_stop_event.wait(interval)
 
-        self._sync_thread = threading.Thread(target=_watch_loop, daemon=True, name="3can-sync")
-        self._sync_thread.start()
+        with self._state_lock:
+            self._sync_thread = threading.Thread(
+                target=_watch_loop,
+                daemon=True,
+                name="3can-sync",
+            )
+            if (
+                self._closed
+                or self._closing
+                or self._sync_stopping
+                or not self._sync_running
+            ):
+                self._sync_thread = None
+                raise RuntimeError("graph_engine_closed")
+            self._sync_thread.start()
         print(f"[3CAN Sync] Watcher started: {len(watch_dirs)} dirs, {interval}s interval")
 
     def stop_sync_watcher(self) -> None:
-        self._sync_running = False
+        with self._state_lock:
+            sync_thread = getattr(self, "_sync_thread", None)
+            if not self._sync_running and sync_thread is None:
+                return
+            if not self._sync_stopping:
+                self._sync_stopping = True
+                self._sync_running = False
+                stop_event = getattr(self, "_sync_stop_event", None)
+                if stop_event is not None:
+                    stop_event.set()
+        if (
+            sync_thread is not None
+            and sync_thread.is_alive()
+            and sync_thread is not threading.current_thread()
+        ):
+            sync_thread.join(timeout=5.0)
+            if sync_thread.is_alive():
+                raise RuntimeError("sync_watcher_shutdown_timeout")
+        with self._state_lock:
+            if self._sync_thread is sync_thread:
+                self._sync_thread = None
+            if self._sync_thread is None:
+                self._sync_stopping = False
 
     @staticmethod
     def _hash_file(path: Path) -> str:
@@ -6001,6 +6156,7 @@ class GraphEngine:
 
         return changes
 
+    @_serialized_graph_state
     def _apply_file_changes(self, changes: list[dict]) -> None:
         """将文件变更同步到图节点 + 被动Agent更新。"""
         for change in changes:
@@ -6022,7 +6178,10 @@ class GraphEngine:
             matching_nodes = []
             fname_norm = fname.lower()
             for nid, node in self.nodes.items():
-                if self._reserved_error_knowledge_id(nid):
+                if (
+                    self._reserved_error_knowledge_id(nid)
+                    or semantic_id_family(nid) in _AUTHORITY_PROTECTED_FAMILIES
+                ):
                     continue
                 nid_norm = nid.lower()
                 # (1) id 完全等于文件名, 或文件名是 id 的去日期后缀 (ERR-foo-20260422 ← foo.md)
@@ -6240,6 +6399,7 @@ class GraphEngine:
     # FEATURE 2: Memory目录全量rescan
     # ═══════════════════════════════════════════════
 
+    @_serialized_graph_state
     def rescan_memory_dir(self, memory_dir: Path) -> dict:
         """扫描memory/目录，检测与图节点的差异，返回新增/修改/孤立的文件列表。"""
         if not memory_dir.exists():
@@ -6307,6 +6467,7 @@ class GraphEngine:
         payload = f"{entry.timestamp}|{entry.agent_id}|{entry.action}|{entry.detail}|{affected}|{meta_str}|{entry.prev_hash}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    @_serialized_graph_state
     def log_activity(self, agent_id: str, action: str, detail: str = "",
                      affected_nodes: list[str] | None = None, meta: dict | None = None) -> ActivityEntry:
         """记录一条活动日志. v9.3: hash chain. v9.4: 实时 WS broadcast (基座#6)."""
@@ -6317,8 +6478,8 @@ class GraphEngine:
             agent_id=agent_id,
             action=action,
             detail=detail,
-            affected_nodes=affected_nodes or [],
-            meta=meta or {},
+            affected_nodes=list(affected_nodes or []),
+            meta=copy.deepcopy(meta or {}),
             prev_hash=prev,
         )
         entry.self_hash = self._compute_entry_hash(entry)
@@ -6331,8 +6492,9 @@ class GraphEngine:
                 broadcaster(entry)
         except Exception:
             pass  # 订阅失败不影响主流程
-        return entry
+        return entry.model_copy(deep=True)
 
+    @_serialized_graph_state
     def verify_activity_chain(self) -> dict:
         """v9.3 校验 activity_log 的 hash chain 完整性. 返回 {valid, n, breaks}."""
         breaks = []
@@ -6351,6 +6513,7 @@ class GraphEngine:
                     breaks.append({"idx": i, "ts": e.timestamp, "reason": "prev_hash mismatch"})
         return {"valid": valid, "n_entries": len(self.activity_log), "breaks": breaks[:10]}
 
+    @_serialized_graph_state
     def agent_checkin(self, agent_id: str, name: str = "", role: str = "",
                       current_task: str = "", session_id: str = "",
                       capabilities: list[str] | None = None,
@@ -6370,9 +6533,9 @@ class GraphEngine:
             if session_id:
                 existing.session_id = session_id
             if capabilities is not None:
-                existing.capabilities = capabilities
+                existing.capabilities = list(capabilities)
             if meta:
-                existing.meta.update(meta)
+                existing.meta.update(copy.deepcopy(meta))
             existing.status = AgentStatus.online
             existing.last_checkin = now
             existing.checkin_count += 1
@@ -6385,17 +6548,18 @@ class GraphEngine:
                 status=AgentStatus.online,
                 current_task=current_task,
                 session_id=session_id,
-                capabilities=capabilities or [],
+                capabilities=list(capabilities or []),
                 last_checkin=now,
                 checkin_count=1,
-                meta=meta or {},
+                meta=copy.deepcopy(meta or {}),
             )
 
         self.agents[agent_id] = existing
         self._save_agents()
         self.log_activity(agent_id, "checkin", f"{existing.name} checked in: {current_task or 'idle'}")
-        return existing
+        return existing.model_copy(deep=True)
 
+    @_serialized_graph_state
     def agent_update_task(self, agent_id: str, current_task: str, status: str = "busy") -> AgentInfo | None:
         """Agent更新当前任务状态。"""
         agent = self.agents.get(agent_id)
@@ -6406,19 +6570,21 @@ class GraphEngine:
         agent.last_checkin = dt.datetime.now(dt.timezone.utc).isoformat()
         self._save_agents()
         self.log_activity(agent_id, "task_update", current_task)
-        return agent
+        return agent.model_copy(deep=True)
 
+    @_serialized_graph_state
     def list_agents(self, status_filter: str | None = None) -> list[AgentInfo]:
         """列出所有注册的Agent。"""
-        agents = list(self.agents.values())
+        agents = [agent.model_copy(deep=True) for agent in self.agents.values()]
         if status_filter:
             agents = [a for a in agents if a.status == status_filter]
         return sorted(agents, key=lambda a: a.last_checkin, reverse=True)
 
+    @_serialized_graph_state
     def get_activity(self, agent_id: str | None = None, action: str | None = None,
                      limit: int = 50) -> list[ActivityEntry]:
         """查询活动日志。"""
-        entries = self.activity_log
+        entries = [entry.model_copy(deep=True) for entry in self.activity_log]
         if agent_id:
             entries = [e for e in entries if e.agent_id == agent_id]
         if action:
@@ -6440,11 +6606,15 @@ class GraphEngine:
 
         suggestions = []
         seen_files: set[str] = set()
-        existing_intf_files = set()
-        for n in self.nodes.values():
-            if n.id.startswith("INTF-"):
-                for kf in n.content.key_files:
-                    existing_intf_files.add(kf)
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("graph_engine_closed")
+            existing_intf_files = {
+                key_file
+                for node in self.nodes.values()
+                if node.id.startswith("INTF-")
+                for key_file in node.content.key_files
+            }
 
         for pattern in patterns:
             for pyfile in code_dir.glob(pattern):

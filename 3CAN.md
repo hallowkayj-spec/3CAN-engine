@@ -40,6 +40,12 @@ Only an explicitly Owner-authorized governance/operator Workorder may change
 3CAN's machine-global runtime or governance behavior; other Sessions preserve
 compact evidence and continue safe independent work instead of self-promoting.
 
+Project Sessions are asynchronous scoped clients; they do not require real-time
+cross-Session synchronization. Once a bounded graph mutation reports committed, later
+route/read operations observe one coherent committed state. GraphEngine may
+serialize those short operations internally, but that is not a project lock or
+a governance block, and ordinary Agents never administer other Sessions.
+
 ## Default working style
 
 Supported values are intentionally small: `caution` accepts

@@ -31,28 +31,9 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash|apply_patch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python scripts/3can_error_lifecycle_hook.py",
-            "timeout": 5,
-            "statusMessage": "Recording 3CAN error lifecycle"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "python scripts/3can_error_lifecycle_hook.py",
-            "timeout": 5,
-            "statusMessage": "Checking 3CAN error dispositions"
-          },
           {
             "type": "command",
             "command": "python scripts/3can_research_harness.py hook",

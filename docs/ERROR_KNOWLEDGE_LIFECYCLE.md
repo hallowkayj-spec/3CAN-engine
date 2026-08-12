@@ -284,7 +284,7 @@ Implemented request fragment:
 The server MUST recoverably:
 
 1. validate the consumed ticket, agent, completion hash, and
-   ticket-authorized `allowed_error_ids`;
+   ticket-bound `allowed_error_ids`;
 2. verify each typed evidence receipt by recomputing an artifact digest inside
    an allowed evidence root; an activity self-hash is an audit reference only
    and MUST NOT authorize automatic resolution;
@@ -424,7 +424,7 @@ NEW -> PREPARED -> EXECUTING -> DONE
 PREPARED or EXECUTING      \-> EXPIRED
 ```
 
-- `ticket_id` identifies the authorized intent.
+- `ticket_id` identifies the bounded mutation intent recorded as evidence.
 - `attempt_id` identifies one execution attempt.
 - `lease_expires_at` bounds exclusive use.
 - `target_digest` proves the target state on which the decision was made.

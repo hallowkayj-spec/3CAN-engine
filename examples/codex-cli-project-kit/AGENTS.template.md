@@ -31,9 +31,7 @@ production 9700 lifecycle. One failed probe is evidence, not restart authority.
 For read-only orientation, call route directly:
 
 ```powershell
-$agentId = 'codex-main-W1-20260810' # replace for every session/workorder
 scripts\codex-3can.cmd route `
-  -AgentId $agentId `
   -Task "current task" `
   -BaseUrl $env:THREECAN_BASE_URL
 ```
@@ -43,21 +41,23 @@ mutation. Retrieve full node content only for selected results. Treat typed
 `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, and readiness reason codes as real
 outcomes; do not collapse them into one `healthy` boolean.
 
-Every non-diagnostic wrapper command requires an explicit, session- or
-workorder-specific `AgentId`; the generic `codex-main` id is rejected. Wrapper
-ticket state is private to that AgentId and the current physical Git worktree.
-The shared 3CAN graph remains the durable collaboration surface.
+The harness derives a stable, execution-specific `AgentId` and carries it on
+the protocol. The generic `codex-main` id is rejected. The wrapper never stores
+or selects ticket state; the shared API/ledger remains the canonical evidence
+surface.
 
 ## Optional Guarded-Write Workflow
 
 Use `prepare` and the exact returned ticket ID only when this project has a
 specific guarded-write or signed-evidence requirement. After verified work,
-pass that ID to `done`. Tickets are authorization/evidence receipts, not
-worktree locks and not a universal prerequisite for edits.
+pass that ID to `done`. A Ticket is a scoped mutation-evidence envelope: Owner
+instruction supplies task authority, while the Ticket binds execution identity,
+project/workspace/Workorder, target, scope, consulted context, action, and
+outcome. It is not a worktree lock or universal prerequisite for edits.
 
 `compact` remains available for a durable handoff before archive or context
-compaction. Pass files explicitly, or pass a live ticket from the same AgentId
-and worktree. It never imports files from implicit or expired wrapper state.
+compaction. Pass files explicitly; it never imports files from ticket or wrapper
+state.
 Store decisions, verified outcomes, and source locations; do not store raw
 chain-of-thought, credentials, cookies, or private logs.
 
@@ -70,7 +70,12 @@ in the writeback JSON. User direction stays lightweight:
   "authorized_by": "user",
   "project_id": "<project-id>",
   "project_namespace": "<project-namespace>",
-  "changes": [{"node_id": "DEC-example", "field": "current_state", "value": "..."}]
+  "changes": [{
+    "node_id": "DEC-example",
+    "field": "current_state",
+    "value": "...",
+    "expected_updated_at": "<exact-node-updated-at-from-read>"
+  }]
 }
 ```
 

@@ -85,8 +85,6 @@ PROJECT_KIT_IGNORE_TEMPLATE = (
 )
 PROJECT_KIT_RUNTIME_IGNORES = frozenset(
     {
-        "data/_3can_pending_writeback/",
-        "data/_3can_runtime/",
         "test-results/3can/",
     }
 )
@@ -264,7 +262,7 @@ def scan_license_policy(root: Path) -> list[str]:
 
 
 def scan_project_kit_runtime_ignores(root: Path) -> list[str]:
-    """Require copied project kits to disclose their local runtime ignores."""
+    """Require copied project kits to disclose their local artifact ignores."""
 
     path = root / PROJECT_KIT_IGNORE_TEMPLATE
     if not path.is_file():

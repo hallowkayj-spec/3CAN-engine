@@ -135,22 +135,19 @@ Codex 用户: Codex 还不支持 Claude Code 那种原生 hook (检查官方更�
 Codex-side wrapper 模拟 hook/harness:
 
 ```powershell
-$agentId = "codex-main-W1-20260810" # replace with this session/workorder's unique id
-scripts\codex-3can.cmd bootstrap -AgentId $agentId -Role frontend -Task "current task"
-$prepareResult = scripts\codex-3can.cmd prepare -AgentId $agentId -TaskDescription "edit focused area" -TargetFiles path/to/file -ToolName apply_patch -ToolInputSummary "edit focused area" | ConvertFrom-Json
+scripts\codex-3can.cmd bootstrap -Role frontend -Task "current task"
+$prepareResult = scripts\codex-3can.cmd prepare -TaskDescription "edit focused area" -TargetFiles path/to/file -ToolName apply_patch -ToolInputSummary "edit focused area" | ConvertFrom-Json
 $ticketId = $prepareResult.prepare.ticket_id
 if (-not $ticketId) { throw "prepare did not return ticket_id" }
-scripts\codex-3can.cmd done -AgentId $agentId -TicketId $ticketId -Detail "what changed and why"
-scripts\codex-3can.cmd compact -AgentId $agentId -TaskSummary "continuation state" -TargetFiles path/to/file
+scripts\codex-3can.cmd done -TicketId $ticketId -Detail "what changed and why"
+scripts\codex-3can.cmd compact -TaskSummary "continuation state" -TargetFiles path/to/file
 ```
 
 This is not automatic interception, but it gives Codex the same operational
 shape: SessionStart, PreToolUse ticket, PostToolUse activity, and PreCompact
 continuation. `done` must receive the exact `ticket_id` returned by its own
-`prepare`; shared wrapper state is not an authoritative binding when sessions
-run concurrently. The wrapper rejects the generic `codex-main` id, partitions
-state by AgentId plus physical Git worktree, and never adds compact files from
-implicit or expired state.
+`prepare`. The helper derives one stable execution-specific AgentId; the wrapper
+stores no ticket-selection state and never adds compact files implicitly.
 
 ## 4. 自定义 Agent 最小代码示例
 

@@ -293,7 +293,7 @@ def build_error_node_payload(*, agent_id: str, detail: str = "") -> dict[str, An
             "manual merge",
             "pr fallback",
         ],
-        "primary_author": agent_id or "codex-main",
+        "primary_author": agent_id or "system",
         "priority": "high",
     }
 
@@ -381,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("--api-base", default=DEFAULT_API_BASE)
 
     err = sub.add_parser("error-node", help="Print the ERR node payload for 3CAN writeback.")
-    err.add_argument("--agent-id", default="codex-main")
+    err.add_argument("--agent-id", required=True)
     err.add_argument("--detail", default="")
 
     sub.add_parser("hook", help="Run as a Codex PreToolUse hook.")

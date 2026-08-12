@@ -286,7 +286,7 @@ def test_numpy_load_policy_rejects_pickle_and_unreviewed_consumers(
     assert any("not in the reviewed allowlist" in item for item in findings)
 
 
-def test_project_kit_ignore_template_covers_local_runtime_state() -> None:
+def test_project_kit_ignore_template_covers_local_artifacts() -> None:
     assert SCANNER.scan_project_kit_runtime_ignores(PACKAGE_ROOT) == []
 
 

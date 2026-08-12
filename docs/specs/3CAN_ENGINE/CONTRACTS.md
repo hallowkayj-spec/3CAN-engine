@@ -155,7 +155,8 @@ protected durable-current eligibility 保持 fail-closed，直到 canonical evid
 
 受保护 family 的公共 `POST /api/nodes` 与 `PUT /api/nodes/{id}` 继续可用，但
 `content.extra` 必须携带完整 project ID、namespace 与同一 `durable_provenance`
-回执。公共 DELETE 不允许删除这些 durable-current 节点；状态变更走 authorized
+回执；PUT 还必须携带 exact read 所得 `expected_updated_at`，陈旧版本只冲突该次
+节点更新。公共 DELETE 不允许删除这些 durable-current 节点；状态变更走 authorized
 writeback，替代关系走 `supersedes`。这保留完整 NodeCreate/NodeUpdate 能力，且
 不新增第二套审批协议。
 

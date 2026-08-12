@@ -53,7 +53,7 @@ def _find_task(data: dict[str, Any], task_id: str) -> dict[str, Any] | None:
     return next((task for task in data.get("tasks", []) if task.get("task_id") == task_id), None)
 
 
-def add_task(path: Path, *, title: str, status: str = "queued", owner: str = "codex-main", task_id: str = "", note: str = "") -> dict[str, Any]:
+def add_task(path: Path, *, title: str, status: str = "queued", owner: str = "unassigned", task_id: str = "", note: str = "") -> dict[str, Any]:
     if status not in TASK_STATUSES:
         raise ValueError(f"invalid status: {status}")
     data = load_ledger(path)
@@ -135,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     add = sub.add_parser("add")
     add.add_argument("--title", required=True)
     add.add_argument("--status", default="queued", choices=sorted(TASK_STATUSES))
-    add.add_argument("--owner", default="codex-main")
+    add.add_argument("--owner", default="unassigned")
     add.add_argument("--task-id", default="")
     add.add_argument("--note", default="")
 

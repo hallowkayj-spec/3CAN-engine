@@ -109,6 +109,10 @@ class FakeEngine:
         self.activity_log = []
         self.fail_create_edge_once = False
 
+    @staticmethod
+    def run_consistent(operation, /, *args, **kwargs):
+        return operation(*args, **kwargs)
+
     def get_node(self, node_id):
         return self.nodes.get(node_id)
 
@@ -195,6 +199,7 @@ class FakeEngine:
             meta=meta or {},
             self_hash=hashlib.sha256(body.encode()).hexdigest(),
         )
+        entry.model_copy = lambda *, deep=False: entry
         self.activity_log.append(entry)
         return entry
 

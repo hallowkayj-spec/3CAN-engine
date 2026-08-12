@@ -76,7 +76,7 @@ python scripts/verify_project.py \
 如果你装了 `examples/claude-code-hooks/3can-behavioral-gate.js` 和 `3can-cold-start.js`:
 
 - **SessionStart**: 引擎离线时 `additionalContext` 提醒先核验项目绑定和 readiness
-- **PreToolUse**: 仅当项目主动启用该策略时，离线状态可 deny 配置范围内的 mutation；白名单只保留只读诊断、项目 verifier 和受支持的 Supervisor 请求，不允许 wrapper 直接启动或终止进程
+- **PreToolUse**: 仅当项目主动启用该策略时，离线状态可 deny 配置范围内的 mutation；白名单只保留只读诊断、项目 verifier 和显式 operator-only Supervisor 请求，不允许 wrapper 直接启动或终止进程
 - **绕过机制**: 确实要改 hook/engine 本身时, `touch ~/.claude/logs/3can-gate-bootstrap` 作 sentinel, 完工立即 `rm`. 每次 bypass 都进 `~/.claude/logs/3can-gate.jsonl` 审计
 
 ### 0.5 空图不是就位
