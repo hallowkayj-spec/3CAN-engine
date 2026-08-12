@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "3can/activity.schema.json",
+  "title": "3CAN ActivityEntry",
+  "description": "3CAN activity_log 条目 + hash chain 审计协议 v9.4",
+  "type": "object",
+  "required": ["timestamp", "agent_id", "action", "prev_hash", "self_hash"],
+  "properties": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "agent_id": {"type": "string"},
+    "action": {
+      "type": "string",
+      "description": "标准 action 名 (建议使用):\n- route: 检索\n- expand: /api/retrieve 展开节点\n- writeback: 批量字段更新\n- node_create / node_update / node_delete\n- edge_create / edge_delete\n- agent_checkin\n- skill_invoked\n- handoff_create / handoff_ack\n- preference_learned\n- graph_reload\n- file_change (auto from PostToolUse)\n- web_search"
+    },
+    "detail": {"type": "string", "description": "≤200 字简短描述"},
+    "affected_nodes": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "meta": {"type": "object", "description": "开放元数据"},
+    "prev_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "前一条 entry 的 self_hash. 链首为 64 个 '0'"
+    },
+    "self_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256(timestamp|agent_id|action|detail|sorted(affected_nodes)|meta|prev_hash)"
+    }
+  }
+}

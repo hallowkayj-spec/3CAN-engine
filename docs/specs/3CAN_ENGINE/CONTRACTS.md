@@ -1,0 +1,148 @@
+# 3CAN 契约层
+
+> 与 [PROTOCOL.yaml](./PROTOCOL.yaml) 配套. Protocol 定"端点/方法", Contracts 定"数据结构/状态机".
+
+## 1. 数据结构 Schemas
+
+位于 `schemas/` 子目录, JSON Schema Draft 2020-12.
+
+- [node.schema.json](./schemas/node.schema.json) — Node 节点
+- [edge.schema.json](./schemas/edge.schema.json) — Edge 边
+- [activity.schema.json](./schemas/activity.schema.json) — ActivityEntry 事件
+
+## 2. 节点 ID 前缀约定 (语义分类)
+
+| 前缀 | 语义 | 类型 | 例 |
+|---|---|---|---|
+| DEC | 架构决策 | decision | DEC-3can-route-opt-s66c |
+| DOC | 文档 / 项目文档 | reference / knowledge | DOC-3can-routing-dimensions-s66d |
+| FEE | feedback 规则 | feedback | FEE-3can-test-lag-architecture-first |
+| ERR | 错误教训 | feedback / knowledge | ERR-longmemeval-runner-slim-mode |
+| SES | 会话记录 | session | SES-20260418-S66d-base-gap-fix |
+| HO | handoff 交接 | session | HO-2026-04-18-S66d-3can-deep-opt |
+| INTF | 接口契约 (独有) | knowledge | INTF-scripts-build-flux-train-v3 |
+| MOD | 项目模块 | knowledge | MOD-advisor / MOD-kb |
+| SEC | 密钥凭证引用名 | secret | SEC-deepseek / SEC-autodl |
+| MCP | MCP 工具节点 | tool | MCP-firecrawl / MCP-playwright |
+| MEM | memory 文件引用 | reference | MEM-feedback-gpt54-pricing |
+| RES | 本地资源 | reference | RES-hf_hub-bge-m3 |
+| ARCH | 架构历史 | knowledge | ARCH-3can-memory-tier-4-layer |
+| SKILL | SKILL.md 映射 | skill | SKILL-user-dev-browser |
+| PROPOSED | 待审批 | (任意, status=dormant) | PROPOSED-FEE-xxx-20260418 |
+| STR | 策略 / 战略 | knowledge | STR-platform-strategy |
+| AGT | agent 关联记录 | knowledge | AGT-opus-brain-main |
+| TASK | 任务列表节点 | process | TASK-s66-project-roadmap |
+| PRO | 协议/流程 | process | PRO-3can-protocol |
+
+## 3. 节点状态机
+
+```
+           ┌────────────────────────────────────────┐
+           │                                        │
+           │  任何状态 → active (被 route 命中复活) │
+           ▼                                        │
+  ┌────► active ───30d 未命中───► dormant ───60d───► archived
+  │         │                         │                  │
+  │         └── 人工 deprecate ───────┴──────►  deprecated
+  │                                                      │
+  │                                                      ▼
+  │                                                    (status=deprecated
+  │                                                     不会复活, 视为历史节点)
+  └── blocked (人工设, 跟 active 一样但禁止某些 action)
+```
+
+**关键规则**:
+- **永不删除**. archive 只是状态 (v9.3 起可用 archive_manager.py 物理隔离到 `graph/archive/nodes/`, 仍不删)
+- **复活**: dormant / archived 节点被 route 命中且 activation_count>0 且 last_touch ≥ stale_cutoff → 自动转回 active
+- **PROPOSED 审批流**:
+  ```
+  LLM 生成建议 (kw/edge/skill/short-code)
+     ↓
+  POST /api/nodes force=true id=PROPOSED-*, status=dormant
+     ↓
+  the maintainer 审阅:
+    - 通过 → PUT /api/nodes/{id} status=active + 改 id 去 PROPOSED- 前缀 (or 直接保留)
+    - 拒绝 → PUT status=deprecated (不删, 留痕)
+  ```
+
+## 4. R1 查重协议 (创节点前先查)
+
+**Hard Rule (CLAUDE.md / 01-core.md §4)**: 建节点前必须先 POST /api/route, 判断:
+
+```python
+existing = route(task=new_node_name + " " + description, mode="skeleton", max_nodes=3)
+top1 = max(existing.scores.values()) if existing.scores else 0
+if top1 >= 0.045 and top1 显著高于 top3:
+    # 拒建, 返 409
+    return {"error": "R1 duplicate detected", "hint": "考虑 PUT 更新已有节点", "top1_node": ...}
+# 否则允许建
+```
+
+用 `force=true` 可绕过 (仅供工具批量同步, 如 skill_sync / session_aggregator)。
+
+## 5. Hash Chain 验证协议
+
+每条 `ActivityEntry`:
+```
+prev_hash = 前一条的 self_hash (链首=64 个 '0')
+self_hash = sha256(f"{timestamp}|{agent_id}|{action}|{detail}|{','.join(sorted(affected_nodes))}|{json.dumps(meta, sort_keys=True)}|{prev_hash}")
+```
+
+**校验**:
+```python
+GET /api/audit/verify
+→ {
+    "valid": true/false,
+    "n_entries": <int>,
+    "breaks": [
+      {"idx": <i>, "ts": <timestamp>, "reason": "self_hash mismatch | prev_hash mismatch"}
+    ]
+  }
+```
+
+**截断策略**: `activity_log.json` 保留最近 500 条, 截断时断链 (老 hash 从文件开头失去前向链). 开源后可加 `activity_chain.jsonl` append-only 永久日志, 现未做。
+
+## 6. WebSocket 事件协议 (v9.4)
+
+连接: `WS /ws`
+
+事件 payload:
+```json
+{
+  "event": "node_created" | "node_updated" | "node_deleted" | "edge_created" | "edge_deleted" | "handoff_created" | "writeback" | "preference_learned" | "graph_reload_started" | "graph_reloaded" | "nodes_merged" | "batch_dormant" | "agent_checkin" | "agent_task_update" | "activity_log_appended",
+  "node": { ... } | "node_id": "...",
+  "timestamp": "..."
+}
+```
+
+Agent 订阅后可实时感知其他 agent 动作 (基座#6)。订阅 filter 未实现, 当前广播所有事件。
+
+## 7. Agent Binding 协议 (参见 [AGENT_BINDING.md](./AGENT_BINDING.md))
+
+Agent 接入 3CAN 最低要求:
+1. 唯一 agent_id (kebab-case, ≤30 字符)
+2. 启动时 POST /api/agents/checkin 注册
+3. 每次 route 传 agent_id (用于 activity_log 追溯)
+4. Writeback 时 primary_author=agent_id
+5. (推荐) 订阅 `WS /ws` 感知其他 agent 动作
+6. (推荐) 启动时调 GET /api/briefing 拉冷启动摘要
+
+## 8. 版本兼容性承诺
+
+| 变更类型 | 版本号 | 向后兼容? |
+|---|---|---|
+| 新端点 / 新字段 | MINOR (9.3→9.4) | ✅ |
+| 删端点 / 改字段语义 | MAJOR (9→10) | ❌ (破坏性) |
+| bug 修复 | PATCH | ✅ |
+
+当前版本 **v9.4** (2026-04-18 稳定).
+
+## 9. 错误码语义
+
+| HTTP | code | 含义 | agent 应对 |
+|---|---|---|---|
+| 400 | invalid_request | body/params 不符 schema | 看错误消息修改请求 |
+| 404 | not_found | node_id / agent_id 不存在 | 先查 stats / 确认 id |
+| 409 | r1_duplicate | 查重拒绝建节点 | 改用 PUT 更新 existing |
+| 422 | quality_warning | strict=true 时节点质量不达标 | 补齐 description / kws |
+| 503 | backend_unavailable | proxy 转发失败或 single-writer 切换窗口 | 保留请求上下文并重试；不要假设自动 failover |

@@ -1,0 +1,31 @@
+{
+  "description": "Mark owner-scoped leases cleanup-pending and write manifests at Codex lifecycle boundaries.",
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$PLUGIN_ROOT/scripts/3can_resource_hub.py\" hook",
+            "commandWindows": "python \"$env:PLUGIN_ROOT\\scripts\\3can_resource_hub.py\" hook",
+            "timeout": 3,
+            "statusMessage": "Marking 3CAN resources cleanup-pending"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$PLUGIN_ROOT/scripts/3can_resource_hub.py\" hook",
+            "commandWindows": "python \"$env:PLUGIN_ROOT\\scripts\\3can_resource_hub.py\" hook",
+            "timeout": 3,
+            "statusMessage": "Marking subagent resources cleanup-pending"
+          }
+        ]
+      }
+    ]
+  }
+}

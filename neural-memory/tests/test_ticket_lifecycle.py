@@ -1,0 +1,1279 @@
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import datetime as dt
+import hashlib
+import hmac
+import importlib.util
+import json
+import multiprocessing
+import sqlite3
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+
+ROOT = Path(__file__).resolve().parents[1]
+BACKEND = ROOT / "backend"
+
+
+def load_app():
+    sys.path.insert(0, str(BACKEND))
+    spec = importlib.util.spec_from_file_location("ticket_app_under_test", BACKEND / "app.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["ticket_app_under_test"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _import_ledger(backend: str):
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from ticket_ledger import TicketLedger, canonical_hash
+
+    return TicketLedger, canonical_hash
+
+
+def _process_issue(backend: str, database: str, suffix: str) -> str:
+    TicketLedger, _canonical_hash = _import_ledger(backend)
+    ledger = TicketLedger(database)
+    ticket = {
+        "ticket_id": f"rt_{suffix}",
+        "lease_key": "shared-process-lease",
+        "agent_id": "agent-process",
+        "project_id": "project",
+        "workspace_id": "workspace",
+        "workorder_id": "workorder",
+        "issued_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "ttl_sec": 900,
+        "target_digest": "target",
+        "scope_digest": "scope",
+        "policy_version": "policy/v2",
+        "allowed_error_ids": [],
+    }
+    return ledger.issue(ticket)[0]["ticket_id"]
+
+
+def _process_consume(backend: str, database: str, ticket_id: str, suffix: str) -> int:
+    TicketLedger, _canonical_hash = _import_ledger(backend)
+    ledger = TicketLedger(database)
+    ticket = ledger.consume(
+        ticket_id,
+        agent_id="agent-process",
+        target_digest="target",
+        scope_digest="scope",
+        consumed={"tool_name": "worker", "tool_input_summary": suffix},
+    )
+    return int(ticket["consume_count"])
+
+
+def _process_complete(backend: str, database: str, ticket_id: str) -> str:
+    TicketLedger, canonical_hash = _import_ledger(backend)
+    from ticket_ledger import LedgerError
+
+    ledger = TicketLedger(database)
+    request = {"ticket_id": ticket_id, "agent_id": "agent-process", "done": True}
+    request_hash = canonical_hash(request)
+    try:
+        begun = ledger.begin_completion(
+            ticket_id,
+            agent_id="agent-process",
+            request_hash=request_hash,
+            request=request,
+            requested_error_ids=[],
+        )
+        if begun["mode"] == "replay":
+            return "replay"
+        ledger.complete(
+            ticket_id,
+            request_hash=request_hash,
+            owner_token=begun["owner_token"],
+            response={"ok": True, "ticket_id": ticket_id},
+        )
+        return "completed"
+    except LedgerError as exc:
+        return exc.code
+
+
+class FakeEngine:
+    def __init__(self, app_module):
+        self.app = app_module
+        self.nodes = {}
+        self.edges = []
+        self.activity_log = []
+        self.fail_create_edge_once = False
+
+    def get_node(self, node_id):
+        return self.nodes.get(node_id)
+
+    def create_node(self, req, *, internal_owner=None):
+        del internal_owner
+        from models import Node
+
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        node = Node(
+            id=req.id,
+            name=req.name,
+            cluster=req.cluster,
+            layer=req.layer,
+            type=req.type,
+            status=req.status,
+            content=req.content,
+            activation_keywords=req.activation_keywords,
+            priority=req.priority,
+            created_at=now,
+            updated_at=now,
+            updated_by=req.primary_author,
+            primary_author=req.primary_author,
+        )
+        self.nodes[node.id] = node
+        return node
+
+    def update_node(self, node_id, req, *, internal_owner=None):
+        del internal_owner
+        node = self.nodes.get(node_id)
+        if not node:
+            return None
+        update = req.model_dump(exclude_none=True)
+        for key, value in update.items():
+            if key == "content" and isinstance(value, dict):
+                node.content = self.app.NodeContent(**value)
+            else:
+                setattr(node, key, value)
+        return node
+
+    def create_edge(self, req, *, internal_owner=None):
+        del internal_owner
+        from models import Edge
+
+        if self.fail_create_edge_once:
+            self.fail_create_edge_once = False
+            raise OSError("injected edge-store failure")
+        key = (req.source, req.target, str(getattr(req.type, "value", req.type)))
+        for edge in self.edges:
+            existing = (
+                edge.source,
+                edge.target,
+                str(getattr(edge.type, "value", edge.type)),
+            )
+            if existing == key:
+                return edge
+        edge = Edge(
+            source=req.source,
+            target=req.target,
+            type=req.type,
+            weight=req.weight,
+            description=req.description,
+        )
+        self.edges.append(edge)
+        return edge
+
+    def log_activity(self, agent_id, action, detail="", affected_nodes=None, meta=None):
+        body = json.dumps(
+            {
+                "index": len(self.activity_log),
+                "agent_id": agent_id,
+                "action": action,
+                "detail": detail,
+                "affected": affected_nodes or [],
+                "meta": meta or {},
+            },
+            sort_keys=True,
+        )
+        entry = SimpleNamespace(
+            timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
+            agent_id=agent_id,
+            action=action,
+            detail=detail,
+            affected_nodes=affected_nodes or [],
+            meta=meta or {},
+            self_hash=hashlib.sha256(body.encode()).hexdigest(),
+        )
+        self.activity_log.append(entry)
+        return entry
+
+
+def _canonical_case(app, *, component="ticket-ledger", error_type="scope-mismatch"):
+    fingerprint = app.deterministic_fingerprint(
+        project_id="project",
+        operation="edit",
+        component=component,
+        error_type=error_type,
+    )
+    case_id = f"ERR-case-{fingerprint.split(':', 1)[1][:24]}"
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    payload = {
+        "schema_version": "3can.error-case/v1",
+        "case_id": case_id,
+        "fingerprint": fingerprint,
+        "fingerprint_version": "ek2",
+        "project_id": "project",
+        "operation": "edit",
+        "component": component,
+        "error_type": error_type,
+        "root_cause": "scope was not frozen",
+        "applicability": {
+            "project_id": "project",
+            "operation": "edit",
+            "component": component,
+            "error_type": error_type,
+            "fingerprint_version": "ek2",
+        },
+        "state": "observed",
+        "blocking": True,
+        "occurrence_count": 2,
+        "first_seen_at": now,
+        "last_seen_at": now,
+        "promoted_at": now,
+        "state_changed_at": now,
+        "diagnosis": None,
+        "diagnosed_by": None,
+        "diagnosed_at": None,
+        "mitigation": None,
+        "mitigated_by": None,
+        "mitigated_at": None,
+        "active_resolution": None,
+        "resolution_history": [],
+        "regression_count": 0,
+        "superseded_by": None,
+        "metadata": {},
+    }
+    return payload
+
+
+@pytest.fixture
+def ticket_runtime(tmp_path, monkeypatch):
+    app = load_app()
+    from models import Node
+
+    fake = FakeEngine(app)
+    case = _canonical_case(app)
+    error_node = Node(
+        id=case["case_id"],
+        name="Canonical repeated test error",
+        cluster="ErrorKnowledge",
+        layer="L1",
+        type=app.NodeType.feedback,
+        status=app.NodeStatus.blocked,
+        content=app.NodeContent(
+            description="A canonical ErrorCase",
+            current_state="observed",
+            blockers=["exact promoted ErrorCase"],
+            extra={
+                "error_case": case,
+                "error_knowledge_schema_version": "3can.error-knowledge/v2",
+                "case_status": "observed",
+                "occurrence_count": 2,
+                "fingerprint": case["fingerprint"],
+            },
+        ),
+        activation_keywords=["ticket-ledger", "scope-mismatch"],
+    )
+    fake.nodes[error_node.id] = error_node
+    monkeypatch.setattr(app, "engine", fake)
+    monkeypatch.setattr(app, "_ROUTE_TICKETS_FILE", tmp_path / "route_tickets.json")
+    monkeypatch.setattr(
+        app,
+        "_ROUTE_TICKET_RECEIPTS_FILE",
+        tmp_path / "route_ticket_receipts.jsonl",
+    )
+    monkeypatch.setattr(app, "_TICKET_LEDGER_PATH", tmp_path / "ticket_ledger.sqlite3")
+    monkeypatch.setattr(app, "_TICKET_LEDGER_INSTANCE", None)
+    monkeypatch.setenv("THREECAN_EVIDENCE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("THREECAN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("THREECAN_READINESS_MODE", "development")
+    monkeypatch.setenv("THREECAN_ALLOW_UNTICKETED_ERROR_OCCURRENCES", "1")
+    monkeypatch.setenv(
+        "THREECAN_EVIDENCE_HMAC_KEY",
+        "public-test-only-signing-key-32-bytes-minimum",
+    )
+
+    async def fake_route(_req):
+        return SimpleNamespace(
+            activated_nodes=[error_node],
+            relevant_edges=[],
+            scores={error_node.id: 1.0},
+            total_nodes=1,
+            total_edges=0,
+            route_meta={},
+        )
+
+    monkeypatch.setattr(app, "_route_in_worker", fake_route)
+    return app, fake, error_node, tmp_path
+
+
+def _issue(app, *, task="Fix deterministic ticket lifecycle"):
+    return asyncio.run(app.issue_route_ticket({
+        "agent_id": "agent-a",
+        "project_id": "project",
+        "workspace_id": "workspace",
+        "workorder_id": "workorder",
+        "task_description": task,
+        "target_files": ["backend/app.py"],
+        "scope_keywords": ["ticket", "error"],
+        "task_type": "Edit",
+    }))
+
+
+def _consume(app, ticket):
+    return asyncio.run(app.consume_route_ticket(ticket["ticket_id"], {
+        "agent_id": "agent-a",
+        "target_digest": ticket["target_digest"],
+        "scope_digest": ticket["scope_digest"],
+        "tool_name": "apply_patch",
+        "tool_input_summary": "update ticket lifecycle",
+    }))
+
+
+def _artifact_evidence(path: Path, ticket):
+    attestation = {
+        "schema_version": "3can.verification-attestation/v1",
+        "kind": "test_result",
+        "verifier": "pytest",
+        "ticket_id": ticket["ticket_id"],
+        "target_digest": ticket["target_digest"],
+        "scope_digest": ticket["scope_digest"],
+        "command": "pytest neural-memory/tests -q",
+        "exit_code": 0,
+        "outcome": "passed",
+    }
+    attestation["signature"] = "hmac-sha256:" + hmac.new(
+        b"public-test-only-signing-key-32-bytes-minimum",
+        json.dumps(
+            attestation,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    path.write_text(
+        json.dumps(attestation, sort_keys=True),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return [{
+        "kind": "test_result",
+        "ref": str(path),
+        "digest": f"sha256:{digest}",
+        "verified": True,
+        "verifier": "pytest",
+        "summary": "focused test artifact",
+    }]
+
+
+def _completion_payload(ticket, error_id, evidence, **overrides):
+    payload = {
+        "agent_id": "agent-a",
+        "action": "done",
+        "detail": "resolved after focused tests",
+        "affected_nodes": [error_id],
+        "meta": {"test": True},
+        "ticket_id": ticket["ticket_id"],
+        "resolved_errors": [error_id],
+        "root_cause": "scope was not frozen",
+        "solution_summary": "persist scoped authorization and verified evidence",
+        "verification_evidence": evidence,
+        "fixed_in": "backend/app.py",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_issue_reuses_lease_and_receipts_freeze_authorization(ticket_runtime):
+    app, fake, error_node, _tmp_path = ticket_runtime
+
+    first = _issue(app)
+    second = _issue(app)
+
+    assert first["ticket_id"] == second["ticket_id"]
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert first["allowed_error_ids"] == [error_node.id]
+    # The routed node is similar/advisory because route_meta did not prove an
+    # exact identity. It must not become a completion blocker.
+    assert first["required_error_disposition_ids"] == []
+    events = app._ticket_ledger().events(first["ticket_id"])
+    assert [event["event"] for event in events] == ["issued"]
+    receipt = events[0]
+    assert receipt["project_id"] == "project"
+    assert receipt["workspace_id"] == "workspace"
+    assert receipt["workorder_id"] == "workorder"
+    assert receipt["target_digest"] == first["target_digest"]
+    assert receipt["policy_version"] == "3can.ticket-policy/v2"
+    assert receipt["allowed_error_ids"] == [error_node.id]
+    assert [entry.action for entry in fake.activity_log] == ["ticket_issued"]
+
+
+def test_only_exact_unresolved_error_requires_completion_disposition(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, fake, error_node, _tmp_path = ticket_runtime
+
+    async def exact_route(_req):
+        return SimpleNamespace(
+            activated_nodes=[error_node],
+            relevant_edges=[],
+            scores={error_node.id: 1.0},
+            total_nodes=1,
+            total_edges=0,
+            route_meta={
+                "error_route_policy": {
+                    "exact_error_case_ranking": {
+                        "match_kinds": {
+                            error_node.id: "canonical_identity",
+                        }
+                    }
+                }
+            },
+        )
+
+    monkeypatch.setattr(app, "_route_in_worker", exact_route)
+    ticket = _issue(
+        app,
+        task=(
+            "[project_id=project][operation=edit]"
+            "[component=ticket-ledger][error_type=scope-mismatch]"
+        ),
+    )
+    assert ticket["allowed_error_ids"] == [error_node.id]
+    assert ticket["required_error_disposition_ids"] == [error_node.id]
+    assert ticket["err_warnings"][0]["disposition_required"] is True
+    _consume(app, ticket)
+
+    completion = {
+        "agent_id": "agent-a",
+        "action": "done",
+        "detail": "safe independent work completed",
+        "affected_nodes": [],
+        "meta": {"test": True},
+        "ticket_id": ticket["ticket_id"],
+        "resolved_errors": [],
+    }
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(app.complete_activity_endpoint(completion))
+    assert missing.value.status_code == 409
+    assert (
+        missing.value.detail["error"]
+        == "ticket_error_disposition_incomplete"
+    )
+    assert app._ticket_ledger().get(
+        ticket["ticket_id"],
+        active_only=False,
+    )["state"] == "consumed"
+
+    result = asyncio.run(app.complete_activity_endpoint({
+        **completion,
+        "error_dispositions": [{
+            "error_id": error_node.id,
+            "disposition": "still_open",
+            "reason": "root cause isolated but remediation belongs to a new scope",
+        }],
+    }))
+    assert result["resolution_outcome"] == "disposition_recorded"
+    assert result["error_dispositions"] == [{
+        "error_id": error_node.id,
+        "disposition": "still_open",
+        "reason": "root cause isolated but remediation belongs to a new scope",
+    }]
+    assert fake.nodes[error_node.id].content.extra["case_status"] == "observed"
+    assert fake.activity_log[-1].meta["error_dispositions"] == result[
+        "error_dispositions"
+    ]
+
+
+def test_error_disposition_requires_reason_and_matches_resolution(
+    ticket_runtime,
+    monkeypatch,
+    tmp_path,
+):
+    app, _fake, error_node, _runtime_path = ticket_runtime
+
+    async def exact_route(_req):
+        return SimpleNamespace(
+            activated_nodes=[error_node],
+            relevant_edges=[],
+            scores={error_node.id: 1.0},
+            total_nodes=1,
+            total_edges=0,
+            route_meta={
+                "error_route_policy": {
+                    "exact_error_case_ranking": {
+                        "match_kinds": {error_node.id: "case_id"},
+                    }
+                }
+            },
+        )
+
+    monkeypatch.setattr(app, "_route_in_worker", exact_route)
+    ticket = _issue(app, task=f"Resolve {error_node.id}")
+    _consume(app, ticket)
+
+    with pytest.raises(HTTPException) as no_reason:
+        asyncio.run(app.complete_activity_endpoint({
+            "agent_id": "agent-a",
+            "ticket_id": ticket["ticket_id"],
+            "detail": "not applicable",
+            "error_dispositions": [{
+                "error_id": error_node.id,
+                "disposition": "not_applicable",
+            }],
+        }))
+    assert no_reason.value.status_code == 400
+    assert (
+        no_reason.value.detail["error"]
+        == "error_disposition_reason_required"
+    )
+
+    proof = tmp_path / "exact-resolution-proof.json"
+    evidence = _artifact_evidence(proof, ticket)
+    payload = _completion_payload(ticket, error_node.id, evidence)
+    payload["error_dispositions"] = [{
+        "error_id": error_node.id,
+        "disposition": "still_open",
+        "reason": "incorrectly claims unresolved while requesting resolution",
+    }]
+    with pytest.raises(HTTPException) as mismatch:
+        asyncio.run(app.complete_activity_endpoint(payload))
+    assert mismatch.value.status_code == 409
+    assert (
+        mismatch.value.detail["error"]
+        == "ticket_error_disposition_resolution_mismatch"
+    )
+
+    payload["error_dispositions"] = [{
+        "error_id": error_node.id,
+        "disposition": "resolved",
+        "reason": "",
+    }]
+    resolved = asyncio.run(app.complete_activity_endpoint(payload))
+    assert resolved["resolution_outcome"] == "resolved"
+    assert resolved["resolved_errors"][0]["case_status"] == "resolved"
+
+
+def test_target_content_change_invalidates_reuse_and_old_consume(ticket_runtime):
+    app, _fake, _error_node, tmp_path = ticket_runtime
+    target = tmp_path / "backend" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("version = 1\n", encoding="utf-8")
+
+    first = _issue(app)
+    target.write_text("version = 2\n", encoding="utf-8")
+    second = _issue(app)
+
+    assert second["ticket_id"] != first["ticket_id"]
+    assert second["target_digest"] != first["target_digest"]
+    with pytest.raises(HTTPException) as stale:
+        _consume(app, first)
+    assert stale.value.status_code == 409
+    assert stale.value.detail["error"] == "ticket_target_state_changed"
+
+
+def test_consume_requires_agent_and_exact_target_scope(ticket_runtime):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    ticket = _issue(app)
+
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(app.consume_route_ticket(ticket["ticket_id"], {
+            "target_digest": ticket["target_digest"],
+            "scope_digest": ticket["scope_digest"],
+        }))
+    assert missing.value.status_code == 400
+    assert missing.value.detail["error"] == "agent_id_required"
+
+    with pytest.raises(HTTPException) as mismatch:
+        asyncio.run(app.consume_route_ticket(ticket["ticket_id"], {
+            "agent_id": "agent-a",
+            "target_digest": "wrong",
+            "scope_digest": ticket["scope_digest"],
+            "tool_name": "apply_patch",
+            "tool_input_summary": "update ticket lifecycle",
+        }))
+    assert mismatch.value.status_code == 403
+    assert mismatch.value.detail["error"] == "ticket_target_digest_mismatch"
+
+    result = _consume(app, ticket)
+    assert result["consume_count"] == 1
+    deadline = dt.datetime.fromisoformat(result["completion_deadline"])
+    assert dt.timedelta(seconds=3590) < (
+        deadline - dt.datetime.now(dt.timezone.utc)
+    ) <= dt.timedelta(seconds=3600)
+    consumed = app._ticket_ledger().events(ticket["ticket_id"])[1]
+    assert consumed["event"] == "consumed"
+    assert consumed["scope_digest"] == ticket["scope_digest"]
+    assert consumed["details"]["completion_deadline"] == result["completion_deadline"]
+
+
+def test_completion_grace_requires_consumed_state_expires_and_allows_replay(
+    tmp_path,
+    monkeypatch,
+):
+    sys.path.insert(0, str(BACKEND))
+    import ticket_ledger as ledger_module
+    from ticket_ledger import LedgerError, TicketLedger, canonical_hash
+
+    clock = [dt.datetime(2026, 7, 29, 12, 0, tzinfo=dt.timezone.utc)]
+    monkeypatch.setattr(ledger_module, "_utc_now", lambda: clock[0])
+    assert TicketLedger(
+        tmp_path / "default.sqlite3"
+    ).completion_grace_sec == 3600
+    ledger = TicketLedger(
+        tmp_path / "grace.sqlite3",
+        completion_grace_sec=120,
+    )
+
+    def ticket(ticket_id, lease_key):
+        return {
+            "ticket_id": ticket_id,
+            "lease_key": lease_key,
+            "agent_id": "agent-a",
+            "project_id": "project",
+            "workspace_id": "workspace",
+            "workorder_id": "workorder",
+            "issued_at": clock[0].isoformat(),
+            "ttl_sec": 900,
+            "target_digest": "target",
+            "scope_digest": "scope",
+            "policy_version": "policy/v2",
+            "allowed_error_ids": [],
+        }
+
+    issued, _ = ledger.issue(ticket("rt_issued", "lease-issued"))
+    issued_request = {"ticket_id": issued["ticket_id"], "done": True}
+    with pytest.raises(LedgerError) as not_consumed:
+        ledger.begin_completion(
+            issued["ticket_id"],
+            agent_id="agent-a",
+            request_hash=canonical_hash(issued_request),
+            request=issued_request,
+            requested_error_ids=[],
+        )
+    assert not_consumed.value.code == "ticket_not_consumed"
+
+    active, _ = ledger.issue(ticket("rt_active", "lease-active"))
+    consumed = ledger.consume(
+        active["ticket_id"],
+        agent_id="agent-a",
+        target_digest="target",
+        scope_digest="scope",
+        consumed={"tool_name": "apply_patch"},
+    )
+    expected_deadline = clock[0] + dt.timedelta(seconds=120)
+    assert consumed["completion_deadline"] == expected_deadline.isoformat()
+    with sqlite3.connect(ledger.path) as connection:
+        stored_deadline = connection.execute(
+            "SELECT expires_at FROM tickets WHERE ticket_id=?",
+            (active["ticket_id"],),
+        ).fetchone()[0]
+    assert stored_deadline == pytest.approx(expected_deadline.timestamp())
+
+    active_request = {"ticket_id": active["ticket_id"], "done": True}
+    active_hash = canonical_hash(active_request)
+    begun = ledger.begin_completion(
+        active["ticket_id"],
+        agent_id="agent-a",
+        request_hash=active_hash,
+        request=active_request,
+        requested_error_ids=[],
+        owner_token="owner-a",
+    )
+    assert begun["mode"] == "new"
+    resumed = ledger.begin_completion(
+        active["ticket_id"],
+        agent_id="agent-a",
+        request_hash=active_hash,
+        request=active_request,
+        requested_error_ids=[],
+        owner_token="owner-a",
+    )
+    assert resumed["mode"] == "resume"
+    ledger.complete(
+        active["ticket_id"],
+        request_hash=active_hash,
+        owner_token="owner-a",
+        response={"ok": True},
+    )
+    clock[0] = expected_deadline + dt.timedelta(seconds=1)
+    replay = ledger.begin_completion(
+        active["ticket_id"],
+        agent_id="agent-a",
+        request_hash=active_hash,
+        request=active_request,
+        requested_error_ids=[],
+    )
+    assert replay == {
+        "mode": "replay",
+        "response": {"ok": True},
+        "ticket": replay["ticket"],
+    }
+
+    expired, _ = ledger.issue(ticket("rt_expired", "lease-expired"))
+    expired_consumed = ledger.consume(
+        expired["ticket_id"],
+        agent_id="agent-a",
+        target_digest="target",
+        scope_digest="scope",
+        consumed={"tool_name": "apply_patch"},
+    )
+    clock[0] = (
+        dt.datetime.fromisoformat(expired_consumed["completion_deadline"])
+        + dt.timedelta(seconds=1)
+    )
+    expired_request = {"ticket_id": expired["ticket_id"], "done": True}
+    with pytest.raises(LedgerError) as deadline_expired:
+        ledger.begin_completion(
+            expired["ticket_id"],
+            agent_id="agent-a",
+            request_hash=canonical_hash(expired_request),
+            request=expired_request,
+            requested_error_ids=[],
+        )
+    assert deadline_expired.value.code == "ticket_completion_deadline_expired"
+
+
+def test_activity_log_returns_full_hash_for_verifiable_evidence(ticket_runtime):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+
+    result = asyncio.run(app.log_activity_endpoint({
+        "agent_id": "agent-a",
+        "action": "focused_test",
+        "detail": "ticket lifecycle passed",
+    }))
+
+    assert result["self_hash"] == fake.activity_log[-1].self_hash
+    assert len(result["self_hash"]) == 64
+
+
+def test_compact_error_case_rejects_untyped_evidence_claim(ticket_runtime):
+    app, _fake, error_node, _tmp_path = ticket_runtime
+    error_node.content.extra.update({
+        "case_status": "resolved",
+        "solution_summary": "claimed fix",
+        "verification_evidence": ["pytest passed"],
+    })
+
+    untyped = app._compact_error_case(error_node)
+
+    assert untyped["verification_evidence_count"] == 0
+    assert untyped["verified_evidence_count"] == 0
+    assert untyped["verified"] is False
+
+    error_node.content.extra["verification_evidence"] = [{
+        "kind": "activity",
+        "ref": "activity://focused-test",
+        "verifier": "3can-server",
+        "verified": True,
+        "self_hash": "a" * 64,
+        "verification_status": "activity_self_hash_verified",
+    }]
+    activity_only = app._compact_error_case(error_node)
+
+    assert activity_only["verified_evidence_count"] == 0
+    assert activity_only["verified"] is False
+
+    error_node.content.extra["verification_evidence"] = [{
+        "kind": "test_result",
+        "ref": "proof.txt",
+        "verifier": "3can-server",
+        "verified": True,
+        "digest": "sha256:" + ("b" * 64),
+        "verification_status": "signed_attestation_verified",
+    }]
+    verified = app._compact_error_case(error_node)
+    assert verified["verified_evidence_count"] == 1
+    assert verified["verified"] is True
+
+
+def test_canonical_error_case_recomputes_identity_and_case_id(ticket_runtime):
+    app, _fake, error_node, _tmp_path = ticket_runtime
+    assert app._canonical_error_case_payload(error_node) is not None
+
+    error_node.content.extra["error_case"]["fingerprint"] = "ek2:" + ("f" * 64)
+    assert app._canonical_error_case_payload(error_node) is None
+
+
+def test_graph_reconcile_imports_identity_but_not_forged_resolution(
+    ticket_runtime,
+):
+    app, fake, error_node, _tmp_path = ticket_runtime
+    canonical = error_node.content.extra["error_case"]
+    canonical["state"] = "resolved"
+    error_node.content.extra["case_status"] = "resolved"
+    error_node.content.extra["current_resolution_id"] = "FIX-forged"
+    error_node.content.extra["resolution_ids"] = ["FIX-forged"]
+
+    result = app._reconcile_error_ledger_from_graph()
+    stored = app._ticket_ledger().error_case(case_id=error_node.id)
+
+    assert result["imported"] == [error_node.id]
+    assert result["untrusted_state_ignored"] == [error_node.id]
+    assert stored["state"] == "observed"
+    assert stored["occurrence_count"] == 2
+    assert stored["resolution"] is None
+    assert stored["resolution_refs"] == []
+    assert not any(node_id.startswith("FIX-") for node_id in fake.nodes)
+
+    canonical["state"] = "regressed"
+    app._ticket_ledger().resolve_error_cases([{
+        "case_id": error_node.id,
+        "resolution_id": "FIX-authorized",
+        "resolved_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "resolved_by": "authorized-agent",
+        "solution_summary": "authorized resolution",
+        "evidence": [{"verification_status": "artifact_digest_verified"}],
+    }])
+    app._reconcile_error_ledger_from_graph()
+    preserved = app._ticket_ledger().error_case(case_id=error_node.id)
+    assert preserved["state"] == "resolved"
+    assert preserved["resolution"]["resolution_id"] == "FIX-authorized"
+
+
+def test_public_crud_cannot_mutate_reserved_error_knowledge(ticket_runtime):
+    app, _fake, error_node, _tmp_path = ticket_runtime
+
+    with pytest.raises(HTTPException) as update_denied:
+        asyncio.run(app.update_node(
+            error_node.id,
+            app.NodeUpdate(name="forged resolved case"),
+        ))
+    assert update_denied.value.status_code == 403
+    assert (
+        update_denied.value.detail["error"]
+        == "error_knowledge_write_requires_lifecycle_endpoint"
+    )
+
+    with pytest.raises(HTTPException) as edge_denied:
+        asyncio.run(app.create_edge(app.EdgeCreate(
+            source=error_node.id,
+            target="FIX-forged",
+            type=app.EdgeType.resolves,
+        )))
+    assert edge_denied.value.status_code == 403
+
+
+def test_verified_completion_replays_exact_response_and_rejects_conflict(
+    ticket_runtime,
+):
+    app, fake, error_node, tmp_path = ticket_runtime
+    ticket = _issue(app)
+    _consume(app, ticket)
+    proof = tmp_path / "proof.txt"
+    proof.write_text("5 passed", encoding="utf-8")
+    payload = _completion_payload(
+        ticket,
+        error_node.id,
+        _artifact_evidence(proof, ticket),
+    )
+
+    first = asyncio.run(app.complete_activity_endpoint(payload))
+    replay = asyncio.run(app.complete_activity_endpoint(payload))
+
+    assert first == replay
+    assert first["resolution_outcome"] == "resolved"
+    assert fake.nodes[error_node.id].content.extra["case_status"] == "resolved"
+    assert app._ticket_ledger().error_case(case_id=error_node.id)["state"] == "resolved"
+    assert len([entry for entry in fake.activity_log if entry.action == "done"]) == 1
+    events = app._ticket_ledger().events(ticket["ticket_id"])
+    assert [event["event"] for event in events] == [
+        "issued", "consumed", "completed"
+    ]
+
+    with pytest.raises(HTTPException) as conflict:
+        asyncio.run(app.complete_activity_endpoint({
+            **payload,
+            "detail": "different canonical request",
+        }))
+    assert conflict.value.status_code == 409
+    assert conflict.value.detail["error"] == "completion_request_conflict"
+
+
+def test_ticket_cannot_resolve_an_error_outside_allowed_set(ticket_runtime):
+    app, fake, allowed_node, tmp_path = ticket_runtime
+    ticket = _issue(app)
+    _consume(app, ticket)
+    second_case = _canonical_case(
+        app,
+        component="other-component",
+        error_type="other-error",
+    )
+    from models import Node
+
+    second_node = Node(
+        id=second_case["case_id"],
+        name="Unauthorized case",
+        cluster="ErrorKnowledge",
+        layer="L1",
+        type=app.NodeType.feedback,
+        content=app.NodeContent(
+            description="other",
+            extra={"error_case": second_case},
+        ),
+    )
+    fake.nodes[second_node.id] = second_node
+    ledger = app._ticket_ledger()
+    before = {
+        "ticket": ledger.get(ticket["ticket_id"], active_only=False),
+        "events": ledger.events(ticket["ticket_id"]),
+        "journal": ledger.journal(ticket["ticket_id"]),
+        "unauthorized_case": ledger.error_case(
+            fingerprint=second_case["fingerprint"]
+        ),
+        "nodes": {
+            node_id: node.model_dump(mode="json")
+            for node_id, node in fake.nodes.items()
+        },
+    }
+    proof = tmp_path / "proof.txt"
+    proof.write_text("pass", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(app.complete_activity_endpoint(
+            _completion_payload(
+                ticket,
+                second_node.id,
+                _artifact_evidence(proof, ticket),
+            )
+        ))
+    assert denied.value.status_code == 403
+    assert denied.value.detail["error"] == "ticket_error_not_allowed"
+    assert fake.nodes[allowed_node.id].content.extra["case_status"] == "observed"
+    after = {
+        "ticket": ledger.get(ticket["ticket_id"], active_only=False),
+        "events": ledger.events(ticket["ticket_id"]),
+        "journal": ledger.journal(ticket["ticket_id"]),
+        "unauthorized_case": ledger.error_case(
+            fingerprint=second_case["fingerprint"]
+        ),
+        "nodes": {
+            node_id: node.model_dump(mode="json")
+            for node_id, node in fake.nodes.items()
+        },
+    }
+    assert after == before
+
+
+def test_unverifiable_typed_evidence_sets_review_required_not_resolved(
+    ticket_runtime,
+):
+    app, fake, error_node, tmp_path = ticket_runtime
+    ticket = _issue(app)
+    _consume(app, ticket)
+    proof = tmp_path / "proof.txt"
+    proof.write_text("actual", encoding="utf-8")
+    evidence = [{
+        "kind": "test_result",
+        "ref": str(proof),
+        "digest": "sha256:" + "0" * 64,
+        "verified": True,
+        "verifier": "claimant",
+    }]
+
+    result = asyncio.run(app.complete_activity_endpoint(
+        _completion_payload(ticket, error_node.id, evidence)
+    ))
+
+    assert result["resolution_outcome"] == "review_required"
+    assert result["resolved_errors"][0]["case_status"] == "review_required"
+    assert fake.nodes[error_node.id].content.extra["case_status"] == "review_required"
+    assert fake.nodes[error_node.id].content.extra["error_case"]["state"] == "observed"
+    assert not any(node_id.startswith("FIX-") for node_id in fake.nodes)
+
+
+def test_activity_self_hash_is_audit_reference_not_resolution_proof(
+    ticket_runtime,
+):
+    app, fake, error_node, _tmp_path = ticket_runtime
+    ticket = _issue(app)
+    _consume(app, ticket)
+    activity = asyncio.run(app.log_activity_endpoint({
+        "agent_id": "agent-a",
+        "action": "claimed_test",
+        "detail": "caller supplied claim",
+    }))
+    evidence = [{
+        "kind": "test_result",
+        "ref": "activity://claimed-test",
+        "self_hash": activity["self_hash"],
+        "verified": True,
+        "verifier": "claimant",
+    }]
+
+    result = asyncio.run(app.complete_activity_endpoint(
+        _completion_payload(ticket, error_node.id, evidence)
+    ))
+
+    assert result["resolution_outcome"] == "review_required"
+    assert result["resolved_errors"][0]["case_status"] == "review_required"
+    stored = fake.nodes[error_node.id].content.extra["verification_evidence"][0]
+    assert stored["verified"] is False
+    assert (
+        stored["verification_status"]
+        == "activity_self_hash_untrusted_for_resolution"
+    )
+    assert not any(node_id.startswith("FIX-") for node_id in fake.nodes)
+
+
+def test_fault_injection_recovers_from_journal_without_duplicate_activity(
+    ticket_runtime,
+):
+    app, fake, error_node, tmp_path = ticket_runtime
+    ticket = _issue(app)
+    _consume(app, ticket)
+    proof = tmp_path / "proof.txt"
+    proof.write_text("pass", encoding="utf-8")
+    payload = _completion_payload(
+        ticket,
+        error_node.id,
+        _artifact_evidence(proof, ticket),
+    )
+    fake.fail_create_edge_once = True
+
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(app.complete_activity_endpoint(payload))
+    assert failed.value.status_code == 500
+    journal = app._ticket_ledger().journal(ticket["ticket_id"])
+    assert journal["stage"] == "solution_upserted"
+    assert journal["last_error"]
+
+    recovered = asyncio.run(app.complete_activity_endpoint(payload))
+    assert recovered["resolution_outcome"] == "resolved"
+    assert app._ticket_ledger().journal(ticket["ticket_id"])["stage"] == "completed"
+    assert len([entry for entry in fake.activity_log if entry.action == "done"]) == 1
+
+
+def test_occurrence_ledger_promotes_only_second_and_uses_core_24_hex_id(
+    ticket_runtime,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    identity = {
+        "project_id": "project",
+        "operation": "test",
+        "component": "occurrence-ledger",
+        "error_type": "unicode-decode",
+    }
+    fingerprint = app.deterministic_fingerprint(**identity)
+    base = {
+        **identity,
+        "fingerprint": fingerprint,
+        "error": "UnicodeDecodeError",
+        "root_cause": "encoding implicit",
+        "occurred_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    first = asyncio.run(app.record_error_occurrence({
+        **base, "occurrence_id": "occ-1",
+    }))
+    replay = asyncio.run(app.record_error_occurrence({
+        **base, "occurrence_id": "occ-1",
+    }))
+    second = asyncio.run(app.record_error_occurrence({
+        **base, "occurrence_id": "occ-2",
+    }))
+
+    assert first["case"]["occurrence_count"] == 1
+    assert first["case"]["case_id"] is None
+    assert first["case"]["blocking"] is False
+    assert replay["idempotent"] is True
+    assert replay["case"]["occurrence_count"] == 1
+    assert replay["case"]["blocking"] is False
+    assert second["status"] == "PROMOTED"
+    expected_id = f"ERR-case-{fingerprint.split(':', 1)[1][:24]}"
+    assert second["case"]["case_id"] == expected_id
+    assert second["case"]["blocking"] is True
+    assert expected_id in fake.nodes
+    projected_identity = fake.nodes[expected_id].content.extra
+    assert {
+        field: projected_identity[field]
+        for field in ("project_id", "operation", "component", "error_type")
+    } == identity
+    queried = asyncio.run(app.get_error_case(fingerprint=fingerprint))
+    assert queried["occurrence_count"] == 2
+    assert queried["blocking"] is True
+
+    app._ticket_ledger().resolve_error_cases([{
+        "case_id": expected_id,
+        "resolution_id": "FIX-occurrence-ledger",
+    }])
+    resolved = asyncio.run(app.get_error_case(fingerprint=fingerprint))
+    assert resolved["state"] == "resolved"
+    assert resolved["blocking"] is False
+    regressed = asyncio.run(app.record_error_occurrence({
+        **base, "occurrence_id": "occ-3",
+    }))
+    assert regressed["case"]["state"] == "regressed"
+    assert regressed["case"]["blocking"] is True
+
+
+def test_projection_failure_is_partial_but_sqlite_occurrence_survives(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    identity = {
+        "project_id": "project",
+        "operation": "test",
+        "component": "projection",
+        "error_type": "disk-write",
+    }
+    fingerprint = app.deterministic_fingerprint(**identity)
+    payload = {
+        **identity,
+        "fingerprint": fingerprint,
+        "error": "projection failed",
+        "root_cause": "injected",
+        "occurred_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    asyncio.run(app.record_error_occurrence({**payload, "occurrence_id": "p-1"}))
+    monkeypatch.setattr(
+        app,
+        "_project_error_case",
+        lambda _case: (_ for _ in ()).throw(OSError("projection unavailable")),
+    )
+    second = asyncio.run(app.record_error_occurrence({
+        **payload, "occurrence_id": "p-2",
+    }))
+
+    assert second["status"] == "PARTIAL"
+    assert second["case"]["occurrence_count"] == 2
+    assert second["case"]["graph_projection_state"] == "partial"
+    assert app._ticket_ledger().error_occurrence("p-2")["fingerprint"] == fingerprint
+
+
+def test_sqlite_ledger_handles_two_processes_and_more_than_500_active(tmp_path):
+    sys.path.insert(0, str(BACKEND))
+    from ticket_ledger import SCHEMA_VERSION, TicketLedger
+
+    database = tmp_path / "concurrent.sqlite3"
+    ledger = TicketLedger(database)
+    assert SCHEMA_VERSION == 3
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+    context = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=2,
+        mp_context=context,
+    ) as pool:
+        issued = list(pool.map(
+            _process_issue,
+            [str(BACKEND)] * 2,
+            [str(database)] * 2,
+            ["a", "b"],
+        ))
+    assert len(set(issued)) == 1
+    ticket_id = issued[0]
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=2,
+        mp_context=context,
+    ) as pool:
+        consume_counts = list(pool.map(
+            _process_consume,
+            [str(BACKEND)] * 2,
+            [str(database)] * 2,
+            [ticket_id] * 2,
+            ["a", "b"],
+        ))
+    assert sorted(consume_counts) == [1, 2]
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=2,
+        mp_context=context,
+    ) as pool:
+        completions = list(pool.map(
+            _process_complete,
+            [str(BACKEND)] * 2,
+            [str(database)] * 2,
+            [ticket_id] * 2,
+        ))
+    assert "completed" in completions
+    assert set(completions) <= {"completed", "replay", "completion_in_progress"}
+    assert ledger.get(ticket_id, active_only=False)["state"] == "completed"
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    for index in range(501):
+        ledger.issue({
+            "ticket_id": f"rt_bulk_{index}",
+            "lease_key": f"lease_bulk_{index}",
+            "agent_id": "bulk",
+            "project_id": "project",
+            "workspace_id": "workspace",
+            "workorder_id": "workorder",
+            "issued_at": now,
+            "ttl_sec": 900,
+            "target_digest": f"target-{index}",
+            "scope_digest": f"scope-{index}",
+            "policy_version": "policy/v2",
+            "allowed_error_ids": [],
+        })
+    assert ledger.active_count() == 501
+
+
+def test_legacy_receipts_are_imported_once_without_fake_completion(tmp_path):
+    sys.path.insert(0, str(BACKEND))
+    from ticket_ledger import TicketLedger
+
+    issued_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    legacy_ticket = {
+        "ticket_id": "rt_legacy",
+        "lease_key": "legacy-lease",
+        "agent_id": "legacy-agent",
+        "issued_at": issued_at,
+        "ttl_sec": 900,
+        "scope": {"target_files": ["backend/app.py"]},
+        "consumed_by_tools": [{"tool_name": "apply_patch"}],
+    }
+    tickets_path = tmp_path / "route_tickets.json"
+    receipts_path = tmp_path / "route_ticket_receipts.jsonl"
+    tickets_path.write_text(
+        json.dumps({"rt_legacy": legacy_ticket}),
+        encoding="utf-8",
+    )
+    receipts_path.write_text(
+        json.dumps({
+            "event": "issued",
+            "ticket_id": "rt_legacy",
+            "agent_id": "legacy-agent",
+            "timestamp": issued_at,
+            "details": {},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    database = tmp_path / "ledger.sqlite3"
+
+    first = TicketLedger(
+        database,
+        legacy_tickets_path=tickets_path,
+        legacy_receipts_path=receipts_path,
+    )
+    second = TicketLedger(
+        database,
+        legacy_tickets_path=tickets_path,
+        legacy_receipts_path=receipts_path,
+    )
+
+    assert first.migration_status()["status"] == "imported"
+    assert second.get("rt_legacy", active_only=False)["state"] == "consumed"
+    assert [event["event"] for event in second.events("rt_legacy")] == ["issued"]
+
+
+def test_strict_budget_uses_summary_reference_and_never_exceeds(ticket_runtime):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    packed = [
+        {"id": "ERR-required", "summary": "x" * 1000},
+        {"id": "DOC-optional", "summary": "y" * 1000},
+    ]
+
+    kept, truncated = app._enforce_budget(
+        packed,
+        20,
+        protected_ids={"ERR-required"},
+    )
+
+    assert truncated is True
+    assert kept == [{"id": "ERR-required", "summary_ref": True}]
+    assert app._estimate_packed_tokens(kept) <= 20

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "3can/edge.schema.json",
+  "title": "3CAN Edge",
+  "description": "3CAN 图谱边契约 v0.2 candidate",
+  "type": "object",
+  "required": ["source", "target", "type"],
+  "properties": {
+    "source": {"type": "string", "description": "起点 node_id"},
+    "target": {"type": "string", "description": "终点 node_id"},
+    "type": {
+      "type": "string",
+      "enum": ["depends_on", "feeds_into", "blocks", "informs", "requires", "updates", "validates", "triggers", "grouped_in", "resolves", "verified_by", "applies_to", "supersedes", "regressed_from"],
+      "description": "语义:\n- depends_on: A 逻辑上需要 B 存在\n- feeds_into: A 的输出喂给 B\n- blocks: A 阻塞 B\n- informs: A 的知识告知 B 的决策\n- requires: A 运行时依赖 B\n- updates: A 是 B 的更新版 (替代关系)\n- validates: A 验证 B\n- triggers: A 触发 B\n- grouped_in: A 归入规范化案例 B\n- resolves: A 是 B 的解决方案\n- verified_by: A 由 B 的证据验证\n- applies_to: A 适用于 B 的操作或组件\n- supersedes: A 取代 B\n- regressed_from: A 是 B 解决后复发的新案例"
+    },
+    "weight": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 1.0,
+      "description": "边权重, 影响 graph traversal boost 强度"
+    },
+    "description": {"type": "string"}
+  }
+}

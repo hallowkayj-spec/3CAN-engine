@@ -1,0 +1,8 @@
+# 3CAN full local semantic stack.
+# Install after requirements-min.txt when you want heavier retrieval quality.
+
+-r requirements-min.txt
+sentence-transformers>=2.7,<4.0
+leidenalg>=0.10
+python-igraph>=0.11
+flashrank>=0.2

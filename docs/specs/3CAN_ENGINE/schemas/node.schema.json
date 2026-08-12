@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "3can/node.schema.json",
+  "title": "3CAN Node",
+  "description": "3CAN 图谱节点契约 v9.4. 任何工具 / agent 建节点必须遵守.",
+  "type": "object",
+  "required": ["id", "name", "cluster", "type", "activation_keywords"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z]{2,10}-[A-Za-z0-9_\\-]+$",
+      "description": "格式 {PREFIX}-{slug}. 前缀约定:\n- DEC-*: 决策\n- DOC-*: 文档\n- FEE-*: feedback 规则\n- ERR-*: 错误教训\n- SES-*: 会话记录\n- HO-*: handoff\n- INTF-*: 接口契约\n- MOD-*: 项目模块\n- SEC-*: 密钥/凭证 (只存引用名)\n- MCP-*: MCP 工具\n- MEM-*: memory 引用\n- RES-*: 本地资源\n- ARCH-*: 架构文档\n- SKILL-*: SKILL.md 映射 (type=skill)\n- PROPOSED-*: 待审批节点 (status=dormant)\n- STR-*: 策略/战略\n- AGT-*: agent 关联记录"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 10,
+      "description": "节点概括, 至少 10 字符, 对 agent 有语义"
+    },
+    "cluster": {
+      "type": "string",
+      "description": "手动分类 (架构设计 / 项目交接 / 接口契约 / 反馈与规则 / 错误与教训 / 会话记录 / 项目文档 / 工具链 / 密钥配置 / ...)"
+    },
+    "layer": {
+      "type": "string",
+      "enum": ["L0", "L1", "L2", "L3", "L4", "L5"],
+      "default": "L0",
+      "description": "C³AN 层级 (PRD 层级索引, 多数节点 L0 即可)"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["knowledge", "process", "tool", "config", "reference", "secret", "session", "decision", "feedback", "skill"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "dormant", "archived", "blocked", "deprecated"],
+      "default": "active"
+    },
+    "content": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "L2 摘要, 60-150 字符, skeleton mode 返这层",
+          "minLength": 30
+        },
+        "current_state": {"type": "string"},
+        "notes": {"type": "string", "maxLength": 2000},
+        "tech_stack": {"type": "array", "items": {"type": "string"}},
+        "key_files": {"type": "array", "items": {"type": "string"}},
+        "decisions": {"type": "array", "items": {"type": "string"}},
+        "api_refs": {"type": "array", "items": {"type": "string"}},
+        "tools": {"type": "array", "items": {"type": "string"}},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "last_session": {"type": "string"},
+        "extra": {
+          "type": "object",
+          "description": "开放字段, 存 community_id / quality_score / gdi / skill meta / health_score 等",
+          "properties": {
+            "community_id": {"type": "integer", "description": "Leiden 聚类 ID (v9.2)"},
+            "quality_score": {"type": "number", "minimum": 0, "maximum": 10, "description": "GDI 5 维综合分 (v9.3)"},
+            "gdi": {
+              "type": "object",
+              "description": "GDI 5 子分",
+              "properties": {
+                "structural_completeness": {"type": "number"},
+                "semantic_clarity": {"type": "number"},
+                "signal_specificity": {"type": "number"},
+                "utility_evidence": {"type": "number"},
+                "verification_strength": {"type": "number"}
+              }
+            },
+            "health_score": {"type": "number", "description": "LLM-guided health 工具打分"},
+            "success_count": {"type": "integer"},
+            "fail_count": {"type": "integer"},
+            "avg_duration_s": {"type": "number"}
+          }
+        }
+      }
+    },
+    "activation_keywords": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 5,
+      "description": "route sparse 信号. ≥5 个 (推荐 8-15), 中英双份提升跨语言召回."
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low"],
+      "default": "medium"
+    },
+    "activation_count": {
+      "type": "integer",
+      "default": 0,
+      "description": "被 route 命中的次数. 用于热度 / lifecycle 判断."
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "updated_by": {"type": "string"},
+    "primary_author": {
+      "type": "string",
+      "description": "节点主作者 (写 agent_id, 必填, 审计用)"
+    },
+    "contributors": {"type": "array", "items": {"type": "string"}}
+  }
+}

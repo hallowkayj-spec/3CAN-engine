@@ -1,0 +1,109 @@
+{
+  "version": "1.1-synthetic-public",
+  "created": "2026-07-29",
+  "author": "3can-release-maintainers",
+  "methodology": "Synthetic public route fixture for the generic seed graph. Recall@1 is exact top-1; the compatibility Recall@3 field is query-level Hit@3 over expected_any3. MRR, Precision@3, and nDCG@3 use the full acceptable-node set.",
+  "fixture_scope": "synthetic_public",
+  "release_evidence": {
+    "status": "synthetic_public_fixture",
+    "reproducible_from_release_package": true,
+    "requires_excluded_runtime_graph": false,
+    "raw_result_receipt_included": true,
+    "result_receipt": "docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json",
+    "historical_2026_04_15_score_reproducible": false,
+    "fixture_changed_after_recorded_2026_04_15_run": true,
+    "note": "These cases target only generic nodes created by seed_nodes.py. They support clean-clone experiments and do not reproduce or validate the separate historical private-graph score."
+  },
+  "graph_binding": {
+    "schema_version": "3can.benchmark-graph-binding/v1",
+    "kind": "release_seed_graph",
+    "seed_source": "neural-memory/backend/seed_nodes.py",
+    "required_node_ids": [
+      "DEC-3can-project-graph-isolation",
+      "DOC-3can-quickstart",
+      "ERR-20260508-github-pr-local-rest-fallback-required",
+      "ERR-3can-local-path-rebinding",
+      "ERR-3can-loop-detection",
+      "ERR-3can-no-secret-values",
+      "INTF-3can-admin-health",
+      "INTF-3can-route-api",
+      "INTF-3can-token-usage-api",
+      "INTF-3can-writeback-api",
+      "PROC-3can-project-bootstrap",
+      "PROC-3can-research-gate",
+      "PROC-3can-session-bootstrap",
+      "PROC-3can-standing-orders",
+      "SEC-3can-secret-reference-policy",
+      "SKILL-3can-context-router"
+    ],
+    "acceptance": "all_required_nodes_present"
+  },
+  "thresholds": {
+    "index_layer": {
+      "MRR": "<0.70",
+      "Recall@3": "<0.80",
+      "grep_fallback_rate": ">15%"
+    },
+    "coordination_layer": {
+      "MRR": ">=0.85",
+      "Recall@3": ">=0.95",
+      "grep_fallback_rate": "<5%"
+    },
+    "note": "Thresholds are evaluation labels, not a claim that this release candidate passed them."
+  },
+  "queries": [
+    {"id":"A01","category":"short-code","difficulty":1,"query":"3CAN quickstart","expected_top1":"DOC-3can-quickstart","expected_any3":["DOC-3can-quickstart","PROC-3can-project-bootstrap"],"intent":"status"},
+    {"id":"A02","category":"short-code","difficulty":1,"query":"route API","expected_top1":"INTF-3can-route-api","expected_any3":["INTF-3can-route-api","SKILL-3can-context-router"],"intent":"interface"},
+    {"id":"A03","category":"short-code","difficulty":1,"query":"project graph isolation","expected_top1":"DEC-3can-project-graph-isolation","expected_any3":["DEC-3can-project-graph-isolation","PROC-3can-project-bootstrap"],"intent":"decision"},
+    {"id":"A04","category":"short-code","difficulty":1,"query":"session bootstrap","expected_top1":"PROC-3can-session-bootstrap","expected_any3":["PROC-3can-session-bootstrap","PROC-3can-standing-orders"],"intent":"process"},
+    {"id":"A05","category":"short-code","difficulty":1,"query":"standing orders","expected_top1":"PROC-3can-standing-orders","expected_any3":["PROC-3can-standing-orders","PROC-3can-session-bootstrap"],"intent":"process"},
+    {"id":"A06","category":"short-code","difficulty":1,"query":"context router skill","expected_top1":"SKILL-3can-context-router","expected_any3":["SKILL-3can-context-router","INTF-3can-route-api"],"intent":"skill"},
+
+    {"id":"B01","category":"error-debug","difficulty":2,"query":"error secret value stored in graph","expected_top1":"ERR-3can-no-secret-values","expected_any3":["ERR-3can-no-secret-values"],"intent":"error"},
+    {"id":"B02","category":"error-debug","difficulty":2,"query":"failure local absolute path leaked in release","expected_top1":"ERR-3can-local-path-rebinding","expected_any3":["ERR-3can-local-path-rebinding"],"intent":"error"},
+    {"id":"B03","category":"error-debug","difficulty":2,"query":"error repeated identical failure loop","expected_top1":"ERR-3can-loop-detection","expected_any3":["ERR-3can-loop-detection"],"intent":"error"},
+    {"id":"B04","category":"error-debug","difficulty":2,"query":"error GitHub PR command unavailable fallback","expected_top1":"ERR-20260508-github-pr-local-rest-fallback-required","expected_any3":["ERR-20260508-github-pr-local-rest-fallback-required"],"intent":"error"},
+    {"id":"B05","category":"error-debug","difficulty":2,"query":"credential password token safety error","expected_top1":"ERR-3can-no-secret-values","expected_any3":["ERR-3can-no-secret-values"],"intent":"error"},
+    {"id":"B06","category":"error-debug","difficulty":2,"query":"release path rebinding failure","expected_top1":"ERR-3can-local-path-rebinding","expected_any3":["ERR-3can-local-path-rebinding"],"intent":"error"},
+    {"id":"B07","category":"error-debug","difficulty":2,"query":"blind retry repeated error stop and diagnose","expected_top1":"ERR-3can-loop-detection","expected_any3":["ERR-3can-loop-detection"],"intent":"error"},
+
+    {"id":"C01","category":"interface","difficulty":1,"query":"POST api route contract","expected_top1":"INTF-3can-route-api","expected_any3":["INTF-3can-route-api","SKILL-3can-context-router"],"intent":"interface"},
+    {"id":"C02","category":"interface","difficulty":1,"query":"activity writeback API contract","expected_top1":"INTF-3can-writeback-api","expected_any3":["INTF-3can-writeback-api","PROC-3can-standing-orders"],"intent":"interface"},
+    {"id":"C03","category":"interface","difficulty":1,"query":"token usage API endpoints","expected_top1":"INTF-3can-token-usage-api","expected_any3":["INTF-3can-token-usage-api","INTF-3can-admin-health"],"intent":"interface"},
+    {"id":"C04","category":"interface","difficulty":1,"query":"admin health stats endpoint","expected_top1":"INTF-3can-admin-health","expected_any3":["INTF-3can-admin-health","PROC-3can-session-bootstrap"],"intent":"interface"},
+    {"id":"C05","category":"interface","difficulty":2,"query":"read node after route API","expected_top1":"INTF-3can-route-api","expected_any3":["INTF-3can-route-api","SKILL-3can-context-router"],"intent":"interface"},
+    {"id":"C06","category":"interface","difficulty":2,"query":"record decision error and handoff API","expected_top1":"INTF-3can-writeback-api","expected_any3":["INTF-3can-writeback-api","PROC-3can-standing-orders"],"intent":"interface"},
+
+    {"id":"D01","category":"strategy","difficulty":2,"query":"isolate graph directory and port for every project","expected_top1":"DEC-3can-project-graph-isolation","expected_any3":["DEC-3can-project-graph-isolation","PROC-3can-project-bootstrap"],"intent":"decision"},
+    {"id":"D02","category":"strategy","difficulty":2,"query":"route a small context before reading long documents","expected_top1":"SKILL-3can-context-router","expected_any3":["SKILL-3can-context-router","INTF-3can-route-api"],"intent":"decision"},
+    {"id":"D03","category":"strategy","difficulty":2,"query":"require approval gates for high risk actions","expected_top1":"PROC-3can-standing-orders","expected_any3":["PROC-3can-standing-orders","PROC-3can-session-bootstrap"],"intent":"decision"},
+    {"id":"D04","category":"strategy","difficulty":2,"query":"research latest facts from official sources","expected_top1":"PROC-3can-research-gate","expected_any3":["PROC-3can-research-gate","PROC-3can-standing-orders"],"intent":"decision"},
+    {"id":"D05","category":"strategy","difficulty":2,"query":"new project should use a project specific node threshold","expected_top1":"INTF-3can-admin-health","expected_any3":["INTF-3can-admin-health","DEC-3can-project-graph-isolation"],"intent":"decision"},
+    {"id":"D06","category":"strategy","difficulty":2,"query":"store references to credentials instead of values","expected_top1":"SEC-3can-secret-reference-policy","expected_any3":["SEC-3can-secret-reference-policy","DEC-3can-project-graph-isolation"],"intent":"security"},
+
+    {"id":"E01","category":"project-mgmt","difficulty":1,"query":"bootstrap a new repository with a dry run","expected_top1":"PROC-3can-project-bootstrap","expected_any3":["PROC-3can-project-bootstrap","DOC-3can-quickstart"],"intent":"process"},
+    {"id":"E02","category":"project-mgmt","difficulty":1,"query":"start an agent session and check health","expected_top1":"PROC-3can-session-bootstrap","expected_any3":["PROC-3can-session-bootstrap","INTF-3can-admin-health"],"intent":"process"},
+    {"id":"E03","category":"project-mgmt","difficulty":1,"query":"preflight before editing and write back outcomes","expected_top1":"PROC-3can-standing-orders","expected_any3":["PROC-3can-standing-orders","INTF-3can-writeback-api"],"intent":"process"},
+    {"id":"E04","category":"project-mgmt","difficulty":2,"query":"record durable verified work instead of noisy thoughts","expected_top1":"INTF-3can-writeback-api","expected_any3":["INTF-3can-writeback-api","PROC-3can-standing-orders"],"intent":"process"},
+    {"id":"E05","category":"project-mgmt","difficulty":2,"query":"prepare a source ledger for external research","expected_top1":"PROC-3can-research-gate","expected_any3":["PROC-3can-research-gate","PROC-3can-standing-orders"],"intent":"process"},
+    {"id":"E06","category":"project-mgmt","difficulty":2,"query":"error create pull request without command line client","expected_top1":"ERR-20260508-github-pr-local-rest-fallback-required","expected_any3":["ERR-20260508-github-pr-local-rest-fallback-required"],"intent":"error"},
+
+    {"id":"F01","category":"config-secret","difficulty":1,"query":"secret environment variable reference policy","expected_top1":"SEC-3can-secret-reference-policy","expected_any3":["SEC-3can-secret-reference-policy"],"intent":"security"},
+    {"id":"F02","category":"config-secret","difficulty":1,"query":"configure a separate graph directory and port","expected_top1":"DEC-3can-project-graph-isolation","expected_any3":["DEC-3can-project-graph-isolation","PROC-3can-project-bootstrap"],"intent":"config"},
+    {"id":"F03","category":"config-secret","difficulty":2,"query":"token ledger must remain project local","expected_top1":"INTF-3can-token-usage-api","expected_any3":["INTF-3can-token-usage-api","DEC-3can-project-graph-isolation"],"intent":"config"},
+
+    {"id":"G01","category":"knowledge","difficulty":1,"query":"how to verify a fresh 3CAN installation","expected_top1":"DOC-3can-quickstart","expected_any3":["DOC-3can-quickstart","INTF-3can-admin-health"],"intent":"knowledge"},
+    {"id":"G02","category":"knowledge","difficulty":1,"query":"how compact task context routing works","expected_top1":"SKILL-3can-context-router","expected_any3":["SKILL-3can-context-router","INTF-3can-route-api"],"intent":"knowledge"},
+    {"id":"G03","category":"knowledge","difficulty":1,"query":"where token dashboard telemetry is exposed","expected_top1":"INTF-3can-token-usage-api","expected_any3":["INTF-3can-token-usage-api","INTF-3can-admin-health"],"intent":"knowledge"},
+    {"id":"G04","category":"knowledge","difficulty":2,"query":"why an HTTP response alone is not enough for health","expected_top1":"INTF-3can-admin-health","expected_any3":["INTF-3can-admin-health","PROC-3can-session-bootstrap"],"intent":"knowledge"},
+    {"id":"G05","category":"knowledge","difficulty":2,"query":"project bootstrap apply after reviewing dry run","expected_top1":"PROC-3can-project-bootstrap","expected_any3":["PROC-3can-project-bootstrap","DOC-3can-quickstart"],"intent":"knowledge"},
+    {"id":"G06","category":"knowledge","difficulty":2,"query":"deep research source ledger and official documentation","expected_top1":"PROC-3can-research-gate","expected_any3":["PROC-3can-research-gate","PROC-3can-standing-orders"],"intent":"knowledge"},
+    {"id":"G07","category":"knowledge","difficulty":2,"query":"durable writeback for decisions and handoffs","expected_top1":"INTF-3can-writeback-api","expected_any3":["INTF-3can-writeback-api","PROC-3can-standing-orders"],"intent":"knowledge"},
+
+    {"id":"H01","category":"cross-cluster","difficulty":3,"query":"route before a change then record the verified outcome","expected_top1":"PROC-3can-standing-orders","expected_any3":["PROC-3can-standing-orders","INTF-3can-route-api","INTF-3can-writeback-api"],"intent":"cross"},
+    {"id":"H02","category":"cross-cluster","difficulty":3,"query":"initialize an isolated project graph and verify health","expected_top1":"PROC-3can-project-bootstrap","expected_any3":["PROC-3can-project-bootstrap","DEC-3can-project-graph-isolation","INTF-3can-admin-health"],"intent":"cross"},
+    {"id":"H03","category":"cross-cluster","difficulty":3,"query":"audit token telemetry for one project sidecar","expected_top1":"INTF-3can-token-usage-api","expected_any3":["INTF-3can-token-usage-api","DEC-3can-project-graph-isolation","INTF-3can-admin-health"],"intent":"cross"},
+    {"id":"H04","category":"cross-cluster","difficulty":3,"query":"error repeated failure requires diagnosis and durable writeback","expected_top1":"ERR-3can-loop-detection","expected_any3":["ERR-3can-loop-detection","INTF-3can-writeback-api"],"intent":"error"},
+    {"id":"H05","category":"cross-cluster","difficulty":3,"query":"error release package contains local paths or secret values","expected_top1":"ERR-3can-local-path-rebinding","expected_any3":["ERR-3can-local-path-rebinding","ERR-3can-no-secret-values"],"intent":"error"}
+  ]
+}

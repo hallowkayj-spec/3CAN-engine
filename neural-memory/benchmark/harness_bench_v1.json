@@ -1,0 +1,143 @@
+{
+  "name": "3CAN Harness Benchmark v1 (pilot)",
+  "version": "1.0",
+  "created_at": "2026-04-19",
+  "policy_ref": "docs/specs/3CAN_ENGINE/BENCHMARK_POLICY.md#L3",
+  "test_protocol": {
+    "gate_path": "~/.claude/scripts/hooks/3can-behavioral-gate.js",
+    "method": "spawn node subprocess, feed stdin, parse stdout JSON",
+    "decision_source": "stdout hookSpecificOutput.permissionDecision OR exit 0 with no output = allow"
+  },
+  "caveats": [
+    "Cases 01/02/03/07/08 depend on ticket endpoint: if backend has /api/route/ticket, deny happens for no_ticket or ticket_not_found. Current running backend (pre-S66g restart) still denies because httpGet returns 404 anyway.",
+    "Cases 04/05/06 are pure regex/schema checks, backend-independent.",
+    "Pilot does not test 'valid ticket + scope match = allow' (requires live ticket endpoint). Added in v2 after backend restart."
+  ],
+  "cases": [
+    {
+      "id": "hbench-01-write-no-ticket",
+      "category": "ticket-required",
+      "description": "Write tool call without any ticket_id should be denied",
+      "tool_input_stdin": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "C:/tmp/test.md",
+          "content": "hello"
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "no_ticket"
+    },
+    {
+      "id": "hbench-02-edit-bogus-ticket",
+      "category": "ticket-required",
+      "description": "Edit with bogus ticket_id should be denied (404 from backend)",
+      "tool_input_stdin": {
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "C:/tmp/test.md",
+          "old_string": "a",
+          "new_string": "b",
+          "meta": {
+            "3can_ticket_id": "rt_bogus_0000000000000000"
+          }
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "ticket_not_found_or_expired"
+    },
+    {
+      "id": "hbench-03-bash-rm-no-ticket",
+      "category": "ticket-required",
+      "description": "Bash rm -rf should be denied without ticket",
+      "tool_input_stdin": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "rm -rf /tmp/test"
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "no_ticket"
+    },
+    {
+      "id": "hbench-04-bash-ls-bypass",
+      "category": "low-risk-bypass",
+      "description": "Bash ls should bypass gate (not in BASH_HIGH_RISK)",
+      "tool_input_stdin": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "ls -la /tmp"
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": null
+    },
+    {
+      "id": "hbench-05-read-bypass",
+      "category": "non-mutating",
+      "description": "Read tool should bypass gate entirely",
+      "tool_input_stdin": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "C:/tmp/test.md"
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": null
+    },
+    {
+      "id": "hbench-06-grep-bypass",
+      "category": "non-mutating",
+      "description": "Grep tool should bypass gate",
+      "tool_input_stdin": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "foo",
+          "path": "/tmp"
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": null
+    },
+    {
+      "id": "hbench-07-bash-git-push",
+      "category": "ticket-required",
+      "description": "git push without ticket should be denied",
+      "tool_input_stdin": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "git push origin main"
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "no_ticket"
+    },
+    {
+      "id": "hbench-08-multiedit-no-ticket",
+      "category": "ticket-required",
+      "description": "MultiEdit without ticket should be denied",
+      "tool_input_stdin": {
+        "tool_name": "MultiEdit",
+        "tool_input": {
+          "file_path": "C:/tmp/x.md",
+          "edits": [
+            {
+              "old_string": "a",
+              "new_string": "b"
+            }
+          ]
+        },
+        "agent_id": "harness-test"
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "no_ticket"
+    }
+  ]
+}

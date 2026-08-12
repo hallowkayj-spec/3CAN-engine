@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3CAN Token Operations</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7fa;
+      color: #1f252d;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #f5f7fa; }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 24px;
+      border-bottom: 1px solid #dce3eb;
+      background: rgba(255, 255, 255, .96);
+      backdrop-filter: blur(8px);
+    }
+    h1 { margin: 0; font-size: 20px; line-height: 1.25; font-weight: 700; }
+    h2 { margin: 0; font-size: 15px; line-height: 1.2; font-weight: 700; }
+    .status { margin-top: 4px; color: #667282; font-size: 13px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    button {
+      min-height: 34px;
+      border: 1px solid #1f6feb;
+      border-radius: 6px;
+      background: #1f6feb;
+      color: #fff;
+      padding: 7px 12px;
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button.secondary { background: #fff; color: #1f6feb; }
+    main { width: min(1480px, calc(100vw - 32px)); margin: 18px auto 36px; }
+    .notice {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border: 1px solid #d9e1ea;
+      border-left: 4px solid #2878d7;
+      border-radius: 8px;
+      background: #fff;
+      color: #3c4653;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .grid { display: grid; gap: 12px; }
+    .overview-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 12px; }
+    .two-col { grid-template-columns: minmax(0, 1.35fr) minmax(380px, .65fr); }
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .impact-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 12px; }
+    .card, .panel {
+      background: #fff;
+      border: 1px solid #dce3eb;
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(18, 30, 45, .04);
+      overflow: hidden;
+    }
+    .metric { min-height: 118px; padding: 14px; }
+    .metric span { display: block; color: #687587; font-size: 12px; margin-bottom: 8px; }
+    .metric strong { display: block; font-size: 23px; line-height: 1.1; overflow-wrap: anywhere; }
+    .metric small { display: block; margin-top: 8px; color: #768293; line-height: 1.4; }
+    .panel { margin-top: 12px; }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid #e8edf3;
+      background: #fbfcfd;
+    }
+    .panel-note { color: #697789; font-size: 12px; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 9px 11px; border-bottom: 1px solid #edf1f5; text-align: right; vertical-align: top; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: #5f6e81; font-weight: 650; background: #fbfcfd; }
+    td.wrap { white-space: normal; overflow-wrap: anywhere; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .badge.actual { background: #e7f6ed; color: #116a3a; }
+    .badge.estimate { background: #fff4df; color: #875500; }
+    .badge.test { background: #eef1f5; color: #536174; }
+    .badge.unmatched { background: #fdeaea; color: #a23838; }
+    .bar {
+      width: 100%;
+      height: 7px;
+      border-radius: 999px;
+      background: #edf1f5;
+      overflow: hidden;
+      margin-top: 7px;
+    }
+    .bar > span { display: block; height: 100%; background: #2878d7; }
+    .empty-state { padding: 22px 14px; color: #6e7a89; font-size: 14px; }
+    @media (max-width: 1180px) {
+      .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .three-col, .two-col, .impact-grid { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+      .actions { justify-content: flex-start; }
+    }
+    @media (max-width: 760px) {
+      main { width: calc(100vw - 22px); }
+      .overview-grid { grid-template-columns: 1fr; }
+      th, td { padding: 8px; }
+      .metric strong { font-size: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>3CAN Token Operations</h1>
+      <div class="status" id="status">loading</div>
+    </div>
+    <div class="actions">
+      <button class="secondary" id="syncCodex">Sync Codex Status</button>
+      <button id="refresh">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="notice" id="notice"></div>
+    <section class="grid overview-grid" id="overviewCards"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>3CAN Impact</h2>
+        <span class="panel-note">measured runtime vs wrapper estimate</span>
+      </div>
+      <div class="grid impact-grid" id="impactCards"></div>
+      <div id="impactRows"></div>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Daily Usage</h2>
+          <span class="panel-note">date split with cached vs fresh input</span>
+        </div>
+        <div id="dailyRows"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Codex Runtime Status</h2>
+          <span class="panel-note">local slash-status snapshot</span>
+        </div>
+        <div id="runtimeRows"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Session Ledger</h2>
+        <span class="panel-note">thread/session attribution</span>
+      </div>
+      <div id="sessionRows"></div>
+    </section>
+
+    <section class="grid three-col">
+      <article class="panel">
+        <div class="panel-head"><h2>Sources</h2><span class="panel-note">trust layer</span></div>
+        <div id="sourceRows"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>Models</h2><span class="panel-note">model split</span></div>
+        <div id="modelRows"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>Agents</h2><span class="panel-note">runtime shell split</span></div>
+        <div id="agentRows"></div>
+      </article>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-head"><h2>Tasks And Tools</h2><span class="panel-note">route / runtime / hooks</span></div>
+        <div id="taskRows"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><h2>Collectors</h2><span class="panel-note">listener and importer state</span></div>
+        <div id="collectorRows"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Recent Events</h2>
+        <span class="panel-note">latest ledger writes</span>
+      </div>
+      <div id="recentRows"></div>
+    </section>
+  </main>
+
+  <script>
+    const fmt = new Intl.NumberFormat('en-US');
+    const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 6 });
+
+    function api(path) {
+      return fetch(path).then(res => {
+        if (!res.ok) throw new Error(`${path} ${res.status}`);
+        return res.json();
+      });
+    }
+
+    function apiPost(path) {
+      return fetch(path, { method: 'POST' }).then(res => {
+        if (!res.ok) throw new Error(`${path} ${res.status}`);
+        return res.json();
+      });
+    }
+
+    function n(value) { return fmt.format(value || 0); }
+    function pct(part, total) { return total ? Math.round((part || 0) / total * 1000) / 10 : 0; }
+    function fresh(row) { return Math.max(0, (row.input_tokens || 0) - (row.cached_tokens || 0)); }
+    function ratio(value) { return `${Number(value || 0).toFixed(1)}%`; }
+    function freshOutputRatio(row) { return row.output_tokens ? Math.round(fresh(row) / row.output_tokens * 10) / 10 : 0; }
+    function text(value, fallback = '-') { return value === undefined || value === null || value === '' ? fallback : String(value); }
+    function dateRange(row) {
+      const first = row.first_event_at ? row.first_event_at.slice(0, 16).replace('T', ' ') : '-';
+      const last = row.last_event_at ? row.last_event_at.slice(0, 16).replace('T', ' ') : '-';
+      return first === last ? first : `${first} -> ${last}`;
+    }
+    function sourceLabel(value) {
+      const map = {
+        provider_response: 'provider response',
+        runtime_status: 'runtime /status',
+        local_estimate: 'local estimate',
+        count_tokens: 'count API',
+        manual: 'manual'
+      };
+      return map[value] || text(value, '(empty)');
+    }
+    function classBadge(value) {
+      const label = { actual: 'actual/runtime', estimate: 'estimate', test: 'test', unmatched: 'unmatched' }[value] || value || '-';
+      const klass = { actual: 'actual', estimate: 'estimate', test: 'test', unmatched: 'unmatched' }[value] || 'test';
+      return `<span class="badge ${klass}">${label}</span>`;
+    }
+    function metric(title, value, detail, barPart, barTotal) {
+      const width = Math.min(100, Math.max(0, pct(barPart, barTotal)));
+      return `<article class="card metric">
+        <span>${title}</span>
+        <strong>${value}</strong>
+        <small>${detail}</small>
+        ${barTotal ? `<div class="bar"><span style="width:${width}%"></span></div>` : ''}
+      </article>`;
+    }
+    function table(targetId, headers, rows, empty = 'No usage rows.') {
+      const target = document.getElementById(targetId);
+      if (!rows || !rows.length) {
+        target.innerHTML = `<div class="empty-state">${empty}</div>`;
+        return;
+      }
+      target.innerHTML = `<table>
+        <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+        <tbody>${rows.join('')}</tbody>
+      </table>`;
+    }
+    function smallList(items, fallback = '-') {
+      const values = (items || []).filter(Boolean).slice(0, 3);
+      return values.length ? values.join(', ') : fallback;
+    }
+
+    function renderOverview(overview, health) {
+      const totals = overview.totals || {};
+      const recorded = totals.recorded || {};
+      const actual = totals.actual || {};
+      const estimate = totals.estimate || {};
+      const test = totals.test || {};
+      const unmatched = totals.unmatched || {};
+      const actualFresh = actual.fresh_input_tokens ?? fresh(actual);
+      const recordedFresh = recorded.fresh_input_tokens ?? fresh(recorded);
+      document.getElementById('overviewCards').innerHTML = [
+        metric('Actual/runtime total', n(actual.total_tokens), `${n(actual.input_tokens)} total input / ${n(actual.output_tokens)} output`, actual.total_tokens, recorded.total_tokens),
+        metric('Fresh input', n(actualFresh), `${ratio(actual.cached_input_ratio)} cached input; this is the new input signal`, actualFresh, actual.input_tokens),
+        metric('Cached input', n(actual.cached_tokens), `${n(actual.input_tokens)} total input includes cached input`, actual.cached_tokens, actual.input_tokens),
+        metric('Output', n(actual.output_tokens), `${n(actual.reasoning_tokens)} reasoning output / fresh:output ${freshOutputRatio(actual)}x`, actual.output_tokens, actual.total_tokens),
+        metric('Estimate + test', n((estimate.total_tokens || 0) + (test.total_tokens || 0)), `${n(estimate.total_tokens)} estimate / ${n(test.total_tokens)} test`, (estimate.total_tokens || 0) + (test.total_tokens || 0), recorded.total_tokens),
+        metric('Recorded total', n(recorded.total_tokens), `${n(recorded.event_count)} events / ${n(recordedFresh)} fresh input`, recorded.total_tokens, recorded.total_tokens)
+      ].join('');
+
+      const first = recorded.first_event_at ? recorded.first_event_at.slice(0, 10) : '-';
+      const last = recorded.last_event_at ? recorded.last_event_at.slice(0, 16).replace('T', ' ') : '-';
+      const importer = (health || {}).auto_importer || {};
+      const importAt = importer.last_run_at ? importer.last_run_at.slice(0, 19).replace('T', ' ') : '-';
+      const importState = importer.enabled === false ? 'disabled' : (importer.running ? 'running' : (importer.last_ok === false ? `error: ${text(importer.last_error)}` : 'ready'));
+      document.getElementById('notice').innerHTML = `Ledger starts at <span class="mono">${first}</span>, last write <span class="mono">${last}</span>. Auto import <strong>${importState}</strong>, last run <span class="mono">${importAt}</span>, imported ${n(importer.last_imported_events)} / skipped ${n(importer.last_skipped_duplicates)}. Fresh input = total input - cached input.`;
+    }
+
+    function renderImpact(impact) {
+      const summary = (impact || {}).summary || {};
+      const runtime = summary.runtime_actual || {};
+      const threecan = summary.threecan_estimate || {};
+      const routeContext = summary.route_context_estimate || {};
+      const scenario = summary.baseline_scenario || {};
+      const runtimeFresh = runtime.fresh_input_tokens ?? fresh(runtime);
+      document.getElementById('impactCards').innerHTML = [
+        metric('Runtime fresh input', n(runtimeFresh), `${ratio(runtime.cached_input_ratio)} cache hit / ${freshOutputRatio(runtime)}x fresh:output`, runtimeFresh, runtime.input_tokens),
+        metric('3CAN wrapper estimate', n(threecan.total_tokens), `${n(threecan.event_count)} route/hook events; not provider billing`, threecan.total_tokens, runtimeFresh || threecan.total_tokens),
+        metric('Route context share', `${Number(summary.route_context_share_of_runtime_fresh_pct || 0).toFixed(2)}%`, `${n(routeContext.total_tokens)} route + bootstrap estimated tokens`, routeContext.total_tokens, runtimeFresh || routeContext.total_tokens),
+        metric('Scenario avoided', n(scenario.estimated_avoided_tokens), `${n(scenario.baseline_events)} events x ${n(scenario.baseline_per_route_tokens)} baseline; ${scenario.compression_ratio || 0}x`, scenario.estimated_avoided_tokens, scenario.baseline_tokens || scenario.estimated_avoided_tokens)
+      ].join('');
+
+      const rows = [
+        `<tr><td>Measured runtime</td><td>${n(runtime.input_tokens)} input / ${n(runtime.cached_tokens)} cached / ${n(runtimeFresh)} fresh / ${n(runtime.output_tokens)} output</td></tr>`,
+        `<tr><td>3CAN estimate</td><td>${n(threecan.input_tokens)} input / ${n(threecan.output_tokens)} output / ${n(threecan.total_tokens)} total</td></tr>`,
+        `<tr><td>Route context</td><td>${n(routeContext.total_tokens)} estimated tokens across ${n(routeContext.event_count)} route/bootstrap events</td></tr>`,
+        `<tr><td>Scenario basis</td><td class="wrap">${text(scenario.kind)}. ${text(scenario.basis)}</td></tr>`
+      ];
+      table('impactRows', ['Metric', 'Value'], rows);
+    }
+
+    function renderDaily(rows) {
+      table('dailyRows', ['Date', 'Events', 'Total Input', 'Cached', 'Fresh Input', 'Output', 'Fresh:Out', 'Total'], (rows || []).map(row => `
+        <tr>
+          <td class="mono">${row.key}</td>
+          <td>${n(row.event_count)}</td>
+          <td>${n(row.input_tokens)}</td>
+          <td>${n(row.cached_tokens)}<br><small>${ratio(row.cached_input_ratio)}</small></td>
+          <td>${n(row.fresh_input_tokens ?? fresh(row))}</td>
+          <td>${n(row.output_tokens)}</td>
+          <td>${freshOutputRatio(row)}x</td>
+          <td>${n(row.total_tokens)}</td>
+        </tr>`));
+    }
+
+    function renderRuntime(snapshot) {
+      const latest = snapshot.latest_snapshot || {};
+      const last = latest.last_token_usage || {};
+      const total = latest.total_token_usage || {};
+      const limits = latest.rate_limits || {};
+      const primary = limits.primary || {};
+      const secondary = limits.secondary || {};
+      const lastFresh = Math.max(0, (last.input_tokens || 0) - (last.cached_input_tokens || 0));
+      table('runtimeRows', ['Field', 'Value'], [
+        `<tr><td>Session</td><td class="mono wrap">${text(latest.session_id)}</td></tr>`,
+        `<tr><td>Model</td><td class="mono">${text(latest.model)}</td></tr>`,
+        `<tr><td>Last input</td><td>${n(last.input_tokens)} total / ${n(last.cached_input_tokens)} cached / ${n(lastFresh)} fresh</td></tr>`,
+        `<tr><td>Last output</td><td>${n(last.output_tokens)} output / ${n(last.reasoning_output_tokens)} reasoning</td></tr>`,
+        `<tr><td>Session total</td><td>${n(total.total_tokens)}</td></tr>`,
+        `<tr><td>Context window</td><td>${n(latest.model_context_window)}</td></tr>`,
+        `<tr><td>Limit</td><td>${text(limits.limit_name)} / ${n(primary.used_percent)}% / ${n(secondary.used_percent)}%</td></tr>`
+      ]);
+    }
+
+    function renderSessions(rows) {
+      table('sessionRows', ['Session', 'ID', 'Events', 'Total Input', 'Cached', 'Fresh Input', 'Output', 'Total', 'Range'], (rows || []).map(row => `
+        <tr>
+          <td class="wrap"><strong>${row.label}</strong><br><span class="mono">${text(row.thread_id, '')}</span></td>
+          <td class="mono wrap">${row.key}</td>
+          <td>${n(row.event_count)}</td>
+          <td>${n(row.input_tokens)}</td>
+          <td>${n(row.cached_tokens)}<br><small>${ratio(row.cached_input_ratio)}</small></td>
+          <td>${n(row.fresh_input_tokens ?? fresh(row))}</td>
+          <td>${n(row.output_tokens)}</td>
+          <td>${n(row.total_tokens)}</td>
+          <td class="mono wrap">${dateRange(row)}</td>
+        </tr>`));
+    }
+
+    function renderCompactRollup(target, rows, firstHeader, labeler = value => value) {
+      table(target, [firstHeader, 'Class', 'Events', 'Fresh Input', 'Cached', 'Output', 'Total'], (rows || []).map(row => `
+        <tr>
+          <td class="mono wrap">${labeler(row.label || row.key)}</td>
+          <td>${smallList((row.classes || []).map(c => c))}</td>
+          <td>${n(row.event_count)}</td>
+          <td>${n(row.fresh_input_tokens ?? fresh(row))}</td>
+          <td>${n(row.cached_tokens)}</td>
+          <td>${n(row.output_tokens)}</td>
+          <td>${n(row.total_tokens)}</td>
+        </tr>`));
+    }
+
+    function renderTasks(kinds, tasks) {
+      const merged = [
+        ...(kinds || []).map(row => ({ ...row, label: `kind:${row.label}` })),
+        ...(tasks || []).map(row => ({ ...row, label: `task:${row.label}` }))
+      ].sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0)).slice(0, 12);
+      renderCompactRollup('taskRows', merged, 'Task / Tool');
+    }
+
+    function renderCollectors(overview, health) {
+      const hooks = (overview.runtime || {}).hook_status || {};
+      const warnings = (overview.runtime || {}).warnings || [];
+      const rows = [
+        ['Token API', hooks.token_api],
+        ['Ledger DB', hooks.ledger_db || (health.db_exists ? 'ready' : 'missing')],
+        ['Codex runtime bridge', hooks.codex_runtime_bridge],
+        ['MiMo runtime bridge', hooks.mimo_runtime_bridge],
+        ['LiteLLM callback', hooks.litellm_callback],
+        ['Local estimate hook', hooks.local_estimate_hook],
+        ['Codex JSONL importer', 'ready'],
+        ['Events', n(health.event_count)]
+      ].map(([k, v]) => `<tr><td>${k}</td><td>${text(v)}</td></tr>`);
+      if (warnings.length) rows.push(`<tr><td>Warnings</td><td class="wrap">${warnings.join('<br>')}</td></tr>`);
+      table('collectorRows', ['Collector', 'Status'], rows);
+    }
+
+    function renderRecent(status) {
+      const rows = [];
+      for (const agent of status.tracked_agents || []) {
+        for (const event of agent.recent_events || []) {
+          rows.push({ agent, event });
+        }
+      }
+      table('recentRows', ['Time', 'Agent', 'Session', 'Source', 'Class', 'Input', 'Output', 'Total'], rows.map(row => `
+        <tr>
+          <td class="mono">${text(row.event.created_at).slice(0, 19).replace('T', ' ')}</td>
+          <td>${row.agent.label}</td>
+          <td class="mono wrap">${text(row.event.session_id, '(no session)')}</td>
+          <td>${sourceLabel(row.event.usage_source)}</td>
+          <td>${classBadge(row.event.classification)}</td>
+          <td>${n(row.event.input_tokens)}</td>
+          <td>${n(row.event.output_tokens)}</td>
+          <td>${n(row.event.total_tokens)}</td>
+        </tr>`));
+    }
+
+    async function refresh() {
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = 'refreshing';
+      const [overview, status, health, runtime] = await Promise.all([
+        api('/api/token-usage/overview?limit=14'),
+        api('/api/token-usage/status'),
+        api('/api/token-usage/health'),
+        api('/api/token-usage/codex-status?max_files=3&max_events=3')
+      ]);
+      renderOverview(overview, health);
+      renderImpact(overview.impact);
+      renderDaily(overview.groups.dates);
+      renderRuntime(runtime);
+      renderSessions(overview.groups.sessions);
+      renderCompactRollup('sourceRows', overview.groups.sources, 'Source', sourceLabel);
+      renderCompactRollup('modelRows', overview.groups.models, 'Model');
+      renderCompactRollup('agentRows', overview.groups.agents, 'Agent');
+      renderTasks(overview.groups.request_kinds, overview.groups.tasks);
+      renderCollectors(overview, health);
+      renderRecent(status);
+      statusEl.textContent = `updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    document.getElementById('refresh').addEventListener('click', () => refresh().catch(error => {
+      document.getElementById('status').textContent = error.message;
+      console.error(error);
+    }));
+    document.getElementById('syncCodex').addEventListener('click', async () => {
+      const statusEl = document.getElementById('status');
+      try {
+        statusEl.textContent = 'syncing codex status';
+        const result = await apiPost('/api/token-usage/import/codex-status?max_files=3&max_events=5000');
+        statusEl.textContent = `imported ${n(result.imported_events)} / skipped ${n(result.skipped_duplicates)}`;
+        await refresh();
+      } catch (error) {
+        statusEl.textContent = error.message;
+        console.error(error);
+      }
+    });
+    refresh().catch(error => {
+      document.getElementById('status').textContent = error.message;
+      console.error(error);
+    });
+  </script>
+</body>
+</html>
