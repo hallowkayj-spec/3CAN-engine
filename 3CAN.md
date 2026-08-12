@@ -35,6 +35,11 @@ available, but they must not start, stop, restart, or replace the shared 9700
 owner. Runtime unavailability does not block local Git, coding, builds, or
 offline tests; only 3CAN-dependent operations remain `UNAVAILABLE`.
 
+Ordinary Agents are scoped 3CAN clients, not machine-global administrators.
+Only an explicitly Owner-authorized governance/operator Workorder may change
+3CAN's machine-global runtime or governance behavior; other Sessions preserve
+compact evidence and continue safe independent work instead of self-promoting.
+
 ## Default working style
 
 Supported values are intentionally small: `caution` accepts

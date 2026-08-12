@@ -55,7 +55,6 @@ const OFFLINE_HARD_DENY = [
   /\bgit\s+(push|reset\s+--hard|branch\s+-[Dd])/,
   /\bnpm\s+publish\b/,
   /\bdocker\s+(rm|rmi|system\s+prune)/,
-  /\bcurl\s+.*(-X\s*)?(POST|PUT|DELETE|PATCH)/i,
   /\b(chmod|chown)\b/,
 ];
 

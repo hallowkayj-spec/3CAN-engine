@@ -727,14 +727,26 @@ def test_project_kit_offline_probe_is_typed_and_read_only(monkeypatch, tmp_path)
     assert result["error"] == unavailable
 
 
-def test_project_kit_transport_failure_is_typed_unavailable(monkeypatch):
+@pytest.mark.parametrize(
+    ("path", "method", "payload"),
+    [
+        ("/api/route", "POST", {"task": "route"}),
+        ("/api/route/ticket", "POST", {"task_description": "ticket"}),
+        ("/api/writeback", "POST", {"node_id": "DOC-test"}),
+    ],
+)
+def test_project_kit_transport_failure_is_typed_unavailable(
+    monkeypatch, path, method, payload
+):
     helper = load_project_kit_helper()
 
     def unavailable(*_args, **_kwargs):
         raise URLError("connection refused")
 
     monkeypatch.setattr(helper, "urlopen", unavailable)
-    ok, result = helper._try_json_request("http://3can.test", "/api/stats")
+    ok, result = helper._try_json_request(
+        "http://3can.test", path, method=method, payload=payload
+    )
 
     assert ok is False
     assert result == {
@@ -760,6 +772,43 @@ def test_offline_hooks_do_not_claim_production_runtime_lifecycle():
     assert "runtime_unavailable_local_work_continues" in behavioral
     assert "OFFLINE_HARD_DENY" in behavioral
     assert "THREECAN_URL" in source
+
+
+def test_offline_behavioral_gate_allows_local_work_and_keeps_independent_safety(
+    tmp_path,
+):
+    hook = RELEASE_ROOT / "examples" / "claude-code-hooks" / "3can-behavioral-gate.js"
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "THREECAN_URL": "http://127.0.0.1:1",
+    }
+
+    def decision(tool_name: str, tool_input: dict[str, str]) -> str | None:
+        completed = subprocess.run(
+            ["node", str(hook)],
+            input=json.dumps({"tool_name": tool_name, "tool_input": tool_input}),
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            env=env,
+            timeout=10,
+            check=True,
+        )
+        if not completed.stdout.strip():
+            return None
+        return json.loads(completed.stdout)["hookSpecificOutput"].get(
+            "permissionDecision"
+        )
+
+    assert decision(
+        "Bash", {"command": "curl -X POST http://127.0.0.1:5900/api/test"}
+    ) is None
+    assert decision("Bash", {"command": "pytest -q"}) is None
+    assert decision("Edit", {"file_path": "local.txt", "new_string": "safe"}) is None
+    assert decision("Bash", {"command": "rm -rf ./tmp"}) == "deny"
+    assert decision("Bash", {"command": "npm publish"}) == "deny"
 
 
 def test_verifier_types_development_readiness_and_can_require_production(
