@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""3CAN一键接入 — 任何环境执行这一行即可:
+"""3CAN client setup — observe readiness and configure MCP:
 
     python neural-memory/init.py
 
-功能:
-  1. 检测3CAN引擎是否在线, 不在线则启动
-  2. 检测MCP配置是否存在, 不存在则写入
-  3. 输出接入指令 (给人或给agent的system prompt)
+This helper never owns production runtime lifecycle. If 3CAN is unavailable,
+local Git/coding/build/offline tests may continue while route/ticket/writeback
+remain typed UNAVAILABLE.
 """
 
 import json
-import subprocess
-import sys
-import time
+import os
 from pathlib import Path
 
-ENGINE_URL = "http://localhost:9700"
+ENGINE_URL = os.environ.get(
+    "THREECAN_URL",
+    os.environ.get("THREECAN_BASE_URL", "http://127.0.0.1:9700"),
+)
 MCP_SERVER = Path(__file__).resolve().parent / "mcp_server.py"
-PROXY_SERVER = Path(__file__).resolve().parent / "proxy" / "server.py"
 
 # Claude Code MCP config paths
 CLAUDE_MCP = Path.home() / ".claude" / "mcp.json"
@@ -32,23 +31,6 @@ def check_engine():
         return data.get("total_nodes", 0) > 0, data
     except Exception:
         return False, {}
-
-
-def start_engine():
-    """Start the 3CAN single-writer slot proxy."""
-    print("[init] Starting 3CAN engine...")
-    proc = subprocess.Popen(
-        [sys.executable, str(PROXY_SERVER)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    for _ in range(10):
-        time.sleep(1)
-        ok, _ = check_engine()
-        if ok:
-            print(f"[init] Engine started (PID {proc.pid})")
-            return True
-    print("[init] WARNING: Engine failed to start within 10s")
-    return False
 
 
 def ensure_mcp_config():
@@ -80,14 +62,10 @@ def main():
     print("3CAN Memory Engine — Init")
     print("=" * 50)
 
-    # 1. Check/start engine
+    # 1. Observe engine readiness; lifecycle belongs to the machine operator.
     online, stats = check_engine()
     if online:
         print(f"[init] Engine online: {stats.get('total_nodes', '?')} nodes, {stats.get('total_edges', '?')} edges")
-    else:
-        online = start_engine()
-        if online:
-            _, stats = check_engine()
 
     # 2. Ensure MCP config
     ensure_mcp_config()
@@ -104,8 +82,9 @@ def main():
         print("For any other agent (paste into system prompt):")
         print(f'  3CAN Memory Engine at {ENGINE_URL} — POST /api/route {{"task":"query","max_nodes":4}} to search memory')
     else:
-        print("Engine offline. Start manually:")
-        print(f"  python {PROXY_SERVER}")
+        print("3CAN_RUNTIME_UNAVAILABLE")
+        print("Request the machine operator/Supervisor; do not start production 9700 from a project session.")
+        print("Local Git, coding, builds, and offline tests may continue.")
 
 
 if __name__ == "__main__":

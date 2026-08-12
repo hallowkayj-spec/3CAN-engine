@@ -666,6 +666,7 @@ def test_project_kit_has_no_production_runtime_lifecycle_authority():
         PROJECT_KIT_HELPER,
         PROJECT_KIT_HELPER.parent / "codex-3can.ps1",
         PROJECT_KIT_HELPER.parent / "3can_codex_wrapper.ps1",
+        ROOT / "init.py",
     ]
     source = "\n".join(path.read_text(encoding="utf-8") for path in scripts)
     for forbidden in (
