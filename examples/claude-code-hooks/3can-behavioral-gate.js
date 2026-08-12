@@ -63,7 +63,7 @@ const OFFLINE_HARD_DENY = [
 // command shape; flags, payloads, redirects, config files, and shell syntax
 // remain denied rather than growing a second URL/shell policy engine.
 function isOfflineLoopbackUatCurl(command) {
-  const match = /^\s*curl\s+(?:-X|--request)\s+(?:POST|PUT|DELETE|PATCH)\s+(https?:\/\/[^\s'\"]+)\s*$/i.exec(command);
+  const match = /^\s*curl\s+(?:-X|--request)\s+(?:POST|PUT|DELETE|PATCH)\s+(https?:\/\/[^\s'\";&|`$()<>]+)\s*$/i.exec(command);
   if (!match) return false;
   try {
     const target = new URL(match[1]);

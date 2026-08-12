@@ -835,6 +835,9 @@ def test_offline_behavioral_gate_allows_local_work_and_keeps_independent_safety(
             )
         },
     ) == "deny"
+    assert decision(
+        "Bash", {"command": "curl -X POST http://127.0.0.1:5900/api;whoami"}
+    ) == "deny"
     assert decision("Bash", {"command": "pytest -q"}) is None
     assert decision("Edit", {"file_path": "local.txt", "new_string": "safe"}) is None
     assert decision("Bash", {"command": "rm -rf ./tmp"}) == "deny"
