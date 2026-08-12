@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import urllib.parse
+from urllib.error import URLError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -660,34 +661,28 @@ def test_project_kit_rejects_mutation_project_mismatch_bypass(monkeypatch):
     )
 
 
-def test_project_kit_has_no_direct_runtime_launcher():
-    source = PROJECT_KIT_HELPER.read_text(encoding="utf-8")
-    assert "subprocess.Popen" not in source
-    assert "DETACHED_PROCESS" not in source
-    assert "_stop_threecan_port_processes" not in source
-    assert "_terminate_verified_threecan_process" not in source
-    assert "_cleanup_launched_runtime" not in source
-    assert "THREECAN_SUPERVISOR_TASK_NAME" in source
+def test_project_kit_has_no_production_runtime_lifecycle_authority():
+    scripts = [
+        PROJECT_KIT_HELPER,
+        PROJECT_KIT_HELPER.parent / "codex-3can.ps1",
+        PROJECT_KIT_HELPER.parent / "3can_codex_wrapper.ps1",
+    ]
+    source = "\n".join(path.read_text(encoding="utf-8") for path in scripts)
+    for forbidden in (
+        "subprocess.Popen",
+        "DETACHED_PROCESS",
+        "schtasks.exe",
+        "THREECAN_SUPERVISOR_TASK_NAME",
+        "--start-if-offline",
+        "StartIfOffline",
+    ):
+        assert forbidden not in source
 
 
-def test_project_kit_offline_recovery_uses_supervisor(monkeypatch, tmp_path):
+def test_project_kit_offline_probe_is_typed_and_read_only(monkeypatch, tmp_path):
     helper = load_project_kit_helper()
     engine_root = tmp_path / "neural-memory"
     graph_root = engine_root / "graph"
-    probes = iter([
-        (False, {"error": "offline"}, False, {"kind": "offline"}),
-        (
-            True,
-            {
-                "total_nodes": 100,
-                "total_edges": 10,
-                "healthy": True,
-                "readiness": {"production_ready": True},
-            },
-            True,
-            None,
-        ),
-    ])
     monkeypatch.setattr(
         helper,
         "resolve_engine_root",
@@ -702,25 +697,68 @@ def test_project_kit_offline_recovery_uses_supervisor(monkeypatch, tmp_path):
         "_project_identity_gate",
         lambda *args, **kwargs: {"status": "pass"},
     )
-    monkeypatch.setattr(helper, "_probe_stats", lambda *args, **kwargs: next(probes))
+    unavailable = {
+        "status": "UNAVAILABLE",
+        "kind": "threecan_runtime_unavailable",
+        "reason": "connection refused",
+    }
     monkeypatch.setattr(
         helper,
-        "_request_runtime_supervisor",
-        lambda: (True, {"kind": "supervisor_requested"}),
+        "_probe_stats",
+        lambda *args, **kwargs: (
+            False,
+            unavailable,
+            False,
+            {"kind": "offline"},
+        ),
     )
-    monkeypatch.setattr(helper, "_proxy_state", lambda root: None)
 
     result = helper.ensure_online(
         "http://3can.test",
         engine_root_override=None,
-        start_if_offline=True,
-        wait_seconds=1,
         min_nodes=10,
     )
 
-    assert result["online"] is True
-    assert result["healthy"] is True
-    assert result["code"] == "THREECAN_SUPERVISOR_RECOVERED"
+    assert result["online"] is False
+    assert result["started"] is False
+    assert result["healthy"] is False
+    assert result["code"] == "THREECAN_RUNTIME_UNAVAILABLE"
+    assert result["error"] == unavailable
+
+
+def test_project_kit_transport_failure_is_typed_unavailable(monkeypatch):
+    helper = load_project_kit_helper()
+
+    def unavailable(*_args, **_kwargs):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(helper, "urlopen", unavailable)
+    ok, result = helper._try_json_request("http://3can.test", "/api/stats")
+
+    assert ok is False
+    assert result == {
+        "status": "UNAVAILABLE",
+        "kind": "threecan_runtime_unavailable",
+        "reason": "connection refused",
+    }
+
+
+def test_offline_hooks_do_not_claim_production_runtime_lifecycle():
+    hooks = RELEASE_ROOT / "examples" / "claude-code-hooks"
+    behavioral = (hooks / "3can-behavioral-gate.js").read_text(encoding="utf-8")
+    cold_start = (hooks / "3can-cold-start.js").read_text(encoding="utf-8")
+    source = behavioral + "\n" + cold_start
+
+    for forbidden in (
+        "ENGINE_BOOTSTRAP_OK",
+        "schtasks",
+        "backend/app.py --port 9700",
+        "engine_offline_mutating",
+    ):
+        assert forbidden not in source
+    assert "runtime_unavailable_local_work_continues" in behavioral
+    assert "OFFLINE_HARD_DENY" in behavioral
+    assert "THREECAN_URL" in source
 
 
 def test_verifier_types_development_readiness_and_can_require_production(

@@ -62,7 +62,6 @@ DEFAULT_BASE_URL = (
 )
 DEFAULT_MIN_NODES = int(os.environ.get("THREECAN_MIN_NODES", "100"))
 DEFAULT_MIN_TICKET_TTL_SEC = int(os.environ.get("THREECAN_MIN_TICKET_TTL_SEC", "5"))
-DEFAULT_SUPERVISOR_TASK = "3CAN Production Runtime Supervisor"
 RUNTIME_IDENTITY_SCHEMA = "3can.runtime-identity/v1"
 PROCESS_EXIT_TIMEOUT_MS = 5000
 SCOPED_STATE_INDEX_LIMIT = 80
@@ -289,7 +288,17 @@ def _try_json_request(
         except Exception:
             return False, {"http_status": exc.code, "body": ""}
     except URLError as exc:
-        return False, {"error": str(exc.reason)}
+        return False, {
+            "status": "UNAVAILABLE",
+            "kind": "threecan_runtime_unavailable",
+            "reason": str(exc.reason)[:300],
+        }
+    except TimeoutError as exc:
+        return False, {
+            "status": "UNAVAILABLE",
+            "kind": "threecan_runtime_unavailable",
+            "reason": str(exc)[:300],
+        }
     except Exception as exc:
         return False, {"error": str(exc)}
 
@@ -1384,7 +1393,7 @@ def _ticket_consume_payload(
     requested_agent_id = str(agent_id or "").strip()
     if not ticket_agent_id:
         raise ValueError("ticket_agent_id_missing")
-    if requested_agent_id and ticket_agent_id != requested_agent_id:
+    if ticket_agent_id != requested_agent_id:
         raise ValueError("ticket_agent_id_mismatch")
     target_digest = str(ticket_payload.get("target_digest") or "").strip()
     scope_digest = str(ticket_payload.get("scope_digest") or "").strip()
@@ -2858,44 +2867,6 @@ def _probe_stats(
     return True, stats, healthy, warning
 
 
-def _request_runtime_supervisor() -> tuple[bool, dict[str, Any]]:
-    task_name = os.environ.get(
-        "THREECAN_SUPERVISOR_TASK_NAME",
-        DEFAULT_SUPERVISOR_TASK,
-    ).strip()
-    if os.name != "nt":
-        return False, {
-            "kind": "supervisor_unavailable",
-            "reason": "automatic recovery requires an external service manager",
-        }
-    try:
-        completed = subprocess.run(
-            ["schtasks.exe", "/Run", "/TN", task_name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, {
-            "kind": "supervisor_request_failed",
-            "reason": f"{type(exc).__name__}: {exc}"[:300],
-            "task_name": task_name,
-        }
-    if completed.returncode != 0:
-        return False, {
-            "kind": "supervisor_request_failed",
-            "returncode": completed.returncode,
-            "task_name": task_name,
-        }
-    return True, {
-        "kind": "supervisor_requested",
-        "task_name": task_name,
-    }
-
-
-
-
 def doctor(args: argparse.Namespace) -> int:
     discovery = resolve_engine_root(args.engine_root)
     selected_engine_root = Path(discovery["selected"])
@@ -2944,8 +2915,6 @@ def ensure_online(
     base_url: str,
     *,
     engine_root_override: str | None,
-    start_if_offline: bool,
-    wait_seconds: float,
     min_nodes: int,
 ) -> dict[str, Any]:
     discovery = resolve_engine_root(engine_root_override)
@@ -2991,78 +2960,12 @@ def ensure_online(
             "engine_root": discovery,
         }
 
-    if not start_if_offline:
-        return {
-            "online": False,
-            "started": False,
-            "healthy": False,
-            "code": "THREECAN_OFFLINE",
-            "error": result,
-            "project_identity": identity_gate,
-            "engine_root": discovery,
-        }
-
-    if not discovery["valid_engine_root"]:
-        return {
-            "online": False,
-            "started": False,
-            "healthy": False,
-            "code": "THREECAN_ENGINE_ROOT_INVALID",
-            "error": {"kind": "invalid_engine_root"},
-            "project_identity": identity_gate,
-            "engine_root": discovery,
-        }
-
-    requested, supervisor = _request_runtime_supervisor()
-    if not requested:
-        return {
-            "online": False,
-            "started": False,
-            "healthy": False,
-            "code": "THREECAN_SUPERVISOR_UNAVAILABLE",
-            "error": result,
-            "supervisor": supervisor,
-            "project_identity": identity_gate,
-            "engine_root": discovery,
-        }
-
-    deadline = time.monotonic() + max(0.2, wait_seconds)
-    last_error: Any = result
-    while time.monotonic() < deadline:
-        ok, result, healthy, warning = _probe_stats(
-            base_url,
-            min_nodes=min_nodes,
-            expected_engine_root=selected_engine_root,
-            expected_graph_root=selected_graph_root,
-            refresh_readiness=True,
-        )
-        if ok:
-            return {
-                "online": True,
-                "started": True,
-                "healthy": healthy,
-                "code": (
-                    "THREECAN_SUPERVISOR_RECOVERED"
-                    if healthy
-                    else "THREECAN_ONLINE_NOT_READY"
-                ),
-                "stats": result,
-                "warning": warning,
-                "supervisor": supervisor,
-                "proxy_state": _proxy_state(selected_engine_root),
-                "project_identity": identity_gate,
-                "engine_root": discovery,
-            }
-        last_error = result
-        time.sleep(0.5)
-
     return {
         "online": False,
-        "started": True,
+        "started": False,
         "healthy": False,
-        "code": "THREECAN_SUPERVISOR_TIMEOUT",
-        "error": last_error,
-        "supervisor": supervisor,
+        "code": "THREECAN_RUNTIME_UNAVAILABLE",
+        "error": result,
         "project_identity": identity_gate,
         "engine_root": discovery,
     }
@@ -3070,8 +2973,6 @@ def session_start(args: argparse.Namespace) -> int:
     status = ensure_online(
         args.base_url,
         engine_root_override=args.engine_root,
-        start_if_offline=args.start_if_offline,
-        wait_seconds=args.wait_seconds,
         min_nodes=args.min_nodes,
     )
     if not status["online"] or not status["healthy"]:
@@ -3123,11 +3024,41 @@ def session_start(args: argparse.Namespace) -> int:
         _print_json({"status": status, "checkin": checkin, "briefing_error": briefing})
         return 1
 
-    if owner_defaults and isinstance(briefing, dict):
-        briefing["owner_defaults"] = {
-            **owner_defaults,
-            "assertion_origin": "client_asserted",
-        }
+    if isinstance(briefing, dict):
+        server_owner = briefing.get("owner_defaults")
+        if server_owner is not None:
+            expected_project = str(project_meta.get("project_id") or "").casefold()
+            expected_namespace = str(project_meta.get("project_namespace") or "").casefold()
+            if (
+                not isinstance(server_owner, dict)
+                or server_owner.get("status") != "applied"
+                or server_owner.get("assertion_origin") != "server_local_file"
+            ):
+                _print_json({
+                    "status": status,
+                    "checkin": checkin,
+                    "briefing_error": {"kind": "owner_intent_invalid"},
+                })
+                return 1
+            if (
+                str(server_owner.get("project_id") or "").casefold()
+                != expected_project
+                or str(server_owner.get("project_namespace") or "").casefold()
+                != expected_namespace
+            ):
+                _print_json({
+                    "status": status,
+                    "checkin": checkin,
+                    "briefing_error": {
+                        "kind": "owner_intent_project_identity_mismatch",
+                    },
+                })
+                return 1
+        elif owner_defaults:
+            briefing["owner_defaults"] = {
+                **owner_defaults,
+                "assertion_origin": "client_asserted",
+            }
     result = {"status": status, "checkin": checkin, "briefing": briefing}
     _record_local_token_estimate(
         args.base_url,
@@ -5253,8 +5184,6 @@ def ensure_online_command(args: argparse.Namespace) -> int:
         ensure_online(
             args.base_url,
             engine_root_override=args.engine_root,
-            start_if_offline=args.start_if_offline,
-            wait_seconds=args.wait_seconds,
             min_nodes=args.min_nodes,
         )
     )
@@ -5276,14 +5205,16 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser("doctor", help="Inspect current 3CAN target and candidate engine roots.")
     doctor_parser.set_defaults(func=doctor)
 
-    ensure_parser = subparsers.add_parser("ensure-online", help="Check canonical readiness and optionally request the runtime supervisor.")
-    ensure_parser.add_argument("--start-if-offline", action="store_true")
-    ensure_parser.add_argument("--wait-seconds", type=float, default=12.0)
+    ensure_parser = subparsers.add_parser(
+        "ensure-online",
+        help="Check canonical readiness without changing runtime lifecycle.",
+    )
     ensure_parser.set_defaults(func=ensure_online_command)
 
-    session_parser = subparsers.add_parser("session-start", help="Ensure 3CAN online, checkin, then fetch briefing.")
-    session_parser.add_argument("--start-if-offline", action="store_true")
-    session_parser.add_argument("--wait-seconds", type=float, default=12.0)
+    session_parser = subparsers.add_parser(
+        "session-start",
+        help="Check 3CAN readiness, check in, then fetch briefing.",
+    )
     session_parser.add_argument("--agent-id", required=True)
     session_parser.add_argument("--name", default="Codex CLI")
     session_parser.add_argument("--role", default="frontend")
@@ -5500,7 +5431,7 @@ def _project_mismatch_bypass_is_read_only(args: argparse.Namespace) -> bool:
     }:
         return True
     if command == "ensure-online":
-        return not bool(getattr(args, "start_if_offline", False))
+        return True
     if command == "failure-gate-sync":
         return not bool(getattr(args, "apply", False))
     if command == "flush-pending":

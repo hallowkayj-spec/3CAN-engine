@@ -721,14 +721,25 @@ def test_consume_requires_agent_and_exact_target_scope(ticket_runtime):
 
     with pytest.raises(HTTPException) as mismatch:
         asyncio.run(app.consume_route_ticket(ticket["ticket_id"], {
+            "agent_id": "agent-b",
+            "target_digest": ticket["target_digest"],
+            "scope_digest": ticket["scope_digest"],
+            "tool_name": "apply_patch",
+            "tool_input_summary": "update ticket lifecycle",
+        }))
+    assert mismatch.value.status_code == 403
+    assert mismatch.value.detail["error"] == "ticket_agent_mismatch"
+
+    with pytest.raises(HTTPException) as target_mismatch:
+        asyncio.run(app.consume_route_ticket(ticket["ticket_id"], {
             "agent_id": "agent-a",
             "target_digest": "wrong",
             "scope_digest": ticket["scope_digest"],
             "tool_name": "apply_patch",
             "tool_input_summary": "update ticket lifecycle",
         }))
-    assert mismatch.value.status_code == 403
-    assert mismatch.value.detail["error"] == "ticket_target_digest_mismatch"
+    assert target_mismatch.value.status_code == 403
+    assert target_mismatch.value.detail["error"] == "ticket_target_digest_mismatch"
 
     result = _consume(app, ticket)
     assert result["consume_count"] == 1

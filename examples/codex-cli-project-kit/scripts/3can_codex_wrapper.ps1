@@ -30,8 +30,6 @@ param(
     [string]$TicketId,
     [string]$Meta,
     [int]$MaxNodes = 6,
-    [switch]$StartIfOffline,
-    [double]$WaitSeconds = 25,
     [string]$EngineRoot,
     [string]$BaseUrl = 'http://127.0.0.1:9700'
 )
@@ -648,9 +646,6 @@ switch ($Command) {
             '--task', $Task,
             '--max-nodes', "$MaxNodes"
         )
-        if ($StartIfOffline) {
-            $args += @('--start-if-offline', '--wait-seconds', "$WaitSeconds")
-        }
         $args += @('--capability', 'code', '--capability', 'frontend', '--capability', '3can')
         $result = Invoke-HelperJson $args
         $result | ConvertTo-Json -Depth 6

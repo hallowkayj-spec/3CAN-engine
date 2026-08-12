@@ -425,6 +425,95 @@ def test_project_kit_sends_projection_and_explicit_mode_wins(tmp_path, monkeypat
     assert sent[-1][1]["mode"] == "full"
 
 
+def test_project_kit_session_start_preserves_owner_precedence(monkeypatch):
+    helper = _load("owner_intent_session_start_test", PROJECT_KIT)
+    project_meta = {
+        "project_id": "project-a",
+        "project_namespace": "project-a",
+    }
+    client_owner = {
+        "status": "applied",
+        "source": "3CAN.md",
+        **project_meta,
+        "defaults": {"autonomy": "high"},
+    }
+    printed = []
+
+    monkeypatch.setattr(
+        helper,
+        "ensure_online",
+        lambda *_a, **_k: {"online": True, "healthy": True},
+    )
+    monkeypatch.setattr(helper, "_session_id_for_agent", lambda *_a: "session-a")
+    monkeypatch.setattr(helper, "_current_project_metadata", lambda **_k: project_meta)
+    monkeypatch.setattr(helper, "_record_local_token_estimate", lambda *_a, **_k: None)
+    monkeypatch.setattr(helper, "_print_json", printed.append)
+    args = SimpleNamespace(
+        base_url="http://3can.test",
+        engine_root="",
+        start_if_offline=False,
+        wait_seconds=1,
+        min_nodes=1,
+        agent_id="agent-a",
+        session_id="",
+        name="Agent A",
+        role="review",
+        task="owner precedence",
+        capabilities=[],
+        meta="",
+        max_nodes=4,
+    )
+
+    def run(*, server_owner, local_owner=client_owner):
+        printed.clear()
+        monkeypatch.setattr(helper, "_owner_intent_projection", lambda **_k: local_owner)
+
+        def request(_base_url, path, **_kwargs):
+            if path == "/api/agents/checkin":
+                return True, {"agent_id": "agent-a"}
+            if path.startswith("/api/briefing?"):
+                return True, {"owner_defaults": server_owner}
+            raise AssertionError(path)
+
+        monkeypatch.setattr(helper, "_try_json_request", request)
+        code = helper.session_start(args)
+        return code, printed[-1]
+
+    server_owner = {
+        "status": "applied",
+        "source": "3CAN.md",
+        "assertion_origin": "server_local_file",
+        **project_meta,
+        "defaults": {"autonomy": "bounded"},
+    }
+    code, result = run(server_owner=server_owner)
+    assert code == 0
+    assert result["briefing"]["owner_defaults"] == server_owner
+
+    code, result = run(server_owner=None)
+    assert code == 0
+    assert result["briefing"]["owner_defaults"]["defaults"]["autonomy"] == "high"
+    assert result["briefing"]["owner_defaults"]["assertion_origin"] == "client_asserted"
+
+    code, result = run(server_owner={
+        **server_owner,
+        "project_id": "project-b",
+        "project_namespace": "project-b",
+    })
+    assert code == 1
+    assert result["briefing_error"]["kind"] == (
+        "owner_intent_project_identity_mismatch"
+    )
+
+    code, result = run(server_owner={"status": "not_applicable"})
+    assert code == 1
+    assert result["briefing_error"]["kind"] == "owner_intent_invalid"
+
+    code, result = run(server_owner=None, local_owner=None)
+    assert code == 0
+    assert result["briefing"]["owner_defaults"] is None
+
+
 def test_mcp_formats_compact_owner_defaults():
     mcp = _load("owner_intent_mcp_test", ROOT / "mcp_server.py")
     line = mcp._owner_defaults_line(
@@ -563,7 +652,7 @@ def test_project_briefing_filters_activity_and_ranks_applicable_errors_first(
     assert "applicable_project_reality" not in result
 
 
-def test_semantic_checkpoint_recovers_meaning_without_commit_mirroring(
+def test_agent_mediated_semantic_checkpoint_updates_meaning_without_commit_mirroring(
     tmp_path,
     monkeypatch,
 ):

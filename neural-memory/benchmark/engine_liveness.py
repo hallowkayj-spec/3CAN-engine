@@ -118,7 +118,7 @@ def main() -> int:
         if args.strict_route:
             print(f"  route: {route_reason}")
         if not overall_ok:
-            print("  启动: cd neural-memory && python backend/app.py --port 9700 > logs/backend_9700.log 2>&1 &")
+            print("  3CAN runtime UNAVAILABLE: request the machine operator/Supervisor, or use an explicit isolated project port for development.")
     return 0 if overall_ok else 1
 
 

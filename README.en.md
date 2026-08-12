@@ -86,14 +86,18 @@ git clone https://github.com/hallowkayj-spec/3CAN-engine.git
 cd 3CAN-engine
 bash install.sh
 export THREECAN_READINESS_MODE=development
-python neural-memory/backend/app.py --port 9700 --host 127.0.0.1 &
-curl http://127.0.0.1:9700/api/stats
+export THREECAN_PORT=9711
+python neural-memory/backend/app.py --port "$THREECAN_PORT" --host 127.0.0.1 &
+curl "http://127.0.0.1:$THREECAN_PORT/api/stats"
 
 # Fresh-graph verification (the generic seed graph starts small)
 python scripts/verify_project.py \
-  --base-url http://127.0.0.1:9700 \
+  --base-url "http://127.0.0.1:$THREECAN_PORT" \
   --min-nodes 10
 ```
+
+Port 9711 is an explicit project-local development sidecar. Ordinary project
+clients do not start, stop, or recover a machine-owned production 9700.
 
 The verifier performs liveness, deep stats/readiness, route, and token-health
 checks. Development readiness is accepted for a fresh local graph; use

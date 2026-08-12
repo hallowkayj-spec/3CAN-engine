@@ -27,8 +27,13 @@ Neither this file nor a prompt can override:
 - project, tenant, credential, or writer isolation;
 - destructive-production and irreversible external-change protections;
 - Git, CI, Runtime, Provider, and Evidence as their respective live authorities;
-- an exact unresolved ErrorKnowledge retry block;
 - protected durable-current provenance gates.
+
+Production runtime lifecycle is machine-owned. Ordinary Worktrees are 3CAN
+clients: they may observe readiness and use route, ticket, and writeback while
+available, but they must not start, stop, restart, or replace the shared 9700
+owner. Runtime unavailability does not block local Git, coding, builds, or
+offline tests; only 3CAN-dependent operations remain `UNAVAILABLE`.
 
 ## Default working style
 
@@ -79,15 +84,17 @@ remains in Evidence.
 ## ErrorKnowledge
 
 Use the existing ErrorKnowledge lifecycle. The first occurrence records the
-case compactly. A second exact occurrence reuses the same case and may block a
-blind retry. A semantically related case is advisory, not an automatic block.
-Resolved cases retain their verification pointer and may regress without
-creating a duplicate ErrorCase.
+case compactly. Exact unresolved repeated failures block an unchanged blind
+Agent retry. Related historical cases are advisory. An explicit Owner decision
+does not erase the ErrorCase; where an existing project-governance path supports
+a scoped retry, its history and reason remain visible and auditable. True safety
+boundaries remain non-bypassable. Resolved cases retain their verification
+pointer and may regress without creating a duplicate ErrorCase.
 
 The retry threshold is intentionally not configurable here because it already
 has one canonical implementation owner.
 
-## Semantic checkpoints
+## Agent-mediated semantic checkpoints
 
 Git records exact commits, branches, trees, diffs, and pull requests. 3CAN
 records what a meaningful engineering change means and what the next agent
@@ -100,9 +107,9 @@ architectural decision, rollback boundary, or release boundary changes.
 Do not create a node for every commit, test, tool call, provider call, or
 session. Do not add a Git watcher, commit daemon, or Git-state mirror.
 
-When Git is newer than durable project meaning, route to the relevant module,
-verify Git as the exact authority, and use the existing writeback path only for
-an accepted meaningful checkpoint.
+When an Agent observes that Git may be newer than durable project meaning, the
+Agent routes to the relevant module, verifies Git as the exact authority, and
+uses the existing writeback path only for an accepted meaningful checkpoint.
 
 ## Provenance boundary
 

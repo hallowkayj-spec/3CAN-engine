@@ -108,9 +108,11 @@ cannot resolve an ErrorCase. The completion remains `review_required`.
   A verified deep result can be reused while the graph/embedding fingerprint is
   unchanged; the response says whether evidence is `verified`,
   `cached_verified`, `stale_verified`, or `deep_required`.
-- Agent wrappers no longer spawn or terminate backend/proxy processes.
-  An offline Windows installation may request one configured Scheduled Task;
-  otherwise startup remains an explicit operator/service-manager action.
+- Agent wrappers only observe runtime readiness; they never spawn, terminate,
+  or request recovery of the shared production runtime. Offline route, ticket,
+  and writeback become typed `UNAVAILABLE`, while local Git, coding, builds,
+  and offline tests continue. Lifecycle remains an explicit machine
+  operator/service-manager action.
 - Route responses publish `3can.route-response/v1`, retain mandatory and
   temporal metadata during budget compaction, and expose both
   `response_tokens` and the compatibility alias `post_budget_tokens`.
