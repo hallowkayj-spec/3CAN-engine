@@ -1,9 +1,9 @@
 {
   "schema_version": "3can.benchmark-receipt/v1",
   "status": "VERIFIED_CANDIDATE",
-  "observed_at_utc": "2026-08-12T05:49:50.6633186Z",
+  "observed_at_utc": "2026-08-12T07:07:08.0681553Z",
   "scope": "fresh release seed graph",
-  "source_commit": "8873762072a4a4d721ab6f2989a440ed290e7cd3",
+  "source_commit": "accf605d09b70403023296114fa93c23e9f37567",
   "runtime": {
     "python": "3.14.0",
     "readiness_mode": "development",
@@ -14,7 +14,7 @@
     "edges": 12
   },
   "source_sha256": {
-    "3CAN.md": "05d896fd2f9ab5e35102c31f1d9043932bfc2059023215588af974961f73bb48",
+    "3CAN.md": "6c4d017bd721874ab1242eebc6766c72588ebdb3e4accc6ce27a2f81b76a1755",
     "neural-memory/backend/app.py": "b9d6a7094805de7cd6981d2d8279020f7b23e53ca88709f0dabec581a91496cf",
     "neural-memory/backend/graph_engine.py": "c07caec569d410dd30686d380db892d4f57c2c54506ba802e18694aa729a628c",
     "neural-memory/backend/models.py": "a39efbf537a0b57b61adc45a67abcd3d17f12989159458d40ffa9d050b84f6b2",
@@ -28,12 +28,12 @@
     "neural-memory/benchmark/substrate_bench_runner.py": "fd3253cb3a95659f137fd3f1ef7c235f734c63b26c04be769174c819cbc34169"
   },
   "run_artifact_sha256": {
-    "completion.json": "2bb80898294bf976f5d570766dc092219c822026d872ec102bb2ced6faf87162",
-    "verify.json": "a40314712dc5358b37cefc0ead4fb2e6dbbf6edd25ec884464456c15eb68f110",
-    "route.json": "2c98e2d70bcb06856fd7cc766c48b4475656e213cb1d74530b449ac5954e450f",
-    "run-identity.json": "a51e6564460e1f64ab846bbd4afbbef75e48d1738636545cc25302767552dfa9",
-    "stats.json": "65dfe7b2097e2d57a17900bf768a9a8900af913cfd7c504de3522df8c9dc24f6",
-    "substrate.json": "320a72800cd2a4e29966d33f7ea2da8cf031e69339fd8e237e57602a6d40132e"
+    "completion.json": "02a9a4d438823260cc83897e0e6babb535d01d1f2075637b55ec9e05232ae9fd",
+    "verify.json": "fad4f4789b964cc38d474d668497e2bc3c2497990ce8979f6f95a498151a2601",
+    "route.json": "9439eb15fa27ede256b46fdd8c42d07f666271f73fc7d9a90d83a95b4d2011ac",
+    "run-identity.json": "4f3dc2af2fd9e549e1f74bb0ddc8a9a8dcddafcd8f8d384657d3cd60b0e7ff64",
+    "stats.json": "ecbec5db7c413a37fdbfa8085908c9fbdf7fac1ccaee42c3f849b4bbc2734107",
+    "substrate.json": "d7e50613993f5e5e1282e34e34b79c5564cc09ed903817a2bd298cb07e2ce0c0"
   },
   "commands": [
     "python -B scripts/verify_project.py --base-url http://127.0.0.1:9797 --min-nodes 10 --project-id public-rc --project-namespace public-rc --json",
@@ -45,7 +45,7 @@
     "liveness": true,
     "readiness_verification_state": "development",
     "owner_intent": "APPLIED",
-    "owner_intent_digest": "sha256:05d896fd2f9ab5e35102c31f1d9043932bfc2059023215588af974961f73bb48",
+    "owner_intent_digest": "sha256:6c4d017bd721874ab1242eebc6766c72588ebdb3e4accc6ce27a2f81b76a1755",
     "exact_read": true,
     "selector_unchanged": true
   },
@@ -55,7 +55,7 @@
     "Recall@1": 0.8261,
     "Recall@3": 1.0,
     "Hit@3": 1.0,
-    "latency_p95_ms": 30,
+    "latency_p95_ms": 33,
     "grep_fallback_rate": 0.0,
     "verdict": "coordination"
   },
