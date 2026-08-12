@@ -1051,6 +1051,22 @@ def test_current_reality_prefers_durable_facts_and_excludes_stale_or_wrong_proje
         "mismatch_excluded",
     ]
 
+    ordinary = engine.route(
+        graph_engine.RoutingRequest(
+            task="RunningHub module question",
+            max_nodes=9,
+            agent_id="PUBLIC-agent",
+            mode="skeleton",
+            project_id="public-demo",
+            project_namespace="public-demo",
+        )
+    )
+    ordinary_ids = [node.id for node in ordinary.activated_nodes]
+    assert ordinary.route_meta["current_reality_policy"]["enabled"] is False
+    assert "PRJ-OTHER-current" not in ordinary_ids
+    assert "DOC-PUBLIC-conflicting-scope" not in ordinary_ids
+    assert "INTF-PUBLIC-legacy-unscoped" in ordinary_ids
+
     history = engine._current_reality_policy(
         graph_engine.RoutingRequest(task="RunningHub history and handoff continuation"),
         "RunningHub history and handoff continuation",

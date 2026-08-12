@@ -44,9 +44,10 @@ claim that any private production graph has been migrated.
   checks reuse prior deep evidence only while the graph/embedding fingerprint
   is unchanged and expose typed verification state and evidence age.
 - Removed backend/proxy spawn, termination, wrong-graph cleanup, and duplicate
-  recovery branches from the Codex project wrapper. Offline recovery can only
-  request one configured Windows Supervisor task; all other startup remains an
-  explicit operator/service-manager action.
+  recovery branches from the Codex project wrapper. Ordinary clients now only
+  observe readiness: offline 3CAN operations are typed `UNAVAILABLE`, local
+  Git/coding/build/test work continues, and lifecycle remains an explicit
+  machine operator/service-manager action.
 - Versioned route responses as `3can.route-response/v1`; budget compaction now
   retains mandatory-selection, injection, and temporal-policy metadata, while
   token estimates expose stable `response_tokens` and
@@ -211,7 +212,7 @@ claim that any private production graph has been migrated.
 - PostToolUse writeback hook (failure logged, not silent-dropped)
 - Behavioral Gate Stage 2 content-judge (4-question LLM check)
 - Sentinel bootstrap bypass documented in `DEPLOYMENT.md §1.7`
-- **§0 Engine Liveness Hard Gate** (2026-04-20): `3can-behavioral-gate.js` gains a Stage 0 liveness probe — when `/api/stats` is unreachable or returns an empty graph, mutating tools (Write/Edit/MultiEdit/NotebookEdit) and high-risk Bash are denied; a bootstrap whitelist allows engine-startup and diagnostic commands (`python backend/app.py`, `python proxy/server.py`, `taskkill`, `netstat`, `tasklist`, `curl 9700`, sentinel touch/rm). `3can-cold-start.js` session-start message escalated from soft hint to hard-rule copy with full startup recipe. Rationale: prior sessions had inferred project state without a live memory substrate.
+- **§0 Engine Liveness Hard Gate** (2026-04-20, superseded 2026-08-12): the original hook denied ordinary mutation and allowed direct startup/cleanup commands when 3CAN was offline. The current runtime-ownership boundary removes that recovery whitelist: ordinary Worktrees never control production 9700, local Git/coding/build/offline tests continue, and only 3CAN-dependent operations report `UNAVAILABLE`.
 - **Engine liveness harness** (`neural-memory/benchmark/engine_liveness.py`): 3-5 second probe producing human or `--json` report, `exit 0/1`, intended for CI health-check, UAT pre-gate, or operator sanity-check. Thresholds: `total_nodes ≥ 1000`, `total_edges ≥ 500`; optional `--strict-route` validates `/api/route` end-to-end.
 
 **LLM integration layer**

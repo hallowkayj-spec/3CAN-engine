@@ -33,6 +33,7 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from graph_engine import GRAPH_DIR, GraphEngine
+from owner_intent import OwnerIntentError, load_owner_intent
 from readiness import READINESS_MODE_DEVELOPMENT, ReadinessCache, configured_readiness_mode
 from error_knowledge import (
     ErrorCase,
@@ -49,6 +50,7 @@ from models import (
     NodeType,
     NodeUpdate,
     RoutingRequest,
+    semantic_id_family,
     validate_routing_context_identifier,
 )
 from ticket_ledger import LedgerError, TicketLedger, canonical_hash
@@ -188,6 +190,96 @@ def _route_sync_locked(req: RoutingRequest):
 
 async def _route_in_worker(req: RoutingRequest):
     return await asyncio.to_thread(_route_sync_locked, req)
+
+
+def _request_with_owner_intent(
+    req: RoutingRequest,
+) -> tuple[RoutingRequest, str | None]:
+    """Bind the local project's compact 3CAN.md projection before routing.
+
+    Shared-authority clients may already send a project-bound projection.  A
+    server-local file is only considered for an explicit matching project pair,
+    so one runtime's project file never becomes machine-global policy.
+    """
+
+    projection = req.owner_intent
+    assertion_origin = "client_asserted" if projection else None
+    if req.project_id and req.project_namespace:
+        try:
+            local_projection = load_owner_intent(
+                _default_project_dir(),
+                project_id=req.project_id,
+                project_namespace=req.project_namespace,
+            )
+        except OwnerIntentError as exc:
+            raise HTTPException(
+                422,
+                detail={"error": "owner_intent_invalid", "reason": str(exc)},
+            ) from exc
+        if local_projection and local_projection.get("status") == "applied":
+            projection = local_projection
+            assertion_origin = "server_local_file"
+
+    if not projection:
+        return req, None
+
+    payload = req.model_dump(mode="python")
+    payload["owner_intent"] = projection
+    if "mode" not in req.model_fields_set:
+        payload["mode"] = {
+            "compact": "skeleton",
+            "standard": "slim",
+            "full": "full",
+        }.get(str(projection.get("defaults", {}).get("context") or ""), "slim")
+    return RoutingRequest.model_validate(payload), assertion_origin
+
+
+def _applicable_project_reality(req: RoutingRequest, result: Any) -> dict[str, Any]:
+    """Project a small request-local view from existing route evidence."""
+
+    route_meta = result.route_meta if isinstance(result.route_meta, dict) else {}
+    selected_ids = [node.id for node in result.activated_nodes]
+    core = route_meta.get("core_memory_graph")
+    lane_nodes = (
+        core.get("lane_selected_nodes", {})
+        if isinstance(core, dict)
+        else {}
+    )
+    constraint_lanes = {
+        "environment_constraints",
+        "project_constitution",
+        "project_file_system",
+        "error_warnings",
+    }
+    constraint_ids = list(dict.fromkeys(
+        str(node_id)
+        for lane, node_ids in lane_nodes.items()
+        if lane in constraint_lanes and isinstance(node_ids, list)
+        for node_id in node_ids
+        if str(node_id) in selected_ids
+    ))
+    selected_current_ids = [
+        node_id
+        for node_id in selected_ids
+        if semantic_id_family(node_id)
+        in {"INTF", "PROC", "DEC", "PRJ", "DOC", "ENV"}
+    ]
+    experience_ids = [
+        node_id
+        for node_id in selected_ids
+        if semantic_id_family(node_id)
+        in {"ERR", "ERRCASE", "FIX", "EVD", "SES", "HO"}
+    ]
+    current_policy = route_meta.get("current_reality_policy")
+    current_policy = current_policy if isinstance(current_policy, dict) else {}
+    return {
+        "selected_current_node_ids": selected_current_ids[:12],
+        "constraint_node_ids": constraint_ids[:12],
+        "experience_node_ids": experience_ids[:12],
+        "external_verification_required": bool(
+            current_policy.get("external_verification_required")
+        ),
+    }
 
 
 async def _token_usage_auto_import_loop() -> None:
@@ -1376,6 +1468,21 @@ def _compact_route_meta_for_budget(
         }
         if compact_current:
             compact["current_reality_policy"] = compact_current
+    owner_defaults = route_meta.get("owner_defaults")
+    if isinstance(owner_defaults, dict) and owner_defaults.get("status") == "applied":
+        compact["owner_defaults"] = owner_defaults
+    applicable = route_meta.get("applicable_project_reality")
+    if isinstance(applicable, dict):
+        compact["applicable_project_reality"] = {
+            key: applicable[key]
+            for key in (
+                "selected_current_node_ids",
+                "constraint_node_ids",
+                "experience_node_ids",
+                "external_verification_required",
+            )
+            if key in applicable
+        }
     for key in ("policy_version", "route_policy_version"):
         if route_meta.get(key):
             compact[key] = route_meta[key]
@@ -1517,6 +1624,31 @@ def _enforce_route_response_budget(
         )
         _sync_verified_solution_bundle_delivery(route_meta, kept_ids)
         compact_meta = _compact_route_meta_for_budget(route_meta)
+        required_project_meta = {
+            key: route_meta[key]
+            for key in ("owner_defaults", "applicable_project_reality")
+            if key in route_meta
+        }
+        if required_project_meta:
+            required_candidate = _payload_with_nodes(
+                base,
+                node_key,
+                selected,
+            )
+            required_candidate["route_meta"] = required_project_meta
+            minimum_required = _estimate_json_tokens(required_candidate)
+            if minimum_required > budget:
+                raise HTTPException(
+                    413,
+                    detail={
+                        "error": (
+                            "route_budget_too_small_for_project_reality"
+                        ),
+                        "budget_tokens": budget,
+                        "minimum_budget_tokens": minimum_required,
+                    },
+                )
+            base["route_meta"] = required_project_meta
         if compact_meta:
             candidate = _payload_with_nodes(base, node_key, selected)
             candidate["route_meta"] = compact_meta
@@ -1667,7 +1799,17 @@ async def route_task(req: RoutingRequest, detail: bool = Query(False)):
     - full: 全量 Node (~500-800 token/节点)
     - detail=true 旧参数保留, 等同 mode=full
     """
+    req, owner_assertion_origin = _request_with_owner_intent(req)
     result = await _route_in_worker(req)
+    if req.owner_intent:
+        result.route_meta["owner_defaults"] = {
+            **req.owner_intent,
+            "assertion_origin": owner_assertion_origin,
+        }
+    if req.project_id and req.project_namespace:
+        result.route_meta["applicable_project_reality"] = (
+            _applicable_project_reality(req, result)
+        )
     semantic_result_ids = result.route_meta.get("semantic_result_ids")
     if not isinstance(semantic_result_ids, list):
         semantic_result_ids = [node.id for node in result.activated_nodes]
@@ -5656,34 +5798,99 @@ async def agent_briefing(
     role: str | None = Query(None),
     compress: bool = Query(True),
     include_error_history: bool = Query(False),
+    project_id: str | None = Query(None),
+    project_namespace: str | None = Query(None),
 ):
     """新Agent冷启动友好: 按role过滤相关节点 + 该agent历史 + pending handoffs。
 
     role参数: brain/frontend/backend/video/3can/ops/data/review. None=brain默认行为。
     compress=True (默认) 只返关键字段, 省token。
     """
+    if bool(project_id) != bool(project_namespace):
+        raise HTTPException(400, detail={"error": "project_identity_pair_required"})
+    for field_name, value in (
+        ("project_id", project_id),
+        ("project_namespace", project_namespace),
+    ):
+        if value is not None:
+            try:
+                validate_routing_context_identifier(value, field_name=field_name)
+            except ValueError as exc:
+                raise HTTPException(400, detail={"error": str(exc)}) from exc
+    owner_defaults = None
+    if project_id and project_namespace:
+        try:
+            candidate = load_owner_intent(
+                _default_project_dir(),
+                project_id=project_id,
+                project_namespace=project_namespace,
+            )
+        except OwnerIntentError as exc:
+            raise HTTPException(
+                422,
+                detail={"error": "owner_intent_invalid", "reason": str(exc)},
+            ) from exc
+        if candidate and candidate.get("status") == "applied":
+            owner_defaults = {
+                **candidate,
+                "assertion_origin": "server_local_file",
+            }
+
     rf = _ROLE_FILTERS.get(role or "brain", _ROLE_FILTERS["brain"])
     error_history_enabled = bool(
         include_error_history and (role or "brain") == "review"
     )
-    allowed_error_ids = {
-        node.id
-        for node in sorted(
-            [
-                candidate
-                for candidate in engine.nodes.values()
-                if engine._is_error_case_node(candidate.id, candidate)
-                and candidate.status.value == "active"
-            ],
-            key=lambda candidate: (
-                candidate.activation_count,
-                candidate.updated_at,
-            ),
-            reverse=True,
-        )[:3]
-    } if error_history_enabled else set()
+    error_candidates = [
+        candidate
+        for candidate in engine.nodes.values()
+        if engine._is_error_case_node(candidate.id, candidate)
+        and candidate.status.value == "active"
+    ]
+    error_candidates.sort(
+        key=lambda candidate: (
+            candidate.activation_count,
+            candidate.updated_at,
+        ),
+        reverse=True,
+    )
+    if project_id and project_namespace:
+        applicability_order = {
+            "exact_project": 0,
+            "explicit_shared": 1,
+            "unscoped_unknown": 2,
+        }
+        error_candidates = [
+            candidate
+            for candidate in error_candidates
+            if engine._project_applicability(
+                candidate,
+                project_id=project_id,
+                project_namespace=project_namespace,
+            ) != "mismatch"
+        ]
+        error_candidates.sort(
+            key=lambda candidate: applicability_order.get(
+                engine._project_applicability(
+                    candidate,
+                    project_id=project_id,
+                    project_namespace=project_namespace,
+                ),
+                3,
+            )
+        )
+    allowed_error_ids = (
+        {node.id for node in error_candidates[:3]}
+        if error_history_enabled
+        else set()
+    )
 
     def _briefing_node_visible(node: Any) -> bool:
+        if project_id and project_namespace and engine._project_applicability(
+            node,
+            project_id=project_id,
+            project_namespace=project_namespace,
+        ) == "mismatch":
+            return False
         if not engine._is_error_artifact_node(node.id, node):
             return True
         return node.id in allowed_error_ids
@@ -5723,15 +5930,17 @@ async def agent_briefing(
         )[:max_nodes]
 
     # agent历史活动 + 过往节点
-    agent_activity = [
-        entry
-        for entry in engine.get_activity(agent_id=agent_id, limit=10)
-        if error_history_enabled
-        or not any(
-            engine._reserved_error_knowledge_id(str(node_id))
-            for node_id in (entry.affected_nodes or [])
-        )
-    ][:5]
+    agent_activity = []
+    if not (project_id and project_namespace):
+        agent_activity = [
+            entry
+            for entry in engine.get_activity(agent_id=agent_id, limit=10)
+            if error_history_enabled
+            or not any(
+                engine._reserved_error_knowledge_id(str(node_id))
+                for node_id in (entry.affected_nodes or [])
+            )
+        ][:5]
     agent_nodes = [
         n for n in engine.nodes.values()
         if n.content.extra.get("agent") == agent_id
@@ -5742,6 +5951,7 @@ async def agent_briefing(
     pending_handoffs = [
         n for n in engine.nodes.values()
         if n.id.startswith("HO-") and n.status.value == "active"
+        and _briefing_node_visible(n)
         and (n.content.extra.get("to_agent") == agent_id or n.content.extra.get("to_agent") == "*")
         and not n.content.extra.get("acknowledged_by", {}).get(agent_id)
     ][:5]
@@ -5751,14 +5961,25 @@ async def agent_briefing(
     return {
         "agent_id": agent_id,
         "role": role or "brain",
+        "project_scope": {
+            "project_id": project_id,
+            "project_namespace": project_namespace,
+        },
+        "owner_defaults": owner_defaults,
         "error_history_included": error_history_enabled,
         "role_nodes": [fmt(n) for n in role_nodes],
         "hot_nodes": [fmt(n) for n in hot_nodes] if (rf["include_global_hot"] or not role_nodes) else [],
         "agent_history": [e.model_dump() for e in agent_activity],
         "agent_related_nodes": [fmt(n) for n in agent_nodes],
         "pending_handoffs": [fmt(n) for n in pending_handoffs],
-        "total_active": sum(1 for n in engine.nodes.values() if n.status.value == "active"),
-        "total_dormant": sum(1 for n in engine.nodes.values() if n.status.value == "dormant"),
+        "total_active": sum(
+            1 for n in engine.nodes.values()
+            if n.status.value == "active" and _briefing_node_visible(n)
+        ),
+        "total_dormant": sum(
+            1 for n in engine.nodes.values()
+            if n.status.value == "dormant" and _briefing_node_visible(n)
+        ),
     }
 
 

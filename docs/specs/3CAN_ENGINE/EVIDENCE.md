@@ -187,9 +187,11 @@ content-addressed 结果票据，旧的私有派生 fixture 也已移除。因�
 
 发布包现在附带 `benchmark/substrate_bench_v1.json` 的 10-case
 **synthetic_public** fixture，只引用 `seed_nodes.py` 创建的通用节点。
-它可用于 clean-clone 实验，但尚无 v0.2 结果票据。未产出冻结环境与
-原始 receipt 前，不声明“多 agent 协作有效 / 错误不重犯 / 跨 session
-稳定”。
+当前候选已在 fresh seed/development profile 上记录内容寻址结果票据：
+[`SEED_GRAPH_BENCHMARK_20260809.json`](../../evidence/SEED_GRAPH_BENCHMARK_20260809.json)
+报告 10 cases、top-1 `1.0`、mean top-3 recall `0.8167`。它只证明公开
+synthetic fixture 可复现，不证明私有生产图、多 agent 协作、错误不重犯
+或跨 session 稳定，也不替代 20+ case 的发布门槛。
 
 ## 6. L3 Governance/Harness — 历史 denial pilot，当前未验收
 

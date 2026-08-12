@@ -95,6 +95,11 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/RoutingResponseFull'
                   - $ref: '#/components/schemas/RoutingResponseSlim'
+        '413':
+          description: >
+            The response budget cannot carry mandatory route references or the
+            compact project reality / Owner Intent projection; no required
+            steering metadata is silently dropped.
 
   /api/route/simple:
     get:
@@ -445,8 +450,23 @@ paths:
     get:
       tags: [agents]
       summary: 冷启动 briefing (新 session 拉全局)
+      parameters:
+        - { name: agent_id, in: query, schema: { type: string, default: unknown } }
+        - { name: max_nodes, in: query, schema: { type: integer, default: 6 } }
+        - { name: role, in: query, schema: { type: string, nullable: true } }
+        - name: project_id
+          in: query
+          schema: { type: string, nullable: true }
+          description: Supply together with project_namespace for project-scoped briefing.
+        - name: project_namespace
+          in: query
+          schema: { type: string, nullable: true }
+          description: Supply together with project_id for project-scoped briefing.
       responses:
-        '200': { description: Bounded session briefing. }
+        '200':
+          description: >
+            Bounded session briefing. A project-scoped briefing omits unbound
+            agent activity and ranks applicable ErrorKnowledge before its cap.
 
   /api/activity:
     get:
@@ -568,6 +588,18 @@ components:
           description: Must be supplied together with project_id, or both omitted.
         workspace_id: { type: string, nullable: true }
         workorder_id: { type: string, nullable: true }
+        owner_intent:
+          allOf:
+            - $ref: '#/components/schemas/OwnerIntentProjection'
+          nullable: true
+          description: >
+            Compact project-bound 3CAN.md defaults. The full Markdown body and
+            absolute source path are forbidden; project identity must exactly
+            match this request. Current explicit Owner instructions may override
+            governable defaults, never evidence truth or hard gates. A
+            caller-supplied projection is a client assertion, not authentication;
+            response route_meta states whether the source was server_local_file
+            or client_asserted.
         mode: { type: string, enum: [skeleton, slim, full], default: slim }
         budget_tokens: { type: integer, nullable: true }
         confirm_low_confidence:
@@ -578,6 +610,43 @@ components:
           type: boolean
           default: false
           description: Friendly alias for confirm_low_confidence.
+
+    OwnerIntentProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - status
+        - source
+        - digest
+        - project_id
+        - project_namespace
+        - defaults
+        - precedence
+        - hard_gates_unchanged
+      properties:
+        schema: { type: string, enum: [3can.owner-intent/v1] }
+        status: { type: string, enum: [applied] }
+        source: { type: string, enum: [3CAN.md] }
+        digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        project_id: { type: string }
+        project_namespace: { type: string }
+        defaults:
+          type: object
+          additionalProperties: false
+          required: [caution, autonomy, external_changes, context, history, review, writeback]
+          properties:
+            caution: { type: string, enum: [strict, balanced, pragmatic] }
+            autonomy: { type: string, enum: [guided, bounded, high] }
+            external_changes: { type: string, enum: [confirm, reversible, deny] }
+            context: { type: string, enum: [compact, standard, full] }
+            history: { type: string, enum: [minimal, applicable, explicit_only] }
+            review: { type: string, enum: [risk_based, always, owner_requested] }
+            writeback: { type: string, enum: [meaningful_only, durable_only, owner_confirmed] }
+        precedence:
+          type: string
+          enum: [current_explicit_owner_instruction_over_default]
+        hard_gates_unchanged: { type: boolean, enum: [true] }
 
     RouteTicketRequest:
       type: object

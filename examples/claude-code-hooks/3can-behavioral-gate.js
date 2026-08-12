@@ -26,7 +26,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const ENGINE_URL = 'http://localhost:9700';
+const ENGINE_URL = process.env.THREECAN_URL || process.env.THREECAN_BASE_URL || 'http://127.0.0.1:9700';
 const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-chat';
 const HOOK_TIMEOUT = 8000;
@@ -35,6 +35,7 @@ const TICKET_TIMEOUT = 3000;
 
 // ─── 拦截目标工具 ───
 const INTERCEPT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+const CURL_MUTATION = /\bcurl\s+.*(-X\s*)?(POST|PUT|DELETE|PATCH)\b/i;
 
 // Bash 危险子命令 (仅这些需要 ticket; ls/cat/grep/find/echo 不需要)
 const BASH_HIGH_RISK = [
@@ -44,10 +45,37 @@ const BASH_HIGH_RISK = [
   /\bnpm\s+(install|uninstall|publish)/,
   /\bpip\s+(install|uninstall)/,
   /\bdocker\s+(rm|rmi|system\s+prune)/,
-  /\bcurl\s+.*(-X\s*)?(POST|PUT|DELETE|PATCH)/i,
+  CURL_MUTATION,
   />\s*[\w./-]+/,                      // redirect overwrite
   /\bmv\s+|\bcp\s+-[rf]|\bchmod\b|\bchown\b/,
 ];
+
+// These safety boundaries do not depend on 3CAN availability.
+const OFFLINE_HARD_DENY = [
+  /\brm\s+(-rf?|-fr?)\b/,
+  /\bgit\s+(push|reset\s+--hard|branch\s+-[Dd])/,
+  /\bnpm\s+publish\b/,
+  /\bdocker\s+(rm|rmi|system\s+prune)/,
+  /\b(chmod|chown)\b/,
+];
+
+// Offline local UAT is the only curl mutation exception. Accept one canonical
+// command shape; flags, payloads, redirects, config files, and shell syntax
+// remain denied rather than growing a second URL/shell policy engine.
+function isOfflineLoopbackUatCurl(command) {
+  const match = /^\s*curl\s+(?:-X|--request)\s+(?:POST|PUT|DELETE|PATCH)\s+(https?:\/\/[^\s'\";&|`$()<>]+)\s*$/i.exec(command);
+  if (!match) return false;
+  try {
+    const target = new URL(match[1]);
+    const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
+    const port = Number(target.port);
+    return loopback.has(target.hostname.toLowerCase())
+      && Number.isInteger(port) && port >= 1024 && port <= 65535
+      && port !== 9700 && port !== 17890;
+  } catch {
+    return false;
+  }
+}
 
 // Gate 日志 — 每次判决追加 (S66g 审计用)
 const GATE_LOG = require('path').join(
@@ -428,51 +456,27 @@ async function main() {
   const toolInput = input.tool_input || input.toolInput || {};
   const agentId = input.agent_id || input.agentId || input.session_id || 'unknown';
 
-  // ── Stage 0: optional engine liveness gate ──
-  // Projects that opt in may deny selected mutations while the bound graph is
-  // offline. The whitelist is diagnostic/supervisor-only; the hook is not a
-  // second runtime process owner.
-  const ENGINE_BOOTSTRAP_OK = [
-    /\bnetstat\b/i,
-    /\btasklist\b/i,
-    /curl.*(localhost|127\.0\.0\.1):9700/i,
-    /verify_project\.py/i,
-    /codex-3can.*ensure-online/i,
-    /schtasks(?:\.exe)?.*\/Run.*3CAN Production Runtime Supervisor/i,
-    /3can-gate-bootstrap/,
-    /mkdir.*\.claude[\/\\]logs/i,
-    /engine_liveness/i,
-  ];
+  // ── Stage 0: runtime availability projection ──
+  // An ordinary project session never owns the production runtime lifecycle.
+  // Offline 3CAN postpones route/ticket/writeback, not local Git or coding.
   const _liveness = await httpGet('/api/stats');
   const _engineOnline = _liveness.ok && _liveness.data && (_liveness.data.total_nodes || 0) > 0;
   if (!_engineOnline) {
     if (toolName === 'Bash') {
       const _cmd = (toolInput.command || '');
-      const _isBootstrap = ENGINE_BOOTSTRAP_OK.some((p) => p.test(_cmd));
-      if (_isBootstrap) {
-        appendGateLog({ ts: new Date().toISOString(), stage: 'engine-offline', decision: 'allow',
-          tool: 'Bash', reason: 'bootstrap_whitelist', target: _cmd.slice(0, 120), agent_id: agentId });
-        clearTimeout(hardTimeout); process.exit(0);
+      const _curlMutationDenied = CURL_MUTATION.test(_cmd) && !isOfflineLoopbackUatCurl(_cmd);
+      if (_curlMutationDenied || OFFLINE_HARD_DENY.some((p) => p.test(_cmd))) {
+        appendGateLog({ ts: new Date().toISOString(), stage: 'runtime-unavailable', decision: 'deny',
+          tool: 'Bash', reason: 'independent_safety_gate', target: _cmd.slice(0, 120), agent_id: agentId });
+        clearTimeout(hardTimeout);
+        emit({ decision: 'deny', reason: 'independent safety gate: destructive or external mutation',
+          context: '3CAN 离线不会放宽破坏性、外部写入或生产门禁。' });
+        return;
       }
-      const _isHighRisk = BASH_HIGH_RISK.some((p) => p.test(_cmd));
-      if (!_isHighRisk) { clearTimeout(hardTimeout); process.exit(0); }
-      appendGateLog({ ts: new Date().toISOString(), stage: 'engine-offline', decision: 'deny',
-        tool: 'Bash', reason: 'engine_offline_high_risk', target: _cmd.slice(0, 120), agent_id: agentId });
-      clearTimeout(hardTimeout);
-      emit({ decision: 'deny', reason: 'engine_offline: 3CAN 9700 离线, 禁止高危 Bash',
-        context: '先启动引擎: cd neural-memory && python backend/app.py --port 9700. 诊断类 Bash (ls/cat/grep/netstat) 允许, 高危 (rm -rf/git push/pip install) 拒绝.' });
-      return;
     }
-    if (INTERCEPT_TOOLS.has(toolName)) {
-      appendGateLog({ ts: new Date().toISOString(), stage: 'engine-offline', decision: 'deny',
-        tool: toolName, reason: 'engine_offline_mutating',
-        target: extractTargetFile(toolName, toolInput), agent_id: agentId });
-      clearTimeout(hardTimeout);
-      emit({ decision: 'deny', reason: 'engine_offline: 3CAN 9700 离线, 禁止 mutating 工具',
-        context: '先启引擎 (01-core.md §0). 改 gate/engine 本身: touch ~/.claude/logs/3can-gate-bootstrap (用完立即 rm).' });
-      return;
-    }
-    // Read/Grep/Glob 等非拦截工具: 放行 (诊断需要)
+    appendGateLog({ ts: new Date().toISOString(), stage: 'runtime-unavailable', decision: 'allow',
+      tool: toolName, reason: 'runtime_unavailable_local_work_continues',
+      target: extractTargetFile(toolName, toolInput), agent_id: agentId });
     clearTimeout(hardTimeout); process.exit(0);
   }
 

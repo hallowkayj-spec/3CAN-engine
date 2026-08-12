@@ -3,24 +3,28 @@
 Status: `VERIFIED_CANDIDATE`
 
 This receipt covers candidate engine commit
-`b5abff7eaba5955a2928ea612d8f73e572fed78a`. It does not claim that a private
-production installation has deployed this candidate; see
+`8cef3c4ba36c833341cd423b0626aff4f4d75e32`, public client/verifier repair
+`a366f14209aa474b0e3d4f1171fe2b42ecd66846`, two-dimensional verifier closure
+`452c1042c14974606533e0451984a6e42857fdec`, and refreshed benchmark and
+clean-clone source commit `8050d4cae4688701942e52be70845e7ff3dcdce5`.
+It does not claim that a private production installation has deployed this candidate; see
 [`CURRENT_PRODUCTION.md`](CURRENT_PRODUCTION.md).
 
 ## Gates
 
 | Gate | Command or evidence | Result |
 | --- | --- | --- |
-| Full release tests | `python -m pytest neural-memory/tests -q` | 411 passed |
-| Focused project identity tests | `test_route_feedback_hardening.py` | 72 passed |
+| Full release tests | `python -m pytest neural-memory/tests -q` | 430 passed |
+| Owner Intent and applicable-reality tests | `test_owner_intent.py` plus focused routing/release suites | passed |
 | Public Python lint | Ruff `0.15.7`: `python -m ruff check neural-memory examples scripts` | clean |
 | Release isolation | `python scripts/prerelease_scan.py --strict .` | clean |
-| Syntax compilation | in-memory `compile()` over tracked Python | 80 files |
+| Syntax compilation | in-memory `compile()` over tracked Python | 82 files |
 | JSON / YAML / OpenAPI parse | tracked JSON plus release CI/protocol YAML | clean |
 | Seed-graph benchmark | `SEED_GRAPH_BENCHMARK_20260809.json` | verified candidate |
-| Immutable candidate | release `b0cd0601...`, 23-file manifest `4c98f50d...` | strict pre/post-UAT verification passed |
-| Isolated real-graph UAT | copied graph on `9701` | paired identity route passed; partial identity returned 422; listener removed |
+| Immutable candidate | release `03cf214a...`, 24-file manifest `ab5fa950...` | builder, bootstrap, handoff, finalizer, negative dependency, and post-UAT verification passed |
+| Isolated real-graph UAT | copied 5432-node / 6920-edge graph on `9701` | BGE-M3 5432x1024; Owner Intent `server_local_file`; compact default produced skeleton; partial identity returned 422; listener removed |
 | Private real-graph regression | frozen copied graph, original 12 + 12 held-out, four warm repeats | deterministic; correctness unchanged |
+| Clean-clone public RC | fresh clone at `8050d4c`, fresh `requirements-min.txt` venv, new seed graph/project on `9701` | non-equal project/namespace scope plus project-only and namespace-only mismatch fixtures, start, readiness, route, exact read, writeback, ErrorKnowledge, project isolation, project kit, and clean stop passed |
 | Bounded secret/private-path scan | candidate diff only | clean |
 | GitHub-hosted CI | final Draft PR head | required; GitHub is the live status owner |
 
@@ -46,44 +50,54 @@ Python or Setuptools upgrade.
   surface or a second state machine.
 - Project-scoped current retrieval orders exact project, explicit shared/global,
   unscoped fallback, then excludes explicit mismatch.
+- One root `3CAN.md` supplies seven bounded project steering defaults. The
+  server-local file overrides an unverifiable client assertion; neither source
+  is authentication, objective truth, or permission to bypass a hard gate.
+- Applicable project reality is a transient four-field route projection over
+  existing selected nodes and route metadata. It adds no graph store, registry,
+  watcher, daemon, or second lifecycle.
 - Protected durable-current machine writes remain fail-closed: existing
   ErrorKnowledge evidence verifies a resolution but is not claim-bound to an
   arbitrary target node/field/value. Arbitrary valid or invalid pointers do not
   qualify.
+- MCP briefing rejects partial project identity before HTTP dispatch. The
+  generic verifier keeps project ID and namespace distinct; the clean-clone
+  fixture proves each dimension independently with one orthogonal mismatch per
+  dimension instead of relying on coincident names or one combined negative.
 
 ## Real-graph route regression
 
-The comparative 24-case profile below remains bound to predecessor `8fa7242`.
-It was not relabelled as evidence for `b5abff7`. The repaired candidate changes
-only the paired project-identity gate and was revalidated by the full suite,
-focused counterexamples, and isolated `9701` UAT against a copied 5411-node /
-6916-edge graph. Performance comparison for the repaired candidate therefore
-remains `UNAVAILABLE`, rather than inferred from the predecessor run.
+The comparative 24-case profile was rerun from a clean detached clone at
+`8cef3c4` against a copied private graph. Four warm repeats used the pinned
+BGE-M3 revision, offline mode, reranker off, and `PYTHONHASHSEED=0`. Query text
+and graph content remain private; only aggregate results are reported here.
 
 The private queries and graph are excluded from the public package. Aggregate
 receipts bind the same copied graph, BGE-M3 revision, engine file hashes, and
 reranker-off profile.
 
-| Suite | Metric | Parent `380804c` | Candidate `8fa7242` |
-| --- | --- | ---: | ---: |
-| original 12 | Hit@1 / Hit@3 / Hit@5 / Hit@10 | .3333 / .5000 / .7500 / .8333 | unchanged |
-| original 12 | MRR | .4591 | .4591 |
-| original 12 | p50 / p95 | 1901.6 / 4162.7 ms | 2490.2 / 7563.5 ms |
-| held-out 12 | Hit@1 / Hit@3 / Hit@5 / Hit@10 | .2500 / .5833 / .9167 / 1.0000 | unchanged |
-| held-out 12 | MRR | .4882 | .4882 |
-| held-out 12 | p50 / p95 | 1994.5 / 5107.6 ms | 2283.4 / 6148.5 ms |
+| Suite | Hit@1 / Hit@3 / Hit@5 / Hit@10 | MRR | p50 / p95 |
+| --- | ---: | ---: | ---: |
+| original 12 | .3333 / .5000 / .7500 / .8333 | .4591 | 1291.9 / 3108.7 ms |
+| held-out 12 | .2500 / .5833 / .9167 / 1.0000 | .4882 | 1152.9 / 2810.2 ms |
 
-Cross-process ranks and expanded-query hashes were identical with
-`PYTHONHASHSEED=0` and `1`. Request-local reuse reduced superseded-set calls
-from `18.04` to `1.83` per route, superseded work from `60.35` to `5.28`
-ms/route in the first candidate profile and `5.88` ms/route in the final
-profile; current-reality allow checks fell from `33.79` to `0.05` ms/route.
-The final seed-0 process spent `2128.33` ms/route in BGE encoding versus
-`1266.41` ms/route in the parent process, so its end-to-end p50/p95 regressed.
-The final seed-1 process produced the same ranks and expansion hashes with
-original p50/p95 `1485.2/3974.2` ms and held-out `1406.4/3188.9` ms. This wide
-process variance is reported as observed, not attributed to the request-local
-change and not called a universal performance improvement.
+Ranks, metrics, and expanded-query hashes matched the frozen pre-change
+baselines. Per route, current-policy, traversal, and core-memory stages each ran
+once. Superseded-set work averaged `1.833` calls and current-applicability checks
+averaged `10` calls. Wall-clock figures are machine observations, not a
+cross-machine latency guarantee or a claim that Owner Intent improves model
+quality.
+
+The first 9701 attempt failed only because its test harness carried the path
+identity of an earlier content-addressed candidate. It stopped cleanly, left
+production unchanged, and caused no code change. The corrected immutable-path
+expectation then passed the full UAT. Both receipts remain in the private task
+audit chain.
+
+The immutable 24-file runtime contains the engine surface frozen at `8cef3c4`.
+The later MCP client and generic verifier repair does not alter that runtime
+closure; it is instead covered by the full public test suite, refreshed seed
+receipt, and fresh clean-clone acceptance at `8050d4c`.
 
 ## Review
 

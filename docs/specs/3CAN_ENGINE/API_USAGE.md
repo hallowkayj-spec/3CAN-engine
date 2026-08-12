@@ -103,7 +103,9 @@ requests.post("/api/route", json={
 | `task` | str | — | 中文/英文自然语言 query |
 | `max_nodes` | int | 10 | 日常 3-6; benchmark 8-15 |
 | `agent_id` | str | "unknown" | 每个 agent 起独立 id, 便于 activity_log 追溯 |
-| `mode` | str | "slim" | 见上表 |
+| `project_id` + `project_namespace` | str pair | None | project-scoped route 必须成对提供 |
+| `owner_intent` | object | None | project kit 从同根 `3CAN.md` 生成的 compact project-bound Owner assertion；不要手填正文/路径，也不要当作认证或事实证明 |
+| `mode` | str | "slim" | 见上表；未显式提供时，backend 可按有效 `context` default 选择 skeleton/slim/full，显式 mode 始终优先 |
 | `budget_tokens` | int | None | 400-1200 常见; 0 / 不传 = 不限 |
 | `include_edges` | bool | True | 禁用可稍省 token |
 
@@ -112,6 +114,9 @@ requests.post("/api/route", json={
 - `fallback_hint`: 低置信时给具体建议
 - `scores`: 各节点的 RRF 融合分 (仅供参考, 不作判断依据)
 - `budget_truncated`: `true` 时意味着 top-K 被截, 可能漏关键节点
+- `route_meta.owner_defaults`: 七个 governable Owner defaults + digest + `assertion_origin`；`client_asserted` 不是认证，当前明确 Owner 指令只在当前 task 内优先
+- `route_meta.applicable_project_reality`: 已选 current/constraint/experience IDs 与 external-verification flag；selected 不等于 verified/trusted，也不是新数据库
+- project-scoped route 若预算装不下上述 compact projection，会明确返回 `413 route_budget_too_small_for_project_reality`，不会静默丢失治理上下文
 
 ### GET /api/route/simple (curl / 中文 query 友好)
 
@@ -233,10 +238,13 @@ requests.post("/api/skills/invoke", json={
 
 ### GET /api/briefing
 
-**新 session 冷启动专用**。返回一个压缩 briefing, agent 一次拿到:
+**新 session 冷启动专用**。project-scoped 调用成对传
+`project_id`/`project_namespace`，避免显式跨项目节点进入简报。返回一个压缩
+briefing, agent 一次拿到:
 - 最活跃 5 agents + 任务
 - 最近 5 活动
 - 最近 7 天 ERR 警示 top 3
+- 同项目 `3CAN.md` 的 compact Owner defaults（若存在）
 
 比 agent 自己 4-5 次 route 查省 80% token。Claude Code `SessionStart` hook 自动调这个。
 

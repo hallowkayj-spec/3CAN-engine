@@ -71,6 +71,32 @@ Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 
 - 历史 ErrorKnowledge 继续通过 explicit-error intent 精确召回，不进入普通
   current route 或 hot-topology 权重。
 
+## 2.3 Owner Intent 与 Applicable Project Reality
+
+项目根的唯一 `3CAN.md` 是 Owner 的人类可编辑工作默认值，不是事实数据库、
+安全边界或第二套 instruction hierarchy。它与同根 `.agents/project.json` 的
+project ID/namespace 精确绑定；project kit 或 project-owned sidecar 只向 route /
+briefing 投影七个有效默认值、文件 digest、precedence 与
+`hard_gates_unchanged=true`，不传 Markdown 正文或绝对路径。服务端本地读取标为
+`server_local_file`；shared-authority 客户端投影标为 `client_asserted`，它是 Owner
+preference 的审计声明，不是认证、objective truth 或安全边界。
+
+当前明确 Owner 指令可在单个任务内覆盖 governable default。该优先级不适用于
+evidence truth、project/tenant/credential/writer isolation、不可逆 external change、
+destructive production 或 durable-current provenance gate。ErrorKnowledge 另行区分：
+exact unresolved repeated failure 阻止不变的 blind Agent retry；相关历史 case 只作
+advisory。当前不存在 scoped Owner retry override，明确 Owner 决定也不会擦除 case；
+真正 safety boundary 仍不可绕过。普通 project-scoped route 同样排除显式 mismatch，
+不要求查询先出现 `current` 关键词。
+
+`applicable_project_reality` 只是 route 已选结果的 request-local 小投影：selected
+current/constraint/experience node IDs 与 external-verification flag。它不把 selected
+候选伪称为 trusted truth，也不重复 project scope、Owner defaults、静态 authority
+或 checkpoint 文本；这些信息已经由相邻 route metadata 和真实 authority 承担。
+它没有独立数据库、节点类型、后台任务、LLM 调用或持久化 owner。Git 继续拥有
+HEAD/commit/branch/tree/diff/PR；3CAN 只在 meaningful module/interface/decision/
+rollback/release 边界记录工程含义，不镜像每个 commit。
+
 ## 3. 节点状态机
 
 ```
@@ -242,6 +268,17 @@ embedding 对齐与 deep readiness 决定，并且是 `production_ready` 的唯�
 archive、ordinary hot nodes、durable-current candidates、SES/HO 与 hot/history
 relations。它的 semantic quality 在有固定 gold 的真实查询基准完成前保持
 `validating`，不是生产 hard gate，也不能用节点数量冒充项目理解质量。
+
+## 8.2 Runtime Ownership Boundary
+
+机器级 production 9700 只有一个 lifecycle owner：受管的 Supervisor/operator。
+普通 Worktree、Agent、wrapper 与 hook 都只是 client，不得 start、stop、restart、
+replace 或请求恢复 production 9700。不可用时，route、ticket 与 writeback 返回 typed
+`UNAVAILABLE`；本地 Git、编码、构建与离线测试继续，且既有 destructive、credential、
+external、production 与 writer hard gate 不因离线而放宽。
+
+9701/9702 只用于隔离 candidate/UAT，不得作为 production fallback 或成功证明；
+显式 project-local sidecar 使用独立端口（例如 9711）并与机器 production owner 分离。
 
 ## 9. 错误码语义
 

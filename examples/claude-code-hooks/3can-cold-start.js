@@ -3,12 +3,12 @@
  *
  * MCP tools已在mcp.json配好, agent自动可用route/read_node/writeback等。
  * Hook只做: 检测引擎在线 → 注入一句话提示。
- * 离线时回退到curl指令。
+ * 离线时报告 typed unavailable；普通项目任务不拥有 runtime 生命周期。
  */
 
 const http = require('http');
 
-const ENGINE_URL = 'http://localhost:9700';
+const ENGINE_URL = process.env.THREECAN_URL || process.env.THREECAN_BASE_URL || 'http://127.0.0.1:9700';
 const TIMEOUT = 3000;
 
 function httpRequest(method, path) {
@@ -33,23 +33,21 @@ async function main() {
   const stats = await httpRequest('GET', '/api/stats');
 
   if (!stats || !stats.total_nodes) {
-    // 引擎离线 — 可选 gate 只提示诊断和受支持恢复
+    // 引擎离线 — 本地工作继续；依赖 3CAN 的步骤延期。
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: [
           '═══════════════════════════════════════════════════════════',
-          '[3CAN OPTIONAL GATE] 引擎离线 (localhost:9700 无响应或空图)',
+          '[3CAN UNAVAILABLE] 运行时无响应或空图',
           '═══════════════════════════════════════════════════════════',
           '',
-          '暂停依赖 3CAN 记忆的 mutation，并保存当前上下文。',
-          '  1) 只读诊断: netstat/tasklist/curl + 项目 verify_project.py',
-          '  2) 使用项目支持的 service manager / Supervisor 请求恢复',
-          '  3) 不要由 hook/wrapper 直接启动、终止或替换进程',
-          '  4) 按项目 profile 验证 typed readiness，不使用统一节点阈值',
+          '本地 Git、编码、构建和离线测试可以继续。',
+          'route / ticket / writeback 暂记为 UNAVAILABLE，恢复后再执行。',
+          '生产 runtime 只能由机器级 operator / Supervisor 恢复；',
+          '普通 hook、wrapper 和 Workorder 不得启动、终止或替换 9700。',
           '',
-          '如果项目启用了 PreToolUse behavioral-gate，它会按项目配置',
-          '暂停相应 mutating 工具；3CAN 引擎本身不依赖该 hook。',
+          '破坏性、外部写入、凭据和生产门禁不因 3CAN 离线而放宽。',
         ].join('\n'),
       },
     }));

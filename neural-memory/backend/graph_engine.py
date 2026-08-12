@@ -2850,6 +2850,7 @@ class GraphEngine:
     ) -> dict[str, Any]:
         requested_project = str(policy.get("project_id") or "").casefold()
         requested_namespace = str(policy.get("project_namespace") or "").casefold()
+        project_scoped = bool(requested_project and requested_namespace)
         superseded_ids = (
             superseded_ids if superseded_ids is not None else self._superseded_node_ids()
         )
@@ -2876,7 +2877,7 @@ class GraphEngine:
                 excluded_superseded.append(node_id)
                 rrf_scores.pop(node_id, None)
                 continue
-            if not policy.get("enabled"):
+            if not policy.get("enabled") and not project_scoped:
                 continue
 
             applicability = self._project_applicability(
@@ -2885,9 +2886,11 @@ class GraphEngine:
                 project_namespace=requested_namespace,
             )
             applicability_counts[applicability] += 1
-            if applicability == "mismatch":
+            if project_scoped and applicability == "mismatch":
                 excluded_mismatch.append(node_id)
                 rrf_scores.pop(node_id, None)
+                continue
+            if not policy.get("enabled"):
                 continue
 
             family = semantic_id_family(node_id)
@@ -2985,15 +2988,15 @@ class GraphEngine:
             and not policy.get("historical_requested")
         ):
             return False
-        if not policy.get("enabled"):
-            return True
         requested_project = str(policy.get("project_id") or "").casefold()
         requested_namespace = str(policy.get("project_namespace") or "").casefold()
-        return self._project_applicability(
+        if requested_project and requested_namespace and self._project_applicability(
             node,
             project_id=requested_project,
             project_namespace=requested_namespace,
-        ) != "mismatch"
+        ) == "mismatch":
+            return False
+        return True
 
     def _core_node_topics(self, node_id: str, node: Node | None) -> set[str]:
         if node_id in self._CORE_NODE_TOPIC_HINTS:

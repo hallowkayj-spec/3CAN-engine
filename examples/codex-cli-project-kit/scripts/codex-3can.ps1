@@ -57,8 +57,6 @@ param(
     [int]$MaxNodes = 6,
     [int]$BudgetTokens = 800,
     [switch]$SkipTicket,
-    [switch]$StartIfOffline,
-    [double]$WaitSeconds = 25,
     [string]$BaseUrl = 'http://127.0.0.1:9700',
     [string]$EngineRoot,
     [double]$SinceHours = 72.0,
@@ -310,8 +308,6 @@ switch ($Action) {
         $sessionArgs = @(
             '--base-url', $BaseUrl,
             'session-start',
-            '--start-if-offline',
-            '--wait-seconds', "$WaitSeconds",
             '--agent-id', $AgentId,
             '--name', 'Codex CLI',
             '--role', $Role,
@@ -351,11 +347,7 @@ switch ($Action) {
     }
 
     'start' {
-        if ($StartIfOffline) {
-            & $Wrapper start -AgentId $AgentId -Role $Role -Task $Task -MaxNodes $MaxNodes -StartIfOffline -WaitSeconds $WaitSeconds -BaseUrl $BaseUrl
-        } else {
-            & $Wrapper start -AgentId $AgentId -Role $Role -Task $Task -MaxNodes $MaxNodes -BaseUrl $BaseUrl
-        }
+        & $Wrapper start -AgentId $AgentId -Role $Role -Task $Task -MaxNodes $MaxNodes -BaseUrl $BaseUrl
     }
 
     'route' {

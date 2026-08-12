@@ -61,6 +61,24 @@ A local HTTP service (`localhost:9700`) that agents query to:
 
 Not a chat-memory tool, not an autonomous agent runtime, not an IDE replacement.
 
+## One project steering file
+
+Each project may keep one root `3CAN.md`. Its small flat front matter describes
+Owner working defaults such as caution, autonomy, external-change confirmation,
+context size, history, review, and meaningful writeback. The project kit binds
+the file to `.agents/project.json`, caches it by file stat, and sends only a
+compact digest-backed projection to route/briefing. The Markdown body, local
+path, and unrelated project defaults are never injected.
+
+Shared-authority projections are typed as `client_asserted`; only a file read
+by the serving process is `server_local_file`. Owner defaults are preferences,
+not authentication or objective evidence.
+
+Current explicit Owner instructions take precedence only for governable task
+preferences. Git/CI/Runtime/Provider/Evidence truth, project isolation,
+credentials, destructive-production protections, and durable provenance remain
+hard boundaries. `3CAN.md` is not a policy engine or a second state database.
+
 ## Quickstart
 
 ```bash
@@ -68,14 +86,18 @@ git clone https://github.com/hallowkayj-spec/3CAN-engine.git
 cd 3CAN-engine
 bash install.sh
 export THREECAN_READINESS_MODE=development
-python neural-memory/backend/app.py --port 9700 --host 127.0.0.1 &
-curl http://127.0.0.1:9700/api/stats
+export THREECAN_PORT=9711
+python neural-memory/backend/app.py --port "$THREECAN_PORT" --host 127.0.0.1 &
+curl "http://127.0.0.1:$THREECAN_PORT/api/stats"
 
 # Fresh-graph verification (the generic seed graph starts small)
 python scripts/verify_project.py \
-  --base-url http://127.0.0.1:9700 \
+  --base-url "http://127.0.0.1:$THREECAN_PORT" \
   --min-nodes 10
 ```
+
+Port 9711 is an explicit project-local development sidecar. Ordinary project
+clients do not start, stop, or recover a machine-owned production 9700.
 
 The verifier performs liveness, deep stats/readiness, route, and token-health
 checks. Development readiness is accepted for a fresh local graph; use

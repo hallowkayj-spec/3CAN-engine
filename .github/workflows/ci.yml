@@ -28,7 +28,7 @@ jobs:
         run: python -m py_compile $(git ls-files '*.py')
 
   smoke-test:
-    name: Release isolation + backend smoke
+    name: Release isolation + tests
     runs-on: ubuntu-latest
     needs: lint-and-syntax
     steps:
@@ -49,52 +49,111 @@ jobs:
       - name: Error lifecycle and release tests
         run: python -m pytest neural-memory/tests -q
 
-      - name: Cold-start backend + stats + route smoke
-        run: |
-          export THREECAN_GRAPH_DIR="$RUNNER_TEMP/3can-graph"
-          export THREECAN_PROJECT_DIR="$RUNNER_TEMP/3can-project"
-          export THREECAN_BASE_URL="http://127.0.0.1:9701"
-          export THREECAN_MIN_NODES="10"
-          export THREECAN_READINESS_MODE="development"
-          export THREECAN_TOKEN_AUTO_IMPORT="0"
-          mkdir -p "$THREECAN_PROJECT_DIR"
-          python neural-memory/backend/seed_nodes.py
-          python neural-memory/backend/app.py --port 9701 --host 127.0.0.1 &
-          BACKEND_PID=$!
-          for i in $(seq 1 30); do
-            if curl -s --fail http://127.0.0.1:9701/api/stats > /dev/null 2>&1; then
-              echo "Backend up after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          curl -s --fail http://127.0.0.1:9701/api/stats | python -c "import sys, json; d=json.load(sys.stdin); assert d['total_nodes'] >= 10; print(f'OK stats: {d}')"
-          python scripts/verify_project.py --base-url http://127.0.0.1:9701 --min-nodes 10
-          python - <<'PY'
-          import json
-          import urllib.request
 
-          payload = {
-              "task": "quickstart route api bootstrap standing orders token usage",
-              "max_nodes": 4,
-              "mode": "skeleton",
-              "budget_tokens": 400,
-              "agent_id": "ci-smoke",
-              "confirm_low_confidence": True,
-              "allow_degraded": True,
+  clean-clone-acceptance:
+    name: Clean clone (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: lint-and-syntax
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal runtime
+        run: pip install -r requirements-min.txt
+
+      - name: Cold-start, exercise, and stop isolated 9701
+        shell: pwsh
+        env:
+          THREECAN_BASE_URL: http://127.0.0.1:9701
+          THREECAN_MIN_NODES: "10"
+          THREECAN_READINESS_MODE: development
+          THREECAN_EMBEDDING_BACKEND: hashing
+          THREECAN_EMBEDDING_FALLBACK: hashing
+          THREECAN_RERANKER_MODE: "off"
+          THREECAN_TOKEN_AUTO_IMPORT: "0"
+          THREECAN_ALLOW_UNTICKETED_ERROR_OCCURRENCES: "1"
+          THREECAN_GRAPH_DIR: ${{ runner.temp }}/3can-graph
+          THREECAN_PROJECT_DIR: ${{ runner.temp }}/public-rc-project
+          THREECAN_ENGINE_ROOT: ${{ github.workspace }}/neural-memory
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONIOENCODING: utf-8
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item -Recurse -LiteralPath 'examples/codex-cli-project-kit' -Destination $env:THREECAN_PROJECT_DIR
+          Copy-Item -LiteralPath '3CAN.md' -Destination (Join-Path $env:THREECAN_PROJECT_DIR '3CAN.md')
+          Move-Item -LiteralPath (Join-Path $env:THREECAN_PROJECT_DIR '.agents/project.template.json') -Destination (Join-Path $env:THREECAN_PROJECT_DIR '.agents/project.json')
+          $capsulePath = Join-Path $env:THREECAN_PROJECT_DIR '.agents/project.json'
+          $capsule = Get-Content -LiteralPath $capsulePath -Raw | ConvertFrom-Json
+          $capsule.project_id = 'public-rc'
+          $capsule.project_namespace = 'public-scope'
+          $capsule.project_name = '3CAN public RC fixture'
+          $capsule.git_repository = 'github.com/public-rc/fixture'
+          $capsule | ConvertTo-Json | Set-Content -LiteralPath $capsulePath -Encoding utf8NoBOM
+          git -C $env:THREECAN_PROJECT_DIR init -b public-rc
+          git -C $env:THREECAN_PROJECT_DIR remote add origin https://github.com/public-rc/fixture.git
+          python -B neural-memory/backend/seed_nodes.py
+
+          $stdout = Join-Path $env:RUNNER_TEMP '3can-9701.stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP '3can-9701.stderr.log'
+          $python = (Get-Command python).Source
+          $arguments = @('-B', 'neural-memory/backend/app.py', '--port', '9701', '--host', '127.0.0.1')
+          if ($IsWindows) {
+            $backend = Start-Process -FilePath $python -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          } else {
+            $backend = Start-Process -FilePath $python -ArgumentList $arguments -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           }
-          req = urllib.request.Request(
-              "http://127.0.0.1:9701/api/route",
-              data=json.dumps(payload).encode("utf-8"),
-              headers={"Content-Type": "application/json"},
-              method="POST",
-          )
-          with urllib.request.urlopen(req, timeout=20) as resp:
-              data = json.load(resp)
-          assert data.get("nodes"), data
-          print("OK route:", data["nodes"][0]["id"])
-          PY
-          kill $BACKEND_PID || true
+
+          $failure = $null
+          try {
+            $ready = $false
+            foreach ($attempt in 1..60) {
+              try {
+                $stats = Invoke-RestMethod -Uri "$env:THREECAN_BASE_URL/api/stats" -TimeoutSec 2
+                if ($stats.total_nodes -ge 10) {
+                  $ready = $true
+                  break
+                }
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $ready) {
+              throw 'isolated 9701 did not become ready'
+            }
+            python -B scripts/verify_project.py --base-url $env:THREECAN_BASE_URL --min-nodes 10 --project-id public-rc --project-namespace public-scope --exercise-writes
+            if ($LASTEXITCODE -ne 0) {
+              throw 'verify_project failed'
+            }
+            python -B (Join-Path $env:THREECAN_PROJECT_DIR 'scripts/3can_codex.py') --base-url $env:THREECAN_BASE_URL --engine-root $env:THREECAN_ENGINE_ROOT route --agent-id public-rc-project-kit --task 'current public RC project reality' --max-nodes 4 --budget-tokens 1400 --allow-degraded
+            if ($LASTEXITCODE -ne 0) {
+              throw 'project-kit route failed'
+            }
+          } catch {
+            $failure = $_
+          } finally {
+            if ($backend -and -not $backend.HasExited) {
+              Stop-Process -Id $backend.Id
+              Wait-Process -Id $backend.Id -ErrorAction SilentlyContinue
+            }
+          }
+
+          python -c "import socket; s=socket.socket(); s.settimeout(1); code=s.connect_ex(('127.0.0.1', 9701)); s.close(); assert code != 0, code; print('9701 released')"
+          if ($LASTEXITCODE -ne 0) {
+            throw '9701 listener remained after clean-clone acceptance'
+          }
+          if ($failure) {
+            if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout -Tail 80 }
+            if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Tail 80 }
+            throw $failure
+          }
 
   secrets-scan:
     name: Secrets smoke scan

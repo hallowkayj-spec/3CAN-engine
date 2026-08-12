@@ -13,6 +13,8 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 
 STAGING_ROOT = Path(__file__).resolve().parents[2]
 HELPER_PATH = (
@@ -158,6 +160,13 @@ def test_ticket_consume_payload_binds_server_digests_and_agent():
         "target_digest": "target-sha256",
         "scope_digest": "scope-sha256",
     }
+    with pytest.raises(ValueError, match="ticket_agent_id_mismatch"):
+        HELPER._ticket_consume_payload(
+            ticket,
+            agent_id="",
+            tool_name="apply_patch",
+            tool_input_summary="focused edit",
+        )
     for broken, expected in (
         ({"agent_id": "codex-test", "scope_digest": "scope"}, "ticket_target_digest_missing"),
         ({"agent_id": "codex-test", "target_digest": "target"}, "ticket_scope_digest_missing"),
@@ -213,6 +222,7 @@ def test_ticket_consume_fetches_authoritative_digest_snapshot(monkeypatch, capsy
     ]
     assert calls[1][1]["payload"]["target_digest"] == "target-sha256"
     assert calls[1][1]["payload"]["scope_digest"] == "scope-sha256"
+    assert calls[1][1]["payload"]["agent_id"] == "codex-test"
 
 
 def test_verification_evidence_parser_preserves_structured_json():

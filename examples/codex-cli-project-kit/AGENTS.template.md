@@ -20,10 +20,11 @@ A fresh graph uses `THREECAN_READINESS_MODE=development`. Production
 acceptance requires a pinned profile and
 `verify_project.py --require-production-ready`.
 
-The Codex wrapper may check readiness and, on a managed Windows installation,
-request the configured 3CAN Supervisor Scheduled Task. It must never spawn,
-terminate, or replace backend/proxy processes itself. One failed readiness
-probe is evidence to inspect, not permission to restart services.
+The Codex wrapper may check readiness, but it must never request, spawn,
+terminate, restart, or replace the shared production runtime. When 3CAN is
+offline, route, ticket, and writeback are `UNAVAILABLE`; local Git, coding,
+builds, and offline tests continue. Only the machine operator/Supervisor owns
+production 9700 lifecycle. One failed probe is evidence, not restart authority.
 
 ## Ordinary Agent Use
 

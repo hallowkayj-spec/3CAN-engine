@@ -9,8 +9,6 @@ import types
 # Unit and contract tests must never start overlapping native Torch/Transformers
 # loaders. Dedicated warmup tests override this value explicitly.
 os.environ["THREECAN_RERANKER_WARMUP"] = "off"
-
-
 if importlib.util.find_spec("mcp") is None:
     class _TestFastMCP:
         """Decorator-only stand-in for tests that do not start an MCP server."""

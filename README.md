@@ -38,6 +38,9 @@ Core capabilities:
   port, token ledger, and bootstrap profile.
 - **Project kits**: `examples/codex-cli-project-kit/` provides optional Codex
   wrappers, hooks, and a minimal template `AGENTS.md` for new projects.
+- **Owner intent**: one project-root `3CAN.md` provides small, human-editable
+  working defaults. Its compact project-bound projection augments route and
+  briefing; it never replaces Git, CI, Runtime, Evidence, or hard gates.
 - **Release hygiene**: `scripts/prerelease_scan.py --strict` blocks secrets,
   maintainer-local paths, and runtime graph artifacts before publishing.
 
@@ -105,9 +108,11 @@ cannot resolve an ErrorCase. The completion remains `review_required`.
   A verified deep result can be reused while the graph/embedding fingerprint is
   unchanged; the response says whether evidence is `verified`,
   `cached_verified`, `stale_verified`, or `deep_required`.
-- Agent wrappers no longer spawn or terminate backend/proxy processes.
-  An offline Windows installation may request one configured Scheduled Task;
-  otherwise startup remains an explicit operator/service-manager action.
+- Agent wrappers only observe runtime readiness; they never spawn, terminate,
+  or request recovery of the shared production runtime. Offline route, ticket,
+  and writeback become typed `UNAVAILABLE`, while local Git, coding, builds,
+  and offline tests continue. Lifecycle remains an explicit machine
+  operator/service-manager action.
 - Route responses publish `3can.route-response/v1`, retain mandatory and
   temporal metadata during budget compaction, and expose both
   `response_tokens` and the compatibility alias `post_budget_tokens`.
@@ -222,21 +227,33 @@ Codex CLI:
 2. Merge `.gitignore.template` into the target project's `.gitignore`; it
    excludes local tickets, error outboxes, route state, and test receipts.
 3. Rename `AGENTS.template.md` to `AGENTS.md`.
-4. Before any mutation, rename
+4. Copy this repository's root `3CAN.md` to the target project root and edit
+   only its supported flat front matter. It is the single Owner steering file;
+   do not create a policy directory or separate preferences file.
+5. Before any mutation, rename
    `.agents/project.template.json` to `.agents/project.json`, fill the project
    ID/namespace/name, and set `git_repository` to the normalized origin
    (`github.com/owner/repository`). Do not put ports or runtime paths in this
    durable project capsule. This is especially important for a shared 3CAN
    authority or cross-worktree mutation.
-5. Run `python scripts/3can_codex.py doctor` and require
+6. Run `python scripts/3can_codex.py doctor` and require
    `project_identity.status=pass` before requesting a mutation ticket.
-6. Adjust the runtime port and graph path through environment configuration.
-7. If you use the wrapper workflow, bootstrap the session with
+7. Adjust the runtime port and graph path through environment configuration.
+8. If you use the wrapper workflow, bootstrap the session with
    `scripts/codex-3can.cmd bootstrap ...`.
 
 The capsule is optional only for read-only routing. Mutation commands require it
 so the authority can bind the write to a repository and physical Git worktree,
 including when the runtime is a project-owned sidecar.
+
+`3CAN.md` is bound to the same `project_id` and `project_namespace`. The helper
+parses it once and reuses a stat-keyed in-process cache until the file changes.
+Normal requests carry only the seven effective defaults plus a digest—never the
+Markdown body or an absolute path. Explicit current Owner instructions may
+override a governable default for that task; evidence truth and hard safety do
+not become configurable. A shared-authority request is reported as
+`client_asserted`; only a file read by that server is `server_local_file`.
+Neither label is authentication or objective evidence.
 
 Route tickets, prepare/done wrappers, and hooks are optional policy adapters.
 Use them for a specific guarded-write or evidence requirement, not as a
