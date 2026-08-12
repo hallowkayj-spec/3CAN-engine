@@ -1427,7 +1427,19 @@ def _compact_route_meta_for_budget(
 
     if not isinstance(route_meta, dict):
         return {}
-    compact: dict[str, Any] = {"budget_compacted": True}
+    compact: dict[str, Any] = {
+        "budget_compacted": True,
+        **{
+            key: route_meta[key]
+            for key in (
+                "route_id",
+                "session_instance_id",
+                "route_correlation_mode",
+                "execution_context",
+            )
+            if key in route_meta
+        },
+    }
     core = _core_memory_graph(route_meta)
     if core:
         compact["core_memory_graph"] = {
@@ -1654,18 +1666,25 @@ def _enforce_route_response_budget(
         )
         _sync_verified_solution_bundle_delivery(route_meta, kept_ids)
         compact_meta = _compact_route_meta_for_budget(route_meta)
-        required_project_meta = {
+        required_route_meta = {
             key: route_meta[key]
-            for key in ("owner_defaults", "applicable_project_reality")
+            for key in (
+                "route_id",
+                "session_instance_id",
+                "route_correlation_mode",
+                "execution_context",
+                "owner_defaults",
+                "applicable_project_reality",
+            )
             if key in route_meta
         }
-        if required_project_meta:
+        if required_route_meta:
             required_candidate = _payload_with_nodes(
                 base,
                 node_key,
                 selected,
             )
-            required_candidate["route_meta"] = required_project_meta
+            required_candidate["route_meta"] = required_route_meta
             minimum_required = _estimate_json_tokens(required_candidate)
             if minimum_required > budget:
                 raise HTTPException(
@@ -1678,7 +1697,7 @@ def _enforce_route_response_budget(
                         "minimum_budget_tokens": minimum_required,
                     },
                 )
-            base["route_meta"] = required_project_meta
+            base["route_meta"] = required_route_meta
         if compact_meta:
             candidate = _payload_with_nodes(base, node_key, selected)
             candidate["route_meta"] = compact_meta
