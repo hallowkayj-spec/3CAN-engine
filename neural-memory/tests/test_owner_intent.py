@@ -341,6 +341,15 @@ def test_route_budget_never_silently_drops_project_reality():
         "hard_gates_unchanged": True,
     }
     route_meta = {
+        "route_id": "route-project-a",
+        "session_instance_id": "session-project-a",
+        "route_correlation_mode": "session_exact",
+        "execution_context": {
+            "project_id": "project-a",
+            "project_namespace": "project-a",
+            "workspace_id": "git-project-a-worktree",
+            "workorder_id": "wo-project-a",
+        },
         "owner_defaults": owner_defaults,
         "applicable_project_reality": {
             "selected_current_node_ids": ["PRJ-project-a"],
@@ -375,6 +384,12 @@ def test_route_budget_never_silently_drops_project_reality():
     assert result["route_meta"]["owner_defaults"] == owner_defaults
     assert result["route_meta"]["applicable_project_reality"] == (
         route_meta["applicable_project_reality"]
+    )
+    assert result["route_meta"]["route_id"] == "route-project-a"
+    assert result["route_meta"]["session_instance_id"] == "session-project-a"
+    assert result["route_meta"]["route_correlation_mode"] == "session_exact"
+    assert result["route_meta"]["execution_context"] == (
+        route_meta["execution_context"]
     )
 
 

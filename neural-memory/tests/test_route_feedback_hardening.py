@@ -254,6 +254,15 @@ def test_route_budget_limits_the_complete_slim_response():
 def test_budget_compaction_preserves_route_contract_metadata():
     app = load_app()
     compact = app._compact_route_meta_for_budget({
+        "route_id": "route-budget-public",
+        "session_instance_id": "session-budget-public",
+        "route_correlation_mode": "session_exact",
+        "execution_context": {
+            "project_id": "public-project",
+            "project_namespace": "public-project",
+            "workspace_id": "git-public-worktree",
+            "workorder_id": "wo-budget-public",
+        },
         "core_memory_graph": {
             "must_consume_node_ids": ["DOC-a"],
             "selected_must_consume_node_ids": ["DOC-a"],
@@ -276,6 +285,15 @@ def test_budget_compaction_preserves_route_contract_metadata():
     })
 
     core = compact["core_memory_graph"]
+    assert compact["route_id"] == "route-budget-public"
+    assert compact["session_instance_id"] == "session-budget-public"
+    assert compact["route_correlation_mode"] == "session_exact"
+    assert compact["execution_context"] == {
+        "project_id": "public-project",
+        "project_namespace": "public-project",
+        "workspace_id": "git-public-worktree",
+        "workorder_id": "wo-budget-public",
+    }
     assert core["selected_must_consume_node_ids"] == ["DOC-a"]
     assert core["injected_node_ids"] == ["DOC-a"]
     assert compact["temporal_route_policy"] == {
@@ -288,6 +306,79 @@ def test_budget_compaction_preserves_route_contract_metadata():
         "boosted_node_count": 2,
         "penalized_node_count": 1,
     }
+
+
+def test_route_budget_preserves_client_identity_in_compacted_response():
+    app = load_app()
+    execution_context = {
+        "project_id": "public-project",
+        "project_namespace": "public-project",
+        "workspace_id": "git-public-worktree",
+        "workorder_id": "wo-budget-public",
+    }
+    result, truncated = app._enforce_route_response_budget(
+        {
+            "mode": "skeleton",
+            "nodes": [{"id": "DOC-a", "summary": "current project fact"}],
+            "scores": {"DOC-a": 1.0},
+            "route_meta": {
+                "route_id": "route-budget-public",
+                "session_instance_id": "session-budget-public",
+                "route_correlation_mode": "session_exact",
+                "execution_context": execution_context,
+                "large_internal_trace": "x" * 8000,
+            },
+            "large_debug_payload": "d" * 8000,
+        },
+        900,
+        node_key="nodes",
+    )
+
+    assert truncated is True
+    assert app._estimate_json_tokens(result) <= 900
+    assert result["route_meta"]["budget_compacted"] is True
+    assert result["route_meta"]["route_id"] == "route-budget-public"
+    assert result["route_meta"]["session_instance_id"] == (
+        "session-budget-public"
+    )
+    assert result["route_meta"]["route_correlation_mode"] == "session_exact"
+    assert result["route_meta"]["execution_context"] == execution_context
+
+
+def test_route_budget_rejects_dropping_identity_only_metadata():
+    app = load_app()
+    identity_meta = {
+        "route_id": "route-budget-public",
+        "session_instance_id": "session-budget-public",
+        "route_correlation_mode": "session_exact",
+        "execution_context": {
+            "project_id": "public-project",
+            "project_namespace": "public-project",
+            "workspace_id": "git-public-worktree",
+            "workorder_id": "wo-budget-public",
+        },
+    }
+    base_without_identity = {
+        "mode": "skeleton",
+        "nodes": [],
+        "scores": {},
+    }
+    budget = app._estimate_json_tokens(base_without_identity) + 5
+
+    with pytest.raises(app.HTTPException) as rejected:
+        app._enforce_route_response_budget(
+            {
+                **base_without_identity,
+                "route_meta": identity_meta,
+            },
+            budget,
+            node_key="nodes",
+        )
+
+    assert rejected.value.status_code == 413
+    assert rejected.value.detail["error"] == (
+        "route_budget_too_small_for_project_reality"
+    )
 
 
 def test_route_token_estimate_keeps_compatible_token_names():

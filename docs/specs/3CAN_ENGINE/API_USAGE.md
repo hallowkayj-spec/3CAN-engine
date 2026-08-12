@@ -116,7 +116,7 @@ requests.post("/api/route", json={
 - `budget_truncated`: `true` 时意味着 top-K 被截, 可能漏关键节点
 - `route_meta.owner_defaults`: 七个 governable Owner defaults + digest + `assertion_origin`；`client_asserted` 不是认证，当前明确 Owner 指令只在当前 task 内优先
 - `route_meta.applicable_project_reality`: 已选 current/constraint/experience IDs 与 external-verification flag；selected 不等于 verified/trusted，也不是新数据库
-- project-scoped route 若预算装不下上述 compact projection，会明确返回 `413 route_budget_too_small_for_project_reality`，不会静默丢失治理上下文
+- route 的预算压缩始终保留 `route_id`、`session_instance_id`、相关模式与 execution context；project-scoped route 同时保留上述 compact projection。预算装不下这些必需元数据时会明确返回 `413 route_budget_too_small_for_project_reality`，不会静默丢失相关性、项目或治理上下文
 
 ### GET /api/route/simple (curl / 中文 query 友好)
 
