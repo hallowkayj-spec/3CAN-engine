@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +20,23 @@ from urllib.request import Request, urlopen
 
 
 SCHEMA = "3can.milestone-recovery-probe/v1"
+_DIGEST = re.compile(r"^(?:sha256:)?([0-9a-f]{64})$", re.IGNORECASE)
+_NON_DISCRIMINATIVE_FACTS = frozenset(
+    {
+        "active",
+        "current",
+        "done",
+        "latest",
+        "pass",
+        "passed",
+        "success",
+        "true",
+        "verified",
+        "当前",
+        "成功",
+        "已验证",
+    }
+)
 
 
 def _trusted_leaf_values(value: Any) -> list[str]:
@@ -44,9 +62,22 @@ def _fact_matches_leaf(alternative: str, leaf: str) -> bool:
     actual = leaf.strip().casefold()
     if len(expected) < 3 or not actual:
         return False
-    hex_chars = set("0123456789abcdef")
-    if len(actual) == 64 and set(actual) <= hex_chars and set(expected) <= hex_chars:
-        return expected == actual
+    expected_digest = _DIGEST.fullmatch(expected)
+    actual_digest = _DIGEST.fullmatch(actual)
+    if expected_digest or actual_digest:
+        return bool(
+            expected_digest
+            and actual_digest
+            and expected_digest.group(1).casefold() == actual_digest.group(1).casefold()
+        )
+    if expected.isascii():
+        return bool(
+            re.search(
+                rf"(?<![\w]){re.escape(expected)}(?![\w])",
+                actual,
+                flags=re.IGNORECASE,
+            )
+        )
     return expected in actual
 
 
@@ -104,6 +135,11 @@ def _validate_fact_specs(
             for item in alternatives
         ):
             raise ValueError(f"probe_fact_alternative_invalid:{fact_id}")
+        if any(
+            item.strip().casefold() in _NON_DISCRIMINATIVE_FACTS
+            for item in alternatives
+        ):
+            raise ValueError(f"probe_fact_alternative_not_discriminative:{fact_id}")
 
 
 def _fact_results(

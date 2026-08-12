@@ -10,7 +10,7 @@ import re
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 _WINDOWS_FORBIDDEN_NODE_ID_CHARS = frozenset('<>:"/\\|?*')
@@ -109,21 +109,21 @@ class NodeStatus(str, Enum):
     deprecated = "deprecated"
 
 
-class SourceAuthority(str, Enum):
+class SourceProvenance(str, Enum):
     machine_verifiable = "machine_verifiable"
     user_authoritative = "user_authoritative"
     untrusted_inferred = "untrusted_inferred"
 
 
-class DurableAuthority(BaseModel):
+class DurableProvenance(BaseModel):
     """Audit declaration for a durable-current knowledge write.
 
-    `authorized_by=user` and machine verification metadata are assertions
-    recorded for provenance. They are not authentication/signature checks and
-    must not be treated as a security boundary.
+    The fields are caller provenance claims, not authentication or signature
+    proof. The graph owner validates supported machine evidence before a
+    protected current write can proceed.
     """
 
-    source_authority: SourceAuthority = SourceAuthority.untrusted_inferred
+    source_provenance: SourceProvenance = SourceProvenance.untrusted_inferred
     verification_state: str = "unverified"
     evidence_refs: list[str] = Field(default_factory=list)
     authorized_by: str = ""
@@ -132,21 +132,21 @@ class DurableAuthority(BaseModel):
     @classmethod
     def _validate_evidence_refs(cls, value: list[str]) -> list[str]:
         if len(value) > 20:
-            raise ValueError("durable_authority_evidence_refs_too_many")
+            raise ValueError("durable_provenance_evidence_refs_too_many")
         normalized: list[str] = []
         for item in value:
             if not isinstance(item, str) or not item.strip():
-                raise ValueError("durable_authority_evidence_ref_invalid")
+                raise ValueError("durable_provenance_evidence_ref_invalid")
             clean = item.strip()
             if len(clean) > 500:
-                raise ValueError("durable_authority_evidence_ref_too_long")
+                raise ValueError("durable_provenance_evidence_ref_too_long")
             normalized.append(clean)
         return normalized
 
-    def permits_durable_current(self) -> bool:
-        if self.source_authority == SourceAuthority.user_authoritative:
+    def has_required_claim_fields(self) -> bool:
+        if self.source_provenance == SourceProvenance.user_authoritative:
             return self.authorized_by.strip().casefold() == "user"
-        if self.source_authority == SourceAuthority.machine_verifiable:
+        if self.source_provenance == SourceProvenance.machine_verifiable:
             return (
                 self.verification_state.strip().casefold() == "verified"
                 and bool(self.evidence_refs)
@@ -287,8 +287,14 @@ class RoutingRequest(BaseModel):
     agent_id: str = "unknown"               # 哪个Agent发起的路由
     session_instance_id: str | None = None   # 并行 session 隔离键；缺失时走 legacy 兼容
     route_id: str | None = None              # 可由客户端绑定；缺失时由引擎生成
-    project_id: str | None = None             # repo capsule project identity
-    project_namespace: str | None = None      # repo capsule namespace
+    project_id: str | None = Field(
+        default=None,
+        description="Supply with project_namespace, or omit both.",
+    )
+    project_namespace: str | None = Field(
+        default=None,
+        description="Supply with project_id, or omit both.",
+    )
     workspace_id: str | None = None           # path-free physical writer binding
     workorder_id: str | None = None            # existing task context; never fabricated
     # v9.0 Wave 1 — Entroly CCR 风格两段式
@@ -318,6 +324,12 @@ class RoutingRequest(BaseModel):
             value,
             field_name=info.field_name,
         )
+
+    @model_validator(mode="after")
+    def _validate_project_identity_pair(self) -> RoutingRequest:
+        if bool(self.project_id) != bool(self.project_namespace):
+            raise ValueError("project_identity_pair_required")
+        return self
 
 
 class RoutingResponse(BaseModel):

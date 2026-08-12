@@ -11,6 +11,25 @@ The implementation and migration tooling below are staged and locally tested.
 They are not yet tagged or published as a release, and this changelog does not
 claim that any private production graph has been migrated.
 
+### 2026-08-11 pre-dogfood convergence
+
+- Renamed the unreleased durable-current source contract from misleading
+  `Authority` terminology to one canonical `Provenance` contract. User direction
+  remains an explicit audit assertion. Existing ErrorKnowledge receipts verify
+  resolutions but do not bind an arbitrary target node/field/value, so machine
+  claims remain fail-closed for protected current writes instead of borrowing
+  an unrelated valid receipt.
+- Ordered project-scoped current retrieval as exact project, explicit
+  shared/global, unscoped legacy fallback, then mismatch exclusion. Missing
+  project metadata is never guessed to be global.
+- Reused request-local supersession, core-scope, and hot-edge derivations inside
+  one route; no persistent cache, service, dependency, or new state owner was
+  added.
+- Tightened serious-milestone fact matching against generic status words,
+  partial digests, and token-substring false positives.
+- Enabled GitHub pull-request CI for stacked branches and documented
+  module-level development governance without commit-count ceremony.
+
 ### 2026-08-09 public-repository preparation
 
 - Replaced the prior license with the canonical PolyForm Noncommercial 1.0.0

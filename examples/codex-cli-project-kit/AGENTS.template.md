@@ -1,9 +1,10 @@
 # Codex Project Runtime Rules
 
-This project uses 3CAN as a local project-memory sidecar. Keep its graph,
-runtime database, token ledger, and generated state isolated from other
-projects. Git remains authoritative for code history; 3CAN coordinates
-retrieval, durable project memory, and evidence.
+This project uses 3CAN as a local project-reality / coordination substrate
+sidecar. Keep its graph, runtime database, token ledger, and generated state
+isolated from other projects. Execution tools do the work; Git, CI, runtime,
+and providers retain domain truth; 3CAN organizes durable project cognition,
+provenance, retrieval, and coordination.
 
 ## Startup And Readiness
 
@@ -64,7 +65,7 @@ in the writeback JSON. User direction stays lightweight:
 
 ```json
 {
-  "source_authority": "user_authoritative",
+  "source_provenance": "user_authoritative",
   "authorized_by": "user",
   "project_id": "<project-id>",
   "project_namespace": "<project-namespace>",
@@ -72,14 +73,14 @@ in the writeback JSON. User direction stays lightweight:
 }
 ```
 
-Machine facts use `source_authority=machine_verifiable`,
-`verification_state=verified`, and non-secret `evidence_refs`. Web content,
-Agent guesses, activity completion, and raw Session summaries remain
-`untrusted_inferred` and cannot silently become current authority. This is an
-audit declaration, not an authentication, signature-verification, or approval
-subsystem. Protected `INTF` / `PROC` / `DEC` / `PRJ` node POST/PUT calls put the
-same receipt plus project ID/namespace in `content.extra`; direct DELETE is not
-the lifecycle path.
+Machine facts may declare `source_provenance=machine_verifiable`, but the
+protected-current gate remains fail-closed until a canonical evidence owner
+binds the target node/field/value. Existing ErrorKnowledge resolution receipts,
+raw hashes, paths, URLs, web content, Agent guesses, activity completion, and
+Session summaries cannot be borrowed across facts. `user_authoritative` records
+a caller assertion, not authentication or an approval subsystem. Protected
+`INTF` / `PROC` / `DEC` / `PRJ` node POST/PUT calls put the same provenance plus
+project ID/namespace in `content.extra`; direct DELETE is not the lifecycle path.
 
 After a serious milestone, run the repository's
 `neural-memory/benchmark/milestone_recovery_probe.py` with a new AgentId and a
@@ -88,6 +89,20 @@ and non-empty critical/evidence facts whose `node_id` names one expected node.
 A writeback is complete only when the probe returns `PASS`; otherwise
 refine the existing node and keep the milestone `PARTIAL`. Do not run this for
 every edit or API call.
+
+## Modular Development Discipline
+
+- Organize medium or large work around one meaningful, independently reviewable
+  functional module or milestone whenever practical.
+- Machine execution may be fine-grained; human governance stays coarse-grained.
+- A module may contain many edits, tests, tool calls, and Git commits; do not
+  create user ceremony around commit count.
+- Start a new Workorder when the user-visible capability, risk, canonical owner,
+  rollback boundary, or acceptance surface materially changes.
+- Git records code history and checkpoints; tests, CI, runtime, and provider
+  evidence prove behavior; 3CAN summarizes project meaning and current evidence.
+- Report module completion with what is verified, what is not, and what decision
+  is required.
 
 ## Concurrency
 

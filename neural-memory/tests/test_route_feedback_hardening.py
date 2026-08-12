@@ -836,6 +836,60 @@ def test_core_memory_project_mismatch_falls_back_to_optional_semantic_retrieval(
     } in graph["optional_semantic_nodes"]
 
 
+@pytest.mark.parametrize(
+    ("project_id", "project_namespace"),
+    [("public-demo", None), (None, "public-demo")],
+)
+def test_routing_request_rejects_partial_project_identity(
+    project_id,
+    project_namespace,
+):
+    graph_engine = load_graph_engine()
+
+    with pytest.raises(ValueError, match="project_identity_pair_required"):
+        graph_engine.RoutingRequest(
+            task="current project reality",
+            project_id=project_id,
+            project_namespace=project_namespace,
+        )
+
+
+@pytest.mark.parametrize(
+    ("request_namespace", "node_namespace", "expected_reason"),
+    [
+        ("", "other-namespace", "project_applicability_unproven"),
+        ("public-demo", "", "project_namespace_unproven"),
+        ("public-demo", "other-namespace", "project_namespace_mismatch"),
+    ],
+)
+def test_core_memory_requires_complete_exact_project_identity(
+    tmp_path,
+    monkeypatch,
+    request_namespace,
+    node_namespace,
+    expected_reason,
+):
+    engine = _make_core_memory_engine(tmp_path, monkeypatch, [])
+    candidate = engine.nodes["ENV-PUBLIC-runtime"]
+    candidate.content.extra["project_id"] = "public-demo"
+    candidate.content.extra["project_namespace"] = node_namespace
+
+    graph = engine._build_core_memory_route_graph(
+        "current runtime and project environment",
+        ["ENV-PUBLIC-runtime"],
+        project_id="public-demo",
+        project_namespace=request_namespace,
+    )
+
+    assert "ENV-PUBLIC-runtime" not in graph["must_consume_node_ids"]
+    assert graph["lane_selected_nodes"]["environment_constraints"] == []
+    assert {
+        "node_id": "ENV-PUBLIC-runtime",
+        "lane": "environment_constraints",
+        "reason": expected_reason,
+    } in graph["optional_semantic_nodes"]
+
+
 def _make_current_reality_engine(tmp_path: Path, monkeypatch):
     graph_dir = tmp_path / "current-reality-graph"
     nodes_dir = graph_dir / "nodes"
@@ -853,6 +907,34 @@ def _make_current_reality_engine(tmp_path: Path, monkeypatch):
             "extra": {
                 "project_id": "public-demo",
                 "project_namespace": "public-demo",
+            },
+        },
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "INTF-PUBLIC-legacy-unscoped",
+        content={"description": "Legacy unscoped RunningHub interface"},
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "DOC-PUBLIC-shared",
+        content={
+            "description": "Explicitly shared canonical owner guidance",
+            "extra": {"applicability": {"scope": "global"}},
+        },
+        **common,
+    )
+    _write_route_node(
+        nodes_dir,
+        "DOC-PUBLIC-conflicting-scope",
+        content={
+            "description": "Invalid mixed project and shared scope",
+            "extra": {
+                "project_id": "public-demo",
+                "project_namespace": "public-demo",
+                "applicability": {"scope": "shared"},
             },
         },
         **common,
@@ -930,7 +1012,7 @@ def test_current_reality_prefers_durable_facts_and_excludes_stale_or_wrong_proje
     response = engine.route(
         graph_engine.RoutingRequest(
             task="current canonical RunningHub path and owner",
-            max_nodes=5,
+            max_nodes=6,
             agent_id="PUBLIC-agent",
             mode="skeleton",
             project_id="public-demo",
@@ -944,6 +1026,16 @@ def test_current_reality_prefers_durable_facts_and_excludes_stale_or_wrong_proje
     assert ids[0] == "INTF-PUBLIC-current"
     assert "DEC-PUBLIC-old" not in ids
     assert "PRJ-OTHER-current" not in ids
+    assert "DOC-PUBLIC-conflicting-scope" not in ids
+    assert ids.index("INTF-PUBLIC-current") < ids.index("DOC-PUBLIC-shared")
+    assert ids.index("DOC-PUBLIC-shared") < ids.index(
+        "INTF-PUBLIC-legacy-unscoped"
+    )
+    assert ids.index("INTF-PUBLIC-legacy-unscoped") < min(
+        ids.index(node_id)
+        for node_id in ids
+        if node_id.startswith(("SES-", "HO-"))
+    )
     assert ids.index("INTF-PUBLIC-current") < min(
         ids.index(node_id)
         for node_id in ids
@@ -951,7 +1043,13 @@ def test_current_reality_prefers_durable_facts_and_excludes_stale_or_wrong_proje
     )
     assert policy["enabled"] is True
     assert policy["excluded_superseded_count"] == 1
-    assert policy["excluded_project_mismatch_count"] == 1
+    assert policy["excluded_project_mismatch_count"] == 2
+    assert policy["project_applicability_order"] == [
+        "exact_project",
+        "explicit_shared",
+        "unscoped_unknown",
+        "mismatch_excluded",
+    ]
 
     history = engine._current_reality_policy(
         graph_engine.RoutingRequest(task="RunningHub history and handoff continuation"),
@@ -1015,7 +1113,7 @@ def test_project_reality_diagnostics_separate_raw_hot_and_history(
 
     assert diagnostics["status"] == "observed"
     assert diagnostics["hard_gate"] is False
-    assert diagnostics["raw_node_count"] == 6
+    assert diagnostics["raw_node_count"] == 9
     assert diagnostics["raw_edge_count"] == 1
     assert diagnostics["historical_archive_node_count"] == 1
     assert diagnostics["hot_route_eligible_node_count"] < diagnostics["raw_node_count"]
@@ -1024,6 +1122,31 @@ def test_project_reality_diagnostics_separate_raw_hot_and_history(
     )
     assert diagnostics["historical_only_relation_count"] == 0
     assert diagnostics["semantic_quality"]["status"] == "validating"
+
+
+def test_route_reuses_request_local_superseded_state(tmp_path, monkeypatch):
+    graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+    original = engine._superseded_node_ids
+    calls = 0
+
+    def counted():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    engine._superseded_node_ids = counted
+    response = engine.route(
+        graph_engine.RoutingRequest(
+            task="current canonical RunningHub path and owner",
+            max_nodes=6,
+            mode="skeleton",
+            project_id="public-demo",
+            project_namespace="public-demo",
+        )
+    )
+
+    assert response.activated_nodes
+    assert calls <= 6
 
 
 def test_temporal_intent_uses_raw_task_not_semantic_expansion(
@@ -1193,8 +1316,8 @@ def test_supersession_requires_same_project_family_and_authoritative_source(
     target = engine.nodes["DEC-PUBLIC-old"]
     source.created_at = "2026-08-11T00:00:00+00:00"
     target.created_at = "2026-08-10T00:00:00+00:00"
-    source.content.extra["durable_authority"] = {
-        "source_authority": "user_authoritative",
+    source.content.extra["durable_provenance"] = {
+        "source_provenance": "user_authoritative",
         "verification_state": "unverified",
         "evidence_refs": [],
         "authorized_by": "user",
@@ -1207,8 +1330,8 @@ def test_supersession_requires_same_project_family_and_authoritative_source(
         engine.validate_supersession(source.id, target.id)
 
     target.content.extra["project_id"] = "public-demo"
-    source.content.extra["durable_authority"]["authorized_by"] = "agent"
-    with pytest.raises(ValueError, match="supersedes_source_authority_required"):
+    source.content.extra["durable_provenance"]["authorized_by"] = "agent"
+    with pytest.raises(ValueError, match="supersedes_source_provenance_required"):
         engine.validate_supersession(source.id, target.id)
 
 
@@ -1290,8 +1413,8 @@ def test_durable_writeback_inherits_known_project_identity(tmp_path, monkeypatch
             "project_namespace": "public-demo",
             "workspace_id": "git-family-worktree",
         },
-        authority=graph_engine.DurableAuthority(
-            source_authority="user_authoritative",
+        provenance=graph_engine.DurableProvenance(
+            source_provenance="user_authoritative",
             authorized_by="user",
         ),
     )
@@ -1299,8 +1422,8 @@ def test_durable_writeback_inherits_known_project_identity(tmp_path, monkeypatch
     assert updated == ["INTF-PUBLIC-current"]
     assert engine.nodes["INTF-PUBLIC-current"].content.extra["project_id"] == "public-demo"
     assert "workorder_id" not in engine.nodes["INTF-PUBLIC-current"].content.extra
-    assert engine.nodes["INTF-PUBLIC-current"].content.extra["durable_authority"][
-        "source_authority"
+    assert engine.nodes["INTF-PUBLIC-current"].content.extra["durable_provenance"][
+        "source_provenance"
     ] == "user_authoritative"
 
 
@@ -1308,10 +1431,10 @@ def test_durable_writeback_rejects_untrusted_current_fact_before_mutation(
     tmp_path,
     monkeypatch,
 ):
-    _graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+    graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
     before = engine.nodes["INTF-PUBLIC-current"].content.current_state
 
-    with pytest.raises(ValueError, match="writeback_durable_authority_required"):
+    with pytest.raises(ValueError, match="writeback_durable_provenance_required"):
         engine.session_writeback(
             [
                 {
@@ -1326,6 +1449,11 @@ def test_durable_writeback_rejects_untrusted_current_fact_before_mutation(
                 "project_id": "public-demo",
                 "project_namespace": "public-demo",
             },
+            provenance=graph_engine.DurableProvenance(
+                source_provenance="untrusted_inferred",
+                verification_state="verified",
+                evidence_refs=["https://example.invalid/agent-claim"],
+            ),
         )
 
     assert engine.nodes["INTF-PUBLIC-current"].content.current_state == before
@@ -1357,11 +1485,32 @@ def test_durable_writeback_rejects_project_identity_takeover(tmp_path, monkeypat
     assert engine.nodes["INTF-PUBLIC-current"].content.extra["project_id"] == "public-demo"
 
 
-def test_machine_verifiable_writeback_requires_verified_evidence_pointer(
+def test_machine_verifiable_writeback_rejects_unbound_evidence(
     tmp_path,
     monkeypatch,
 ):
-    graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+    graph_engine, engine, _case_id, _resolution_id = _make_error_solution_engine(
+        tmp_path,
+        monkeypatch,
+    )
+    evidence_id = "EVD-PUBLIC-timeout"
+    engine.create_node(
+        graph_engine.NodeCreate(
+            id="INTF-PUBLIC-current",
+            name="Current interface",
+            cluster="public-demo",
+            content=graph_engine.NodeContent(
+                extra={
+                    "project_id": "public-demo",
+                    "project_namespace": "public-demo",
+                    "durable_provenance": {
+                        "source_provenance": "user_authoritative",
+                        "authorized_by": "user",
+                    },
+                }
+            ),
+        )
+    )
     change = {
         "node_id": "INTF-PUBLIC-current",
         "field": "current_state",
@@ -1373,30 +1522,44 @@ def test_machine_verifiable_writeback_requires_verified_evidence_pointer(
         "project_namespace": "public-demo",
     }
 
-    updated = engine.session_writeback(
-        [change],
-        execution_context=context,
-        authority=graph_engine.DurableAuthority(
-            source_authority="machine_verifiable",
-            verification_state="verified",
-            evidence_refs=["sha256:" + ("a" * 64)],
-        ),
+    for unsupported_ref in [
+        evidence_id,
+        "sha256:" + ("a" * 64),
+        "EVD-PUBLIC-does-not-exist",
+    ]:
+        with pytest.raises(
+            ValueError,
+            match="writeback_durable_provenance_required",
+        ):
+            engine.session_writeback(
+                [{**change, "value": "unsupported claim"}],
+                execution_context=context,
+                provenance=graph_engine.DurableProvenance(
+                    source_provenance="machine_verifiable",
+                    verification_state="verified",
+                    evidence_refs=[unsupported_ref],
+                ),
+            )
+    assert engine.nodes["INTF-PUBLIC-current"].content.current_state == ""
+
+
+def test_legacy_authority_names_do_not_create_a_compatibility_gate(
+    tmp_path,
+    monkeypatch,
+):
+    graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
+    legacy = graph_engine.DurableProvenance.model_validate(
+        {
+            "source_authority": "user_authoritative",
+            "authorized_by": "user",
+        }
     )
 
-    assert updated == ["INTF-PUBLIC-current"]
-    with pytest.raises(ValueError, match="writeback_durable_authority_required"):
-        engine.session_writeback(
-            [{**change, "value": "unsupported claim"}],
-            execution_context=context,
-            authority=graph_engine.DurableAuthority(
-                source_authority="machine_verifiable",
-                verification_state="verified",
-                evidence_refs=[],
-            ),
-        )
+    assert legacy.source_provenance.value == "untrusted_inferred"
+    assert engine._durable_provenance_permits_current(legacy) is False
 
 
-def test_protected_crud_requires_embedded_authority_and_disables_delete(
+def test_protected_crud_requires_embedded_provenance_and_disables_delete(
     tmp_path,
     monkeypatch,
 ):
@@ -1405,14 +1568,14 @@ def test_protected_crud_requires_embedded_authority_and_disables_delete(
         "project_id": "public-demo",
         "project_namespace": "public-demo",
         "existing_metadata": {"must_survive": True},
-        "durable_authority": {
-            "source_authority": "user_authoritative",
+        "durable_provenance": {
+            "source_provenance": "user_authoritative",
             "verification_state": "unverified",
             "evidence_refs": [],
             "authorized_by": "user",
         },
     }
-    with pytest.raises(PermissionError, match="durable_current_authority_required"):
+    with pytest.raises(PermissionError, match="durable_current_provenance_required"):
         engine.create_node(
             graph_engine.NodeCreate(
                 id="PROC-PUBLIC-unauthorized",
@@ -1451,7 +1614,7 @@ def test_protected_crud_requires_embedded_authority_and_disables_delete(
                 extra={
                     "project_id": extra["project_id"],
                     "project_namespace": extra["project_namespace"],
-                    "durable_authority": extra["durable_authority"],
+                    "durable_provenance": extra["durable_provenance"],
                 }
             ),
         ),
@@ -1460,7 +1623,7 @@ def test_protected_crud_requires_embedded_authority_and_disables_delete(
     assert updated.status == graph_engine.NodeStatus.dormant
     assert updated.content.description == "second version"
     assert updated.content.extra["existing_metadata"] == {"must_survive": True}
-    with pytest.raises(PermissionError, match="durable_current_authority_required"):
+    with pytest.raises(PermissionError, match="durable_current_provenance_required"):
         engine.delete_node(node.id)
 
 
@@ -1492,8 +1655,8 @@ def test_writeback_never_claims_existing_unscoped_node_identity(
             }
         ],
         execution_context=context,
-        authority=graph_engine.DurableAuthority(
-            source_authority="user_authoritative",
+        provenance=graph_engine.DurableProvenance(
+            source_provenance="user_authoritative",
             authorized_by="user",
         ),
     )
@@ -1513,7 +1676,7 @@ def test_writeback_never_claims_existing_unscoped_node_identity(
     assert "project_namespace" not in node.content.extra
 
 
-def test_same_value_user_confirmation_refreshes_authority_receipt(
+def test_same_value_user_confirmation_refreshes_provenance_receipt(
     tmp_path,
     monkeypatch,
 ):
@@ -1534,14 +1697,14 @@ def test_same_value_user_confirmation_refreshes_authority_receipt(
             "project_id": "public-demo",
             "project_namespace": "public-demo",
         },
-        authority=graph_engine.DurableAuthority(
-            source_authority="user_authoritative",
+        provenance=graph_engine.DurableProvenance(
+            source_provenance="user_authoritative",
             authorized_by="user",
         ),
     )
 
     assert updated == [node.id]
-    assert node.content.extra["durable_authority"]["authorized_by"] == "user"
+    assert node.content.extra["durable_provenance"]["authorized_by"] == "user"
 
 
 def test_supersession_rejects_stale_source_and_cross_project_lineage(
@@ -1550,8 +1713,8 @@ def test_supersession_rejects_stale_source_and_cross_project_lineage(
 ):
     graph_engine, engine = _make_current_reality_engine(tmp_path, monkeypatch)
     old = engine.nodes["DEC-PUBLIC-old"]
-    old.content.extra["durable_authority"] = {
-        "source_authority": "user_authoritative",
+    old.content.extra["durable_provenance"] = {
+        "source_provenance": "user_authoritative",
         "verification_state": "unverified",
         "evidence_refs": [],
         "authorized_by": "user",
