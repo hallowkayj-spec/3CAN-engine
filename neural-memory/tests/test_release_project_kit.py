@@ -805,6 +805,36 @@ def test_offline_behavioral_gate_allows_local_work_and_keeps_independent_safety(
     assert decision(
         "Bash", {"command": "curl -X POST http://127.0.0.1:5900/api/test"}
     ) is None
+    assert decision(
+        "Bash", {"command": "curl -X POST http://127.0.0.1:9700/api/test"}
+    ) == "deny"
+    assert decision(
+        "Bash", {"command": "curl -X POST http://127.0.0.1:17890/api/test"}
+    ) == "deny"
+    assert decision(
+        "Bash", {"command": "curl -X POST https://external.example/api/test"}
+    ) == "deny"
+    assert decision(
+        "Bash",
+        {"command": "curl -X POST http://127.0.0.1:5900/api/test && echo done"},
+    ) == "deny"
+    assert decision(
+        "Bash",
+        {
+            "command": (
+                "curl -X POST http://127.0.0.1:5900/api/test "
+                "--url external.example/api/test"
+            )
+        },
+    ) == "deny"
+    assert decision(
+        "Bash",
+        {
+            "command": (
+                'curl -X POST http://127.0.0.1:5900/api/test "$(echo unsafe)"'
+            )
+        },
+    ) == "deny"
     assert decision("Bash", {"command": "pytest -q"}) is None
     assert decision("Edit", {"file_path": "local.txt", "new_string": "safe"}) is None
     assert decision("Bash", {"command": "rm -rf ./tmp"}) == "deny"

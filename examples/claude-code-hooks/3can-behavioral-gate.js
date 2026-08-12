@@ -35,6 +35,7 @@ const TICKET_TIMEOUT = 3000;
 
 // ─── 拦截目标工具 ───
 const INTERCEPT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+const CURL_MUTATION = /\bcurl\s+.*(-X\s*)?(POST|PUT|DELETE|PATCH)\b/i;
 
 // Bash 危险子命令 (仅这些需要 ticket; ls/cat/grep/find/echo 不需要)
 const BASH_HIGH_RISK = [
@@ -44,7 +45,7 @@ const BASH_HIGH_RISK = [
   /\bnpm\s+(install|uninstall|publish)/,
   /\bpip\s+(install|uninstall)/,
   /\bdocker\s+(rm|rmi|system\s+prune)/,
-  /\bcurl\s+.*(-X\s*)?(POST|PUT|DELETE|PATCH)/i,
+  CURL_MUTATION,
   />\s*[\w./-]+/,                      // redirect overwrite
   /\bmv\s+|\bcp\s+-[rf]|\bchmod\b|\bchown\b/,
 ];
@@ -57,6 +58,24 @@ const OFFLINE_HARD_DENY = [
   /\bdocker\s+(rm|rmi|system\s+prune)/,
   /\b(chmod|chown)\b/,
 ];
+
+// Offline local UAT is the only curl mutation exception. Accept one canonical
+// command shape; flags, payloads, redirects, config files, and shell syntax
+// remain denied rather than growing a second URL/shell policy engine.
+function isOfflineLoopbackUatCurl(command) {
+  const match = /^\s*curl\s+(?:-X|--request)\s+(?:POST|PUT|DELETE|PATCH)\s+(https?:\/\/[^\s'\"]+)\s*$/i.exec(command);
+  if (!match) return false;
+  try {
+    const target = new URL(match[1]);
+    const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
+    const port = Number(target.port);
+    return loopback.has(target.hostname.toLowerCase())
+      && Number.isInteger(port) && port >= 1024 && port <= 65535
+      && port !== 9700 && port !== 17890;
+  } catch {
+    return false;
+  }
+}
 
 // Gate 日志 — 每次判决追加 (S66g 审计用)
 const GATE_LOG = require('path').join(
@@ -445,7 +464,8 @@ async function main() {
   if (!_engineOnline) {
     if (toolName === 'Bash') {
       const _cmd = (toolInput.command || '');
-      if (OFFLINE_HARD_DENY.some((p) => p.test(_cmd))) {
+      const _curlMutationDenied = CURL_MUTATION.test(_cmd) && !isOfflineLoopbackUatCurl(_cmd);
+      if (_curlMutationDenied || OFFLINE_HARD_DENY.some((p) => p.test(_cmd))) {
         appendGateLog({ ts: new Date().toISOString(), stage: 'runtime-unavailable', decision: 'deny',
           tool: 'Bash', reason: 'independent_safety_gate', target: _cmd.slice(0, 120), agent_id: agentId });
         clearTimeout(hardTimeout);
