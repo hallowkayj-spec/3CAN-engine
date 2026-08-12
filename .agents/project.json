@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "project_id": "3can-engine",
+  "project_namespace": "3can-engine",
+  "project_name": "3CAN Engine",
+  "project_root": ".",
+  "git_repository": "github.com/hallowkayj-spec/3can-engine",
+  "required_node_ids": []
+}

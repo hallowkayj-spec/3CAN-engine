@@ -29,6 +29,7 @@ _MAX_ROUTING_CONTEXT_ID_LENGTH = 128
 _ROUTING_CONTEXT_ID_RE = re.compile(
     rf"[A-Za-z0-9][A-Za-z0-9._:-]{{0,{_MAX_ROUTING_CONTEXT_ID_LENGTH - 1}}}"
 )
+_SEMANTIC_ID_FAMILY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*")
 
 
 def validate_routing_context_identifier(
@@ -78,6 +79,13 @@ def validate_node_identifier(value: str) -> str:
     return value
 
 
+def semantic_id_family(node_id: str) -> str:
+    """Project semantic role projected from the stable node-ID prefix."""
+
+    match = _SEMANTIC_ID_FAMILY_RE.match(str(node_id or ""))
+    return match.group(0).upper() if match else "UNKNOWN"
+
+
 # ── 枚举 ──
 
 class NodeType(str, Enum):
@@ -96,8 +104,54 @@ class NodeType(str, Enum):
 class NodeStatus(str, Enum):
     active = "active"
     dormant = "dormant"
+    archived = "archived"
     blocked = "blocked"
     deprecated = "deprecated"
+
+
+class SourceAuthority(str, Enum):
+    machine_verifiable = "machine_verifiable"
+    user_authoritative = "user_authoritative"
+    untrusted_inferred = "untrusted_inferred"
+
+
+class DurableAuthority(BaseModel):
+    """Audit declaration for a durable-current knowledge write.
+
+    `authorized_by=user` and machine verification metadata are assertions
+    recorded for provenance. They are not authentication/signature checks and
+    must not be treated as a security boundary.
+    """
+
+    source_authority: SourceAuthority = SourceAuthority.untrusted_inferred
+    verification_state: str = "unverified"
+    evidence_refs: list[str] = Field(default_factory=list)
+    authorized_by: str = ""
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _validate_evidence_refs(cls, value: list[str]) -> list[str]:
+        if len(value) > 20:
+            raise ValueError("durable_authority_evidence_refs_too_many")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("durable_authority_evidence_ref_invalid")
+            clean = item.strip()
+            if len(clean) > 500:
+                raise ValueError("durable_authority_evidence_ref_too_long")
+            normalized.append(clean)
+        return normalized
+
+    def permits_durable_current(self) -> bool:
+        if self.source_authority == SourceAuthority.user_authoritative:
+            return self.authorized_by.strip().casefold() == "user"
+        if self.source_authority == SourceAuthority.machine_verifiable:
+            return (
+                self.verification_state.strip().casefold() == "verified"
+                and bool(self.evidence_refs)
+            )
+        return False
 
 
 class EdgeType(str, Enum):
@@ -233,6 +287,10 @@ class RoutingRequest(BaseModel):
     agent_id: str = "unknown"               # 哪个Agent发起的路由
     session_instance_id: str | None = None   # 并行 session 隔离键；缺失时走 legacy 兼容
     route_id: str | None = None              # 可由客户端绑定；缺失时由引擎生成
+    project_id: str | None = None             # repo capsule project identity
+    project_namespace: str | None = None      # repo capsule namespace
+    workspace_id: str | None = None           # path-free physical writer binding
+    workorder_id: str | None = None            # existing task context; never fabricated
     # v9.0 Wave 1 — Entroly CCR 风格两段式
     mode: str = "slim"                      # skeleton / slim / full
     budget_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
@@ -240,7 +298,14 @@ class RoutingRequest(BaseModel):
     confirm_low_confidence: bool = False    # low confidence 时 agent 必须显式传 true 才返结果
     allow_degraded: bool = False            # 别名 (更友好命名), 等价于上一条
 
-    @field_validator("session_instance_id", "route_id")
+    @field_validator(
+        "session_instance_id",
+        "route_id",
+        "project_id",
+        "project_namespace",
+        "workspace_id",
+        "workorder_id",
+    )
     @classmethod
     def _validate_routing_context_id(
         cls,

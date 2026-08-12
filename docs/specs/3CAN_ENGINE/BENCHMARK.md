@@ -1,5 +1,12 @@
 # 3CAN Engine — Benchmark & 评分方法 (X+3CAN)
 
+> **Current evidence boundary (2026-08-11):** the only release-reproducible
+> route receipt is the 16-node public synthetic seed fixture in
+> `docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json`. LongMemEval 0.75, internal
+> MRR 0.9239, old latency and self-score tables below are historical records,
+> not current release gates or real OPC evidence. Real OPC quality remains
+> `validating` until frozen gold/observations/receipts exist.
+
 > **评分协议**: 本文档按 [BENCHMARK_POLICY.md](./BENCHMARK_POLICY.md) v1.0 (S66g) 分层报告. LongMemEval 属于 **L1 Memory/Retrieval slice**, 不代表 3CAN 总分.
 > **原则**: 不自建自评。"X" 表示任何**公开标准 benchmark**, 我们跑它, 报告分数 + judge 模型。行业无标准的维度, 用**严格自评卡**, 标明"仅供参考不对外宣传"。
 
@@ -164,10 +171,12 @@ S66e 的 0.2333 和 S66f 的 0.7500 **都不能作为 "3CAN 能力总分"**:
 ### 4.3 对外话术
 
 **对内 / 竞赛评审**:
-- "3CAN 在内部 46-query benchmark MRR 0.92, R@1 0.78, skeleton mode 省 86% token。9 维自评平均 5.75 (严于己, 留余量)。"
+- 可以引用可复现的 public synthetic seed receipt，但必须同时说明 16-node、
+  hashing development fixture，且它不是 real OPC / production 质量证明。
 
 **对外 / 开源 README** (谨慎):
-- "We provide memory accuracy (MRR 0.92 on self-built 46-query benchmark, DeepSeek-V3.2 judge), token efficiency (skeleton mode saves 86.5% vs full), and project coordination primitives. We do NOT claim superiority over Mem0/Zep/Letta — different target users, different benchmarks."
+- "The release includes a reproducible synthetic seed-graph benchmark and an
+  OPC utility protocol. Real-project semantic quality is still validating."
 
 ## 5. 评分伦理 (the maintainer 明确要求)
 

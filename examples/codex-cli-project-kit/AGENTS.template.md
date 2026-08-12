@@ -59,6 +59,36 @@ and worktree. It never imports files from implicit or expired wrapper state.
 Store decisions, verified outcomes, and source locations; do not store raw
 chain-of-thought, credentials, cookies, or private logs.
 
+For durable `INTF` / `PROC` / `DEC` / `PRJ` current fields, declare the source
+in the writeback JSON. User direction stays lightweight:
+
+```json
+{
+  "source_authority": "user_authoritative",
+  "authorized_by": "user",
+  "project_id": "<project-id>",
+  "project_namespace": "<project-namespace>",
+  "changes": [{"node_id": "DEC-example", "field": "current_state", "value": "..."}]
+}
+```
+
+Machine facts use `source_authority=machine_verifiable`,
+`verification_state=verified`, and non-secret `evidence_refs`. Web content,
+Agent guesses, activity completion, and raw Session summaries remain
+`untrusted_inferred` and cannot silently become current authority. This is an
+audit declaration, not an authentication, signature-verification, or approval
+subsystem. Protected `INTF` / `PROC` / `DEC` / `PRJ` node POST/PUT calls put the
+same receipt plus project ID/namespace in `content.extra`; direct DELETE is not
+the lifecycle path.
+
+After a serious milestone, run the repository's
+`neural-memory/benchmark/milestone_recovery_probe.py` with a new AgentId and a
+small private spec containing expected graph hash/readiness, expected node IDs,
+and non-empty critical/evidence facts whose `node_id` names one expected node.
+A writeback is complete only when the probe returns `PASS`; otherwise
+refine the existing node and keep the milestone `PARTIAL`. Do not run this for
+every edit or API call.
+
 ## Concurrency
 
 - Treat one physical Git worktree as one writer.

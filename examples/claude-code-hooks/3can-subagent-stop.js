@@ -2,19 +2,20 @@
  * 3CAN SubagentStop Observer — 基座#33
  *
  * Claude Code 的 sub-agent (Task tool 启的) 完成时触发.
- * 抓捕 subagent 产出 (最终 response + tool usage) → activity_log + 可选建 SES-subagent-* 节点
+ * 记录 subagent 完成元数据 → activity_log；不持久化最终 response 内容
  *
  * 目的: sub-agent 目前是黑盒, 3CAN 不知情. 这个 hook 补闭环.
  *
  * 策略 (不 block, 纯 observe):
  *   - 读 stdin 的 input (含 subagent 最终文本)
- *   - POST /api/route/feedback (借用现有端点记 activity)
+ *   - POST /api/activity/log (canonical activity owner)
  *   - 不建节点 (避免污染, subagent 结果可能很短没价值)
  *
  * 硬超时 2s, 失败静默.
  */
 
 const http = require('http');
+const crypto = require('crypto');
 
 const ENGINE_URL = 'http://localhost:9700';
 const TIMEOUT = 2000;
@@ -56,13 +57,20 @@ async function main() {
 
   const subagentType = input.subagent_type || input.agent_type || 'unknown';
   const response = input.response || input.subagent_response || '';
-  const summary = typeof response === 'string' ? response.slice(0, 300) : JSON.stringify(response).slice(0, 300);
+  const responseText = typeof response === 'string' ? response : JSON.stringify(response);
+  const responseLength = Buffer.byteLength(responseText || '', 'utf8');
+  const responseSha256 = crypto.createHash('sha256').update(responseText || '').digest('hex');
 
-  await httpPost('/api/route/feedback', {
-    query: `[subagent-stop] type=${subagentType}`,
+  await httpPost('/api/activity/log', {
     agent_id: AGENT_ID,
-    details: summary,
+    action: 'subagent_stop',
+    detail: `subagent type=${subagentType} completed`,
     affected_nodes: [],
+    meta: {
+      subagent_type: subagentType,
+      response_length_bytes: responseLength,
+      response_sha256: responseSha256,
+    },
   });
 
   process.exit(0);

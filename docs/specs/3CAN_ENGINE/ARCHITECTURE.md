@@ -4,22 +4,23 @@
 
 ```
  ┌─────────────────────────────────────────────────────┐
- │  Agents (Claude Code / Codex / Gemini CLI / ...)   │   ← 不同 runtime
+ │  Agents (Claude Code / Codex / Gemini CLI / ...)   │
  └─────────────────────┬───────────────────────────────┘
-                       │ HTTP (localhost:9700)
-                       │
- ┌─────────────────────▼────────────────────────────┐
- │  Proxy (neural-memory/proxy/server.py)           │
- │  - Port 9700 唯一对外入口                         │
- │  - 单写 slot: green=9701 / blue=9702（一次仅一个）│
- │  - /api/admin/deploy /switch /retire /recover     │
- │  - 共享图锁下禁用自动 failover；故障时明确 503     │
- └─────────────────────┬────────────────────────────┘
+                       │ HTTP (127.0.0.1)
+          ┌────────────┴────────────┐
+          │                         │
+ ┌────────▼─────────┐      ┌────────▼────────────────┐
+ │ Direct profile   │      │ Optional proxy profile │
+ │ backend on 9700  │      │ proxy 9700 -> one      │
+ │ (current private │      │ backend slot 9701/9702 │
+ │ production)      │      │ (public operator path) │
+ └────────┬─────────┘      └────────┬────────────────┘
+          └────────────┬────────────┘
                        │
  ┌─────────────────────▼────────────────────────────┐
  │  Backend (neural-memory/backend/app.py)          │
- │  - FastAPI 35+ 端点                               │
- │  - GraphEngine 实例 (graph_engine.py, 1900 LOC)   │
+ │  - FastAPI API + GraphEngine                      │
+ │  - one writable graph owner                       │
  └─────────────────────┬────────────────────────────┘
                        │
  ┌─────────────────────▼────────────────────────────┐
@@ -54,7 +55,7 @@ class Node(BaseModel):
     cluster: str                   # 手动分类 (架构设计/项目交接/...)
     layer: str = "L0"              # L0-L5 (C³AN 层级)
     type: NodeType                 # 9 类枚举
-    status: NodeStatus             # active/dormant/blocked/deprecated
+    status: NodeStatus             # active/dormant/blocked/deprecated/archived
     content: NodeContent           # 详见下
     activation_keywords: list[str] # 5-15 个 kw, 中英双份
     priority: Priority             # critical/high/medium/low
@@ -106,12 +107,12 @@ Query "RRF fusion routing"
        │
        ├─ Step 0: Query 分析
        │   - _classify_intent() → ('status', ['MOD-', 'SEC-', 'PROG-'])  MAGMA 风格意图
-       │   - _expand_query() → 加 3-5 个共现词 (高区分度)
+       │   - _expand_query() → 稳定排序后加 3-5 个共现词 (高区分度)
        │   - is_short_code 判定 (S62/KB4 类 ≤8 字符 字母+数字)
        │
        ├─ Step 0.5: 短代码 code_index 解析
        │   - 自动从节点 ID+name+desc+kws 抽短码, 建反向索引
-       │   - query 是短码 → 直接返候选 (RRF 第 4 信号)
+       │   - query 是短码，或正文含低 fan-out 短码 → 作为 RRF 第 4 信号
        │
        ├─ Step 1: 3-signal 打分 (每节点 3 路独立)
        │   ├─ Signal 1 — emb: BGE-M3 余弦相似 + priority_bonus
@@ -120,14 +121,14 @@ Query "RRF fusion routing"
        │
        ├─ Step 2: RRF Fusion (Cormack 2009)
        │   - 各 signal 独立排序 → 1/(K+rank), K=60
-       │   - code_index 作为 Signal 4 注入 (短码 query 时)
+       │   - code_index 作为 Signal 4 注入 (精确或低 fan-out 短码命中时)
        │   - rrf_scores = Σ w_i / (60 + rank_i)
        │
        ├─ Step 3: Graph Traversal Boost
-       │   - top-3 节点的 edge 邻居 +0.001*weight
+       │   - 固定 top-10 锚点的 edge 邻居获得有界、保序 boost
        │
        ├─ Step 3.5 (v9.2): Leiden Community Boost
-       │   - top-3 的 community_id 集合
+       │   - 同一固定锚点集的 community_id 集合
        │   - 同 community 的其他节点 +0.002
        │   - 主要涨 R@3 (兄弟节点一起浮出)
        │
@@ -190,11 +191,11 @@ Response 含 `confidence` ('high'/'medium'/'low') + `fallback_hint` (低置信�
 ## 8. 部署拓扑
 
 ```
-开发者机器:
-├─ C:\Python314\python.exe  (系统 Python, 3CAN 用)
+开发者机器（支持的 public proxy profile）:
+├─ Python runtime
 ├─ neural-memory/
-│  ├─ proxy/server.py        : 端口 9700 (唯一入口)
-│  ├─ backend/app.py         : 端口 9701 (green) 或 9702 (blue)
+│  ├─ proxy/server.py        : 端口 9700
+│  ├─ backend/app.py         : 端口 9701 (green) 或 9702 (blue，一次一个 writer)
 │  ├─ frontend/index.html    : 3d-force-graph 可视化
 │  └─ graph/                 : 数据持久化
 └─ ~/.claude/
@@ -203,7 +204,7 @@ Response 含 `confidence` ('high'/'medium'/'low') + `fallback_hint` (低置信�
    └─ scripts/hooks/         : UserPromptSubmit / SessionStart hook
 ```
 
-冷启命令:
+Public proxy profile 冷启示例:
 ```bash
 # 启动 backend (green)
 cd neural-memory/backend && python app.py --port 9701
@@ -215,6 +216,12 @@ cd neural-memory/proxy && python server.py   # 绑定 9700
 # 更新必须走受控单写切换：精确确认旧 writer 退出后再部署另一 slot；
 # 切换窗口允许 9700 短暂返回 503。普通 deploy 会以 409 拒绝危险并发。
 ```
+
+当前 private production 使用 content-addressed immutable runtime，由 backend
+直接监听 9700；它不经过 public proxy。9701/9702 可用于隔离的 development
+candidate，但 development readiness、listener 或测试通过都不等于 production
+部署。任何 production claim 仍需 immutable manifest、唯一 listener、完整进程
+身份、claim/permit/startup nonce 与 deep readiness 的同一份切换回执。
 
 ### 8.1 单写切换边界
 

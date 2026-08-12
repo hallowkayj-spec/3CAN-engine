@@ -153,12 +153,27 @@ requests.post("/api/nodes", json={
     "content": {
         "description": "60-150 字摘要 (L2, skeleton 模式返这层)",
         "notes": "详细内容 (L3, 最长 1000 字)",
+        "extra": {
+            "project_id": "project-id",
+            "project_namespace": "project-namespace",
+            "durable_authority": {
+                "source_authority": "user_authoritative",
+                "verification_state": "unverified",
+                "evidence_refs": [],
+                "authorized_by": "user"  # audit assertion, 不是身份认证
+            }
+        },
         ...
     },
     "activation_keywords": [...8-15 个中英双份...],
     "primary_author": "agent-id",  # 必填, audit 用
 })
 ```
+
+上例的 `DEC` 属于受保护 durable family，因此必须带完整 project identity 与
+authority 回执；`INTF` / `PROC` / `PRJ` 相同。它们的 `PUT` 更新也必须在
+`content.extra` 继续携带该回执。公共 DELETE 被拒绝；请用 authorized writeback
+更新状态，或创建 replacement 后添加 `supersedes`。
 
 ### POST /api/writeback (批量字段更新)
 
@@ -168,6 +183,30 @@ requests.post("/api/nodes", json={
 - T3: 阶段节点 (bug修复 / 决策 / 接口 / 交接 / 新规则)
 
 反面清单: 中间参数 / 探索查询 / LLM 草稿 / 子步骤 → 永不 writeback。
+
+Durable `INTF` / `PROC` / `DEC` / `PRJ` 的 current 字段必须声明来源。
+用户明确方向不需要 approval subsystem：
+
+```python
+requests.post("/api/writeback", json={
+    "agent_id": "codex-project-W1",
+    "project_id": "project-id",
+    "project_namespace": "project-namespace",
+    "source_authority": "user_authoritative",
+    "authorized_by": "user",  # audit assertion, 不是身份认证
+    "changes": [{
+        "node_id": "DEC-project-current-owner",
+        "field": "current_state",
+        "value": "用户明确确认的新方向",
+    }],
+})
+```
+
+Git/CI/runtime 等机器事实使用 `source_authority=machine_verifiable`、
+`verification_state=verified` 和至少一个非敏感 `evidence_refs`。未经验证的
+网页、Agent 推断、activity/done 不得直接成为 durable current。这里的
+`machine_verifiable` 同样是可审计声明，不是 3CAN 的认证或签名验证结论；引用的
+receipt 必须能由后续 Reviewer 独立复核。
 
 ### POST /api/skills/invoke (skill 执行记录)
 

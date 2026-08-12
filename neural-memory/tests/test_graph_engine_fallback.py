@@ -133,3 +133,143 @@ def test_route_uses_query_expansion_and_exposes_meta(tmp_path, monkeypatch):
     assert result.route_meta["expanded_query_changed"] is True
     assert result.route_meta["query_expansion"]["variants"]
     assert result.route_meta["embedding_backend"] == "hashing-blake2b-char-ngram-v1"
+
+
+def test_graph_traversal_anchor_set_is_independent_of_requested_result_size(
+    tmp_path,
+    monkeypatch,
+):
+    graph_dir = tmp_path / "graph"
+    nodes_dir = graph_dir / "nodes"
+    nodes_dir.mkdir(parents=True)
+    (graph_dir / "edges.json").write_text("[]", encoding="utf-8")
+    for index in range(20):
+        node = {
+            "id": f"DOC-route-{index:02d}",
+            "name": f"Route evidence {index:02d}",
+            "cluster": "3CAN",
+            "type": "knowledge",
+            "status": "active",
+            "priority": "medium",
+            "content": {"description": f"semantic route evidence {index:02d}"},
+            "activation_keywords": ["semantic", "route", f"evidence-{index:02d}"],
+        }
+        (nodes_dir / f"{node['id']}.json").write_text(
+            json.dumps(node),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("THREECAN_GRAPH_DIR", str(graph_dir))
+    graph_engine = load_graph_engine()
+    graph_engine._embed_model = graph_engine._HashingEmbeddingModel()
+    engine = graph_engine.GraphEngine()
+
+    narrow = engine.route(
+        graph_engine.RoutingRequest(
+            task="semantic route evidence",
+            max_nodes=3,
+            include_edges=False,
+            agent_id="unit-narrow",
+        )
+    )
+    wide = engine.route(
+        graph_engine.RoutingRequest(
+            task="semantic route evidence",
+            max_nodes=12,
+            include_edges=False,
+            agent_id="unit-wide",
+        )
+    )
+
+    assert narrow.route_meta["graph_traversal_boost"]["anchor_count"] == 10
+    assert wide.route_meta["graph_traversal_boost"]["anchor_count"] == 10
+
+
+def test_cooccurrence_expansion_is_stable_for_equal_frequency_terms():
+    graph_engine = load_graph_engine()
+    engine = graph_engine.GraphEngine.__new__(graph_engine.GraphEngine)
+    engine.nodes = {}
+    engine._cooccurrence = {
+        "semantic": {"zeta-3", "zeta-2", "zeta-1"},
+        "route": {"alpha-3", "alpha-2", "alpha-1"},
+    }
+
+    expanded = engine._expand_query("route semantic")
+
+    assert expanded == "route semantic alpha-1 alpha-2 alpha-3 zeta-1 zeta-2"
+
+
+def test_natural_language_reuses_only_discriminative_short_code_index(
+    tmp_path,
+    monkeypatch,
+):
+    graph_dir = tmp_path / "graph"
+    nodes_dir = graph_dir / "nodes"
+    nodes_dir.mkdir(parents=True)
+    (graph_dir / "edges.json").write_text("[]", encoding="utf-8")
+    nodes = [
+        {
+            "id": "DOC-t8-recovery",
+            "name": "Recovery evidence",
+            "cluster": "3CAN",
+            "type": "knowledge",
+            "status": "active",
+            "priority": "medium",
+            "content": {"description": "T8 canonical recovery"},
+            "activation_keywords": ["recovery"],
+        }
+    ]
+    nodes.extend(
+        {
+            "id": f"DOC-ai45-{index:02d}",
+            "name": f"AI45 evidence {index:02d}",
+            "cluster": "3CAN",
+            "type": "knowledge",
+            "status": "active",
+            "priority": "medium",
+            "content": {"description": "AI45 broad project label"},
+            "activation_keywords": ["project"],
+        }
+        for index in range(16)
+    )
+    for node in nodes:
+        (nodes_dir / f"{node['id']}.json").write_text(
+            json.dumps(node),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("THREECAN_GRAPH_DIR", str(graph_dir))
+    graph_engine = load_graph_engine()
+    graph_engine._embed_model = graph_engine._HashingEmbeddingModel()
+    engine = graph_engine.GraphEngine()
+
+    discriminative = engine.route(
+        graph_engine.RoutingRequest(
+            task="How should T8 be recovered in this project?",
+            max_nodes=3,
+            include_edges=False,
+            agent_id="unit-t8",
+        )
+    )
+    broad = engine.route(
+        graph_engine.RoutingRequest(
+            task="What is the current AI45 project status?",
+            max_nodes=3,
+            include_edges=False,
+            agent_id="unit-ai45",
+        )
+    )
+
+    assert discriminative.route_meta["code_signal"] == {
+        "mode": "embedded",
+        "tokens": ["T8"],
+        "resolved_count": 1,
+    }
+    assert discriminative.route_meta["rrf_weights"][3] == 5.0
+    assert "DOC-t8-recovery" in discriminative.route_meta["semantic_result_ids"]
+    assert broad.route_meta["code_signal"] == {
+        "mode": "none",
+        "tokens": ["AI45"],
+        "resolved_count": 0,
+    }
+    assert broad.route_meta["rrf_weights"][3] == 0.0

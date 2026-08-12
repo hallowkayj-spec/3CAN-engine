@@ -40,21 +40,56 @@ def _get(path: str, params: dict | None = None) -> dict:
 
 
 @mcp.tool()
-def route(query: str, max_nodes: int = 4, agent_id: str = "mcp-client") -> str:
+def route(
+    query: str,
+    max_nodes: int = 4,
+    agent_id: str = "mcp-client",
+    project_id: str = "",
+    project_namespace: str = "",
+    workspace_id: str = "",
+    workorder_id: str = "",
+    session_instance_id: str = "",
+    route_id: str = "",
+) -> str:
     """查询3CAN记忆引擎, 返回最相关的节点(slim模式, 省token).
 
     用于: 查找项目记忆/决策/接口/错误记录/反馈规则等.
     短代码(如S55c, KB4, E6)和自然语言查询均可.
     """
-    data = _post("/api/route", {
-        "task": query, "max_nodes": max_nodes, "agent_id": agent_id,
-    })
+    body = {
+        "task": query,
+        "max_nodes": max_nodes,
+        "agent_id": agent_id,
+        **{
+            key: value
+            for key, value in {
+                "project_id": project_id,
+                "project_namespace": project_namespace,
+                "workspace_id": workspace_id,
+                "workorder_id": workorder_id,
+                "session_instance_id": session_instance_id,
+                "route_id": route_id,
+            }.items()
+            if value
+        },
+    }
+    data = _post("/api/route", body)
     # Handle both slim ("nodes") and full ("activated_nodes") response formats
     raw_nodes = data.get("nodes") or data.get("activated_nodes", [])
     scores = data.get("scores", {})
     if not raw_nodes:
         return "未找到匹配节点"
-    lines = [f"共{data.get('total_nodes', '?')}节点, 返回{len(raw_nodes)}个:\n"]
+    route_meta = data.get("route_meta") or {}
+    actual_route_id = str(
+        route_meta.get("route_id") or data.get("route_id") or ""
+    ).strip()
+    correlation = f"route_id={actual_route_id}"
+    if session_instance_id:
+        correlation += f" session_instance_id={session_instance_id}"
+    lines = [
+        f"共{data.get('total_nodes', '?')}节点, 返回{len(raw_nodes)}个:\n",
+        f"correlation: {correlation}\n" if actual_route_id else "",
+    ]
     for i, n in enumerate(raw_nodes):
         nid = n.get("id", "?")
         name = n.get("name", "")
@@ -77,14 +112,33 @@ def route(query: str, max_nodes: int = 4, agent_id: str = "mcp-client") -> str:
 
 
 @mcp.tool()
-def read_node(node_id: str, agent_id: str = "mcp-client") -> str:
+def read_node(
+    node_id: str,
+    agent_id: str = "mcp-client",
+    session_instance_id: str = "",
+    route_id: str = "",
+) -> str:
     """读取单个节点的完整内容(全量, ~800token).
 
     当route结果的slim摘要不够时, 用此工具获取详情.
-    自动触发Miss Healer: 如果此节点在上次route结果中, 记录positive outcome.
+    只有携带 route 返回的 route_id（以及对应 session_instance_id）时才记录
+    精确相关的 outcome；无 correlation 参数时保持只读，避免跨 Session 串反馈.
     """
+    if session_instance_id and not route_id:
+        raise ValueError("route_id_required_with_session_instance_id")
+    params = None
+    if route_id:
+        params = {
+            "agent_id": agent_id,
+            "route_id": route_id,
+            **(
+                {"session_instance_id": session_instance_id}
+                if session_instance_id
+                else {}
+            ),
+        }
     try:
-        data = _get(f"/api/nodes/{node_id}", {"agent_id": agent_id})
+        data = _get(f"/api/nodes/{node_id}", params)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             return f"节点 {node_id} 不存在"
@@ -118,13 +172,32 @@ def writeback(
     field: str,
     value: str,
     agent_id: str = "mcp-client",
+    source_authority: str = "untrusted_inferred",
+    verification_state: str = "unverified",
+    evidence_refs: list[str] | None = None,
+    authorized_by: str = "",
+    project_id: str = "",
+    project_namespace: str = "",
+    workspace_id: str = "",
+    workorder_id: str = "",
 ) -> str:
     """回写节点变更. field: current_state / notes / status / description.
 
-    遵守R9三触发协议: 仅在用户显式要求、上下文消耗≥50%、或阶段节点时回写.
+    Durable current fields require either machine_verifiable + a verified evidence
+    pointer, or user_authoritative + authorized_by=user. Both are audit declarations
+    at this surface, not authentication/signature verification. Notes/last_session
+    remain low-ceremony.
     """
     data = _post("/api/writeback", {
         "agent_id": agent_id,
+        "source_authority": source_authority,
+        "verification_state": verification_state,
+        "evidence_refs": evidence_refs or [],
+        "authorized_by": authorized_by,
+        "project_id": project_id,
+        "project_namespace": project_namespace,
+        "workspace_id": workspace_id,
+        "workorder_id": workorder_id,
         "changes": [{"node_id": node_id, "field": field, "value": value}],
     })
     updated = data.get("updated", [])

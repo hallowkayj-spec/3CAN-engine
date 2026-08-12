@@ -111,13 +111,15 @@ the maintainer 明确 (S66g): "是否真的起作用来评估, 如果走了我�
 
 | 层 | Release gate | 当前状态 |
 |---|---|---|
-| A. Memory | ≥ 0.75 on public benchmark (with 4 caveat) | ✅ LongMemEval oracle 0.75, 46-query MRR 0.92 (自建) |
+| A. Memory | frozen public or private OPC protocol + content-addressed receipt | 🟡 `validating`: public 16-node synthetic seed fixture has a reproducible 46-query receipt; historical LongMemEval 0.75 / MRR 0.92 are not current PASS evidence |
 | B. Substrate | ≥ 0.80 on substrate-bench v2+ (20+ cases) | 🟡 pilot v1 (10 cases) top1 0.70, v2 未跑 |
 | C. Harness | ≥ 0.85 on harness-bench v2+ (生产触发率 + valid-ticket 场景) | 🟡 pilot v1 (8 cases) 100% PASS, v2 未跑 |
-| No critical regression | — | ✅ S66g 3 bug 已修 (str(gt) / mode-full / reset-per-q 可选) |
+| No critical regression | — | 🟡 focused tests pass; real frozen-graph OPC before/after still required |
 | Real UAT scenarios closed | ≥ 5 for v0.1.x, ≥ 20 for v0.2 | 🟡 recorder ready, 实际 closed = 0 |
 
-**Release-ready 判定**: 所有硬门槛都过才算 release-ready. **v0.1 开源前状态**: A 过线, B/C pilot 版但未扩 v2, UAT 0 closed → **"active prototype / experimental developer preview"**, 不叫 "release-ready".
+**Release-ready 判定**: 所有硬门槛都过才算 release-ready. **当前状态**:
+A/B/C 与 real OPC 尚未全部闭合 → **"active prototype / experimental
+developer preview"**, 不叫 "release-ready".
 
 ### 不做
 

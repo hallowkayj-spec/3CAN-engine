@@ -493,6 +493,12 @@ def _seed_internal_owner(*node_ids: str) -> str | None:
         for node_id in node_ids
     ):
         return "error-migration"
+    if any(
+        str(node_id or "").split("-", 1)[0].upper()
+        in {"INTF", "PROC", "DEC", "PRJ"}
+        for node_id in node_ids
+    ):
+        return "durable-seed"
     return None
 
 
