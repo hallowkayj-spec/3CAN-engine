@@ -5212,10 +5212,80 @@ async def agent_checkin(payload: dict):
     return agent.model_dump()
 
 
+def _agents_with_heartbeat_presence(
+    registered_agents: list[Any],
+    *,
+    status_filter: str | None,
+    heartbeat_ttl_sec: int,
+    now: dt.datetime | None = None,
+) -> list[Any]:
+    """Project persisted registrations into a heartbeat-aware API view."""
+    ttl_sec = max(1, int(heartbeat_ttl_sec))
+    current_time = now or dt.datetime.now(dt.timezone.utc)
+    projected = []
+    for registered in registered_agents:
+        agent = registered.model_copy(deep=True)
+        registered_status = agent.status.value
+        heartbeat_age_sec: int | None = None
+        heartbeat_stale = True
+        try:
+            checked_in = dt.datetime.fromisoformat(
+                str(agent.last_checkin).replace("Z", "+00:00")
+            )
+            if checked_in.tzinfo is None:
+                checked_in = checked_in.replace(tzinfo=dt.timezone.utc)
+            heartbeat_age_sec = max(
+                0,
+                int(
+                    (
+                        current_time
+                        - checked_in.astimezone(dt.timezone.utc)
+                    ).total_seconds()
+                ),
+            )
+            heartbeat_stale = heartbeat_age_sec > ttl_sec
+        except (TypeError, ValueError):
+            heartbeat_stale = True
+
+        if heartbeat_stale and agent.status.value != "offline":
+            agent.status = type(agent.status).offline
+        agent.meta = dict(agent.meta)
+        agent.meta["heartbeat_presence"] = {
+            "stale": heartbeat_stale,
+            "age_sec": heartbeat_age_sec,
+            "ttl_sec": ttl_sec,
+            "registered_status": registered_status,
+        }
+        projected.append(agent)
+
+    if status_filter:
+        normalized_filter = str(status_filter).strip().casefold()
+        if normalized_filter == "stale":
+            projected = [
+                agent
+                for agent in projected
+                if bool(agent.meta["heartbeat_presence"]["stale"])
+            ]
+        else:
+            projected = [
+                agent
+                for agent in projected
+                if agent.status.value == normalized_filter
+            ]
+    return projected
+
+
 @app.get("/api/agents")
-async def list_agents(status: str | None = Query(None)):
-    """列出所有注册的Agent及其状态。"""
-    agents = engine.list_agents(status)
+async def list_agents(
+    status: str | None = Query(None, description="online|busy|idle|offline|stale"),
+    heartbeat_ttl_sec: int = Query(300, ge=30, le=86400),
+):
+    """列出Agent登记；超过心跳TTL的条目投影为offline。"""
+    agents = _agents_with_heartbeat_presence(
+        engine.list_agents(),
+        status_filter=status,
+        heartbeat_ttl_sec=heartbeat_ttl_sec,
+    )
     return [a.model_dump() for a in agents]
 
 

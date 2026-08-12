@@ -18,7 +18,7 @@ param(
     })]
     [string]$Action,
 
-    [string]$AgentId = 'codex-main',
+    [string]$AgentId,
     [string]$Role = 'frontend',
     [string]$Task = 'codex session',
     [string]$TaskDescription,
@@ -73,14 +73,21 @@ $OutputEncoding = $Utf8NoBom
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
 
+$AgentlessActions = @('doctor', 'pr-check', 'pr-create')
+if ($AgentlessActions -notcontains $Action) {
+    if ([string]::IsNullOrWhiteSpace($AgentId)) {
+        throw "$Action requires an explicit unique -AgentId."
+    }
+    $AgentId = $AgentId.Trim()
+    if ([string]::Equals($AgentId, 'codex-main', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Generic AgentId 'codex-main' is not allowed. Use a session- or workorder-specific id such as 'codex-main-<session-or-workorder>'."
+    }
+}
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Helper = Join-Path $ProjectRoot 'scripts\3can_codex.py'
 $Wrapper = Join-Path $ProjectRoot 'scripts\3can_codex_wrapper.ps1'
 $PrHarness = Join-Path $ProjectRoot 'scripts\3can_pr_harness.py'
-$PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-if (-not (Test-Path $PowerShellExe)) {
-    $PowerShellExe = 'powershell.exe'
-}
 
 function Resolve-Codex3CanEngineRoot {
     if ($EngineRoot) {
@@ -174,7 +181,7 @@ function Invoke-Codex3CanHelperObject {
 
 function Invoke-Codex3CanWrapper {
     param([string[]]$WrapperArgs)
-    & $PowerShellExe -NoProfile -ExecutionPolicy Bypass -File $Wrapper @WrapperArgs
+    & $Wrapper @WrapperArgs
     if ($LASTEXITCODE -ne 0) {
         throw "3CAN wrapper failed with exit code $LASTEXITCODE."
     }
@@ -182,7 +189,7 @@ function Invoke-Codex3CanWrapper {
 
 function Invoke-Codex3CanWrapperObject {
     param([string[]]$WrapperArgs)
-    $output = & $PowerShellExe -NoProfile -ExecutionPolicy Bypass -File $Wrapper @WrapperArgs
+    $output = & $Wrapper @WrapperArgs
     if ($LASTEXITCODE -ne 0) {
         $joined = $output -join "`n"
         throw "3CAN wrapper failed with exit code $LASTEXITCODE. Output: $joined"
@@ -634,7 +641,7 @@ switch ($Action) {
     }
 
     'clear' {
-        & $Wrapper clear-state -BaseUrl $BaseUrl
+        & $Wrapper clear-state -AgentId $AgentId -BaseUrl $BaseUrl
     }
 
     'pr-check' {

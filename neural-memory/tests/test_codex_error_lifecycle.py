@@ -6,9 +6,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -325,6 +327,201 @@ def test_packaged_powershell_done_never_infers_shared_ticket_state():
     assert wrapper_done.index(
         "if ($Action -eq 'done' -and -not $TicketId)"
     ) < wrapper_done.index("Resolve-TicketContext")
+
+
+def test_packaged_wrapper_partitions_state_and_compact_never_loads_it_implicitly():
+    outer_source = CODEX_POWERSHELL_PATH.read_text(encoding="utf-8")
+    wrapper_source = CODEX_WRAPPER_PATH.read_text(encoding="utf-8")
+
+    assert "[string]$AgentId = 'codex-main'" not in outer_source
+    assert "[string]$AgentId = 'codex-main'" not in wrapper_source
+    assert "Generic AgentId 'codex-main' is not allowed" in outer_source
+    assert "Generic AgentId 'codex-main' is not allowed" in wrapper_source
+    assert "$AgentWorkspaceStateDir" in wrapper_source
+    assert '"codex_wrapper_states\\{0}\\{1}"' in wrapper_source
+    assert "Get-3CanSha256Text $AgentId" in wrapper_source
+    assert "workspace_key = $WorkspaceKey" in wrapper_source
+    assert "function Test-3CanStateFresh" in wrapper_source
+    assert "$MaxInheritedStateAgeSec = 900" in wrapper_source
+    assert "latest.json" not in wrapper_source
+    assert "$StatePath" not in wrapper_source
+
+    clear_block = outer_source.split("'clear' {", 1)[1].split("'pr-check' {", 1)[0]
+    assert "& $Wrapper clear-state -AgentId $AgentId -BaseUrl $BaseUrl" in clear_block
+
+    compact_block = wrapper_source.split("'before-compact' {", 1)[1].split(
+        "'check-ticket' {", 1
+    )[0]
+    assert "Load-State" not in compact_block
+    assert "-RequireLiveTicket" in compact_block
+    assert "-RequireWorkspaceBinding" in compact_block
+    assert "explicit_files_only" in compact_block
+    assert compact_block.index("Resolve-TicketContext") < compact_block.index(
+        "Invoke-HelperJson $args"
+    )
+    assert "$expectedPaths.Count -eq 0 -and -not $ExpectedTicketId" in wrapper_source
+
+
+def test_packaged_outer_compact_preserves_explicit_target_files(tmp_path):
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell, "PowerShell is required to test the packaged wrapper contract"
+
+    scripts_dir = tmp_path / "project" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(CODEX_POWERSHELL_PATH, scripts_dir / "codex-3can.ps1")
+    shutil.copy2(CODEX_WRAPPER_PATH, scripts_dir / "3can_codex_wrapper.ps1")
+    (scripts_dir / "3can_codex.py").write_text(
+        "import json, sys\nprint(json.dumps({'argv': sys.argv[1:]}))\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(scripts_dir / "codex-3can.ps1"),
+            "compact",
+            "-AgentId",
+            "codex-test-compact-W1",
+            "-TaskSummary",
+            "durable continuation delta",
+            "-TargetFiles",
+            "README.md,scripts/tool.py,README.md",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    argv = payload["argv"]
+    compact_files = [argv[index + 1] for index, item in enumerate(argv) if item == "--file"]
+
+    assert compact_files == ["README.md", "scripts/tool.py"]
+    assert payload["compact_scope_files"] == compact_files
+    assert payload["compact_scope_selection"] == "explicit_files_only"
+
+
+def test_packaged_workspace_key_uses_host_case_semantics_and_non_git_fallback(request):
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell, "PowerShell is required to test the packaged wrapper contract"
+    tmp_path = Path(tempfile.mkdtemp(prefix="3can-workspace-case-"))
+    request.addfinalizer(lambda: shutil.rmtree(tmp_path, ignore_errors=True))
+
+    def install(project: Path) -> Path:
+        scripts_dir = project / "scripts"
+        scripts_dir.mkdir(parents=True)
+        wrapper = scripts_dir / "3can_codex_wrapper.ps1"
+        shutil.copy2(CODEX_WRAPPER_PATH, wrapper)
+        (scripts_dir / "3can_codex.py").write_text(
+            "import json\n"
+            "print(json.dumps({'ticket_id': 'rt_case', 'issued_at': "
+            "'2026-08-10T00:00:00+00:00', 'ttl_sec': 900}))\n",
+            encoding="utf-8",
+        )
+        return wrapper
+
+    def workspace_key(wrapper: Path, project: Path) -> str:
+        result = subprocess.run(
+            [
+                shell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(wrapper),
+                "before-edit",
+                "-AgentId",
+                "codex-workspace-case-W1",
+                "-TaskDescription",
+                "verify worktree identity",
+                "-TargetFiles",
+                "README.md",
+                "-ScopeKeywords",
+                "workspace-identity",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        state_path = Path(json.loads(result.stdout)["wrapper_state_path"])
+        assert state_path.resolve().is_relative_to(project.resolve())
+        return json.loads(state_path.read_text(encoding="utf-8-sig"))["workspace_key"]
+
+    if os.name == "nt":
+        project = tmp_path / "CaseProject"
+        wrapper = install(project)
+        assert workspace_key(wrapper, project) == workspace_key(
+            Path(str(wrapper).swapcase()), project
+        )
+    else:
+        upper_project = tmp_path / "CaseProject"
+        lower_project = tmp_path / "caseproject"
+        assert workspace_key(install(upper_project), upper_project) != workspace_key(
+            install(lower_project), lower_project
+        )
+
+
+def test_agent_api_projects_stale_heartbeats_without_mutating_registry():
+    backend_app = _load_backend_app()
+    from models import AgentInfo, AgentStatus
+
+    now = datetime.now(timezone.utc)
+    old_checkin = (now - timedelta(seconds=601)).isoformat()
+    fresh_checkin = (now - timedelta(seconds=10)).isoformat()
+    stale_registered = AgentInfo(
+        agent_id="codex-old-session",
+        status=AgentStatus.busy,
+        last_checkin=old_checkin,
+    )
+    fresh_registered = AgentInfo(
+        agent_id="codex-current-session",
+        status=AgentStatus.online,
+        last_checkin=fresh_checkin,
+    )
+    projected = {
+        agent.agent_id: agent
+        for agent in backend_app._agents_with_heartbeat_presence(
+            [stale_registered, fresh_registered],
+            status_filter=None,
+            heartbeat_ttl_sec=300,
+            now=now,
+        )
+    }
+
+    assert projected["codex-old-session"].status == AgentStatus.offline
+    assert projected["codex-old-session"].meta["heartbeat_presence"] == {
+        "stale": True,
+        "age_sec": 601,
+        "ttl_sec": 300,
+        "registered_status": "busy",
+    }
+    assert projected["codex-current-session"].status == AgentStatus.online
+    assert projected["codex-current-session"].meta["heartbeat_presence"]["stale"] is False
+    assert stale_registered.status == AgentStatus.busy
+    assert "heartbeat_presence" not in stale_registered.meta
+    assert [
+        agent.agent_id
+        for agent in backend_app._agents_with_heartbeat_presence(
+            [stale_registered, fresh_registered],
+            status_filter="stale",
+            heartbeat_ttl_sec=300,
+            now=now,
+        )
+    ] == ["codex-old-session"]
+    assert [
+        agent.agent_id
+        for agent in backend_app._agents_with_heartbeat_presence(
+            [stale_registered, fresh_registered],
+            status_filter="online",
+            heartbeat_ttl_sec=300,
+            now=now,
+        )
+    ] == ["codex-current-session"]
 
 
 def test_stats_runtime_identity_is_public_safe(monkeypatch, tmp_path):

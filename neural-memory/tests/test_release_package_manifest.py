@@ -159,7 +159,8 @@ def test_public_benchmark_fixtures_are_synthetic_and_private_graph_free() -> Non
     for relative_path, expected_sha256 in receipt_payload["source_sha256"].items():
         source_path = PACKAGE_ROOT / relative_path
         assert source_path.is_file()
-        assert hashlib.sha256(source_path.read_bytes()).hexdigest() == expected_sha256
+        git_bytes = source_path.read_bytes().replace(b"\r\n", b"\n")
+        assert hashlib.sha256(git_bytes).hexdigest() == expected_sha256
     assert evidence["fixture_changed_after_recorded_2026_04_15_run"] is True
     assert evidence["historical_2026_04_15_score_reproducible"] is False
 
