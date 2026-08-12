@@ -229,7 +229,7 @@ paths:
               $ref: '#/components/schemas/RouteTicketConsumeRequest'
       responses:
         '200': { description: Ticket consumption recorded. }
-        '403': { description: Agent, target digest, scope digest, or ErrorCase authorization mismatch. }
+        '403': { description: Agent, target digest, scope digest, or ErrorCase binding mismatch. }
         '404': { description: Ticket not found or inactive. }
 
   /api/errors/occurrences:
@@ -344,10 +344,13 @@ paths:
       summary: 更新节点 (部分字段, 增量 embedding)
       description: >
         Protected INTF/PROC/DEC/PRJ updates must carry complete project identity
-        and durable_provenance in content.extra.
+        and durable_provenance in content.extra, plus expected_updated_at from
+        the exact node read. A stale version conflicts only this mutation.
       responses:
         '200': { description: Node updated. }
         '403': { description: Protected durable-current provenance missing, unverified, or mismatched. }
+        '409': { description: Protected-node version changed since the exact read. }
+        '422': { description: Required protected-node version or update contract is missing. }
         '404': { description: Node not found. }
     delete:
       tags: [nodes]
@@ -407,6 +410,7 @@ paths:
       responses:
         '200': { description: Validated batch applied, including an empty updated list for a no-op. }
         '400': { description: Input, project identity, provenance, or change contract rejected before mutation. }
+        '409': { description: Protected-node version changed; only that scoped mutation conflicts. }
         '429': { description: Successful mutation quota exceeded for this agent and node; retry after the 60-second window. }
 
   /api/skills:
@@ -484,9 +488,9 @@ paths:
       summary: Append a hash-chained agent activity entry.
       description: >
         Used by PostToolUse hooks or pseudo-hook wrappers after mutation. Include
-        ticket_id when the activity was authorized by a route ticket.
+        ticket_id when the activity is covered by scoped route-ticket evidence.
         中文: mutation 后由 PostToolUse hook 或 pseudo-hook wrapper 写入 hash-chain
-        activity. 如果本次操作由 route ticket 授权, 应带 ticket_id.
+        activity. 如果本次操作由 route ticket 记录范围证据, 应带 ticket_id.
       requestBody:
         required: true
         content:
@@ -503,7 +507,7 @@ paths:
       summary: Complete one consumed ticket exactly once.
       description: >
         Binds the canonical completion request hash to the ticket. Typed
-        evidence is verified server-side before an authorized ErrorCase can
+        evidence is verified server-side before a ticket-bound ErrorCase can
         become resolved. Replays return the original response.
       requestBody:
         required: true
@@ -513,7 +517,7 @@ paths:
               $ref: '#/components/schemas/ActivityDoneRequest'
       responses:
         '200': { description: Completed, replayed, or review_required. }
-        '403': { description: ErrorCase is outside the ticket authorization. }
+        '403': { description: ErrorCase is outside the ticket-scoped evidence binding. }
         '409': { description: Completion request conflict or concurrent owner. }
 
   /api/stats:
@@ -902,7 +906,18 @@ components:
         workorder_id: { type: string, nullable: true }
         changes:
           type: array
-          items: { type: object }
+          items:
+            type: object
+            properties:
+              node_id: { type: string }
+              field: { type: string }
+              value: {}
+              expected_updated_at:
+                type: string
+                description: >
+                  Required for protected PRJ/INTF/PROC/DEC updates. A stale
+                  value returns a localized 409 instead of blocking unrelated
+                  nodes or Workorders.
 
     RouteOutcomeRequest:
       type: object

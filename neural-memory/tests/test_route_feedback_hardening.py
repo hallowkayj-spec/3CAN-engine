@@ -1255,9 +1255,10 @@ def test_correlated_exact_read_reactivates_a_recently_used_dormant_node(
             status=graph_engine.NodeStatus.dormant,
         )
     )
-    node.updated_at = "2020-01-01T00:00:00+00:00"
-    node.activation_count = 0
-    engine._save_node(node)
+    stored_node = engine.nodes[node.id]
+    stored_node.updated_at = "2020-01-01T00:00:00+00:00"
+    stored_node.activation_count = 0
+    engine._save_node(stored_node)
     engine._record_route_buffer(
         "agent-public",
         "dormant readback contract",
@@ -1270,11 +1271,13 @@ def test_correlated_exact_read_reactivates_a_recently_used_dormant_node(
         node.id,
         route_id="route-public-readback",
     )
+    node = engine.get_node(node.id)
     temporal = engine._node_temporal_fields(
         node,
         dt.datetime.now(dt.timezone.utc),
     )
     result = engine.lifecycle_sweep(stale_days=30, archive_days=60)
+    node = engine.get_node(node.id)
 
     assert outcome and outcome["type"] == "hit"
     assert node.content.extra["last_accessed_at"]
@@ -1421,6 +1424,9 @@ def test_durable_writeback_inherits_known_project_identity(tmp_path, monkeypatch
                 "field": "current_state",
                 "action": "set",
                 "value": "verified current",
+                "expected_updated_at": engine.nodes[
+                    "INTF-PUBLIC-current"
+                ].updated_at,
             }
         ],
         agent_id="PUBLIC-agent",
@@ -1616,7 +1622,10 @@ def test_protected_crud_requires_embedded_provenance_and_disables_delete(
 
     updated = engine.update_node(
         node.id,
-        graph_engine.NodeUpdate(content=updated_content),
+        graph_engine.NodeUpdate(
+            content=updated_content,
+            expected_updated_at=node.updated_at,
+        ),
     )
 
     assert updated is not None
@@ -1626,6 +1635,7 @@ def test_protected_crud_requires_embedded_provenance_and_disables_delete(
         node.id,
         graph_engine.NodeUpdate(
             status=graph_engine.NodeStatus.dormant,
+            expected_updated_at=updated.updated_at,
             content=graph_engine.NodeContent(
                 extra={
                     "project_id": extra["project_id"],
@@ -1639,8 +1649,45 @@ def test_protected_crud_requires_embedded_provenance_and_disables_delete(
     assert updated.status == graph_engine.NodeStatus.dormant
     assert updated.content.description == "second version"
     assert updated.content.extra["existing_metadata"] == {"must_survive": True}
+    with pytest.raises(ValueError, match="node_version_conflict"):
+        engine.update_node(
+            node.id,
+            graph_engine.NodeUpdate(
+                name="stale overwrite",
+                expected_updated_at=node.updated_at,
+                content=graph_engine.NodeContent(
+                    extra={
+                        "project_id": extra["project_id"],
+                        "project_namespace": extra["project_namespace"],
+                        "durable_provenance": extra["durable_provenance"],
+                    }
+                ),
+            ),
+        )
     with pytest.raises(PermissionError, match="durable_current_provenance_required"):
         engine.delete_node(node.id)
+
+
+def test_protected_public_put_maps_stale_version_to_local_409(monkeypatch):
+    app = load_app()
+
+    class FakeEngine:
+        @staticmethod
+        def update_node(_node_id, _request):
+            raise ValueError("node_version_conflict:PROC-PUBLIC-authorized")
+
+    monkeypatch.setattr(app, "engine", FakeEngine())
+    with pytest.raises(app.HTTPException) as conflict:
+        asyncio.run(
+            app.update_node(
+                "PROC-PUBLIC-authorized",
+                app.NodeUpdate(expected_updated_at="stale"),
+            )
+        )
+    assert conflict.value.status_code == 409
+    assert conflict.value.detail == {
+        "error": "node_version_conflict:PROC-PUBLIC-authorized"
+    }
 
 
 def test_writeback_never_claims_existing_unscoped_node_identity(
@@ -1668,6 +1715,7 @@ def test_writeback_never_claims_existing_unscoped_node_identity(
                 "field": "current_state",
                 "action": "set",
                 "value": "confirmed global contract",
+                "expected_updated_at": node.updated_at,
             }
         ],
         execution_context=context,
@@ -1676,6 +1724,7 @@ def test_writeback_never_claims_existing_unscoped_node_identity(
             authorized_by="user",
         ),
     )
+    current = engine.get_node(node.id)
     engine.session_writeback(
         [
             {
@@ -1683,6 +1732,7 @@ def test_writeback_never_claims_existing_unscoped_node_identity(
                 "field": "notes",
                 "action": "set",
                 "value": "low-ceremony note",
+                "expected_updated_at": current.updated_at,
             }
         ],
         execution_context=context,
@@ -1706,6 +1756,7 @@ def test_same_value_user_confirmation_refreshes_provenance_receipt(
                 "field": "current_state",
                 "action": "set",
                 "value": node.content.current_state,
+                "expected_updated_at": node.updated_at,
             }
         ],
         agent_id="PUBLIC-agent",
@@ -1990,6 +2041,10 @@ def test_handoff_context_edge_uses_existing_informs_contract(monkeypatch):
         nodes = {"DOC-PUBLIC-context": object()}
 
         @staticmethod
+        def run_consistent(operation, /, *args, **kwargs):
+            return operation(*args, **kwargs)
+
+        @staticmethod
         def create_node(req):
             return type(
                 "CreatedNode",
@@ -2033,6 +2088,10 @@ def test_handoff_rejects_reserved_context_before_writing(monkeypatch):
 
     class FakeHandoffEngine:
         nodes = {"DOC-PUBLIC-context": object(), "ERR-PUBLIC-context": object()}
+
+        @staticmethod
+        def run_consistent(operation, /, *args, **kwargs):
+            return operation(*args, **kwargs)
 
         @staticmethod
         def create_node(req):
@@ -2082,6 +2141,10 @@ def test_handoff_ack_rejects_non_handoff_and_missing_agent_before_write(monkeypa
 
     class FakeHandoffEngine:
         nodes = {"DEC-PUBLIC-current": protected}
+
+        @staticmethod
+        def run_consistent(operation, /, *args, **kwargs):
+            return operation(*args, **kwargs)
 
         @staticmethod
         def _save_node(node):

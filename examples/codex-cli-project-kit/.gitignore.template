@@ -1,6 +1,3 @@
 # Copy these entries into the target project's .gitignore when installing the
-# Codex project kit. They contain local tickets, route state, pending
-# writebacks, error outboxes, and test/research receipts.
-data/_3can_pending_writeback/
-data/_3can_runtime/
+# Codex project kit. They contain local test and research receipts.
 test-results/3can/

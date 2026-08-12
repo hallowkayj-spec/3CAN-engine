@@ -1,4 +1,4 @@
-"""Process-safe SQLite ticket ledger for 3CAN route authorization.
+"""Process-safe SQLite ticket ledger for 3CAN scoped mutation evidence.
 
 The ledger is intentionally stdlib-only.  Every mutation uses ``BEGIN
 IMMEDIATE``; WAL permits concurrent readers while serializing issue, consume,

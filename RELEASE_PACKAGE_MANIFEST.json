@@ -69,6 +69,7 @@
     "neural-memory/proxy/server.py",
     "neural-memory/tests/conftest.py",
     "neural-memory/tests/test_codex_error_lifecycle.py",
+    "neural-memory/tests/test_async_graph_concurrency.py",
     "neural-memory/tests/test_embedding_cache_safety.py",
     "neural-memory/tests/test_error_knowledge.py",
     "neural-memory/tests/test_graph_engine_fallback.py",

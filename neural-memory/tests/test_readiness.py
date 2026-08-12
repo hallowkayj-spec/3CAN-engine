@@ -569,6 +569,10 @@ def test_deep_stats_and_ready_endpoints_request_deep_embedding(
         edges: list = []
 
         @staticmethod
+        def run_consistent(operation, /, *args, **kwargs):
+            return operation(*args, **kwargs)
+
+        @staticmethod
         def stats():
             return FakeStats()
 

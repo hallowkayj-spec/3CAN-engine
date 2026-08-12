@@ -94,8 +94,8 @@ Read-only routing does not require a ticket, check-in, hook, or wrapper. Use the
 prepare/done lifecycle only when a project has a concrete guarded-write or
 evidence requirement. The wrapper never starts or terminates backend/proxy
 processes. Explicit `-StartServer`/`--start-server` is an operator setup
-action; a managed Windows installation may instead expose one Scheduled Task
-to the wrapper.
+action. A managed Windows installation may use one machine-owned Supervisor
+Scheduled Task; wrappers only observe Runtime readiness.
 
 ## Optional GitHub PR Fallback
 

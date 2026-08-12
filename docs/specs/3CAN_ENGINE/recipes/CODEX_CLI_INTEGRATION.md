@@ -21,9 +21,7 @@ If the host project ships the Codex helper scripts, prefer a single bootstrap
 entrypoint instead of manually remembering each HTTP call:
 
 ```powershell
-$agentId = "codex-main-W1-20260810" # replace for every session/workorder
 scripts\codex-3can.cmd bootstrap `
-  -AgentId $agentId `
   -Role frontend `
   -Task "current task"
 ```
@@ -31,7 +29,8 @@ scripts\codex-3can.cmd bootstrap `
 This pseudo-hook harness does what Codex cannot do natively yet:
 
 - verifies the real 3CAN graph instead of trusting a responding `9700`
-- starts backend/proxy when allowed and offline
+- returns typed `UNAVAILABLE` when the machine-owned Runtime is offline; it
+  never starts or recovers backend/proxy
 - checks in the agent with a stable `agent_id`
 - fetches compressed briefing
 - routes the current task before long file reads
@@ -40,7 +39,6 @@ Before mutating files, use:
 
 ```powershell
 $prepareResult = scripts\codex-3can.cmd prepare `
-  -AgentId $agentId `
   -TaskDescription "edit focused area" `
   -TargetFiles path/to/file `
   -ToolName apply_patch `
@@ -50,17 +48,17 @@ if (-not $ticketId) { throw "prepare did not return ticket_id" }
 ```
 
 After the mutation, use
-`scripts\codex-3can.cmd done -AgentId $agentId -TicketId $ticketId -Detail "what changed and why"`.
+`scripts\codex-3can.cmd done -TicketId $ticketId -Detail "what changed and why"`.
 Always pass the exact ID returned by that operation's `prepare`; never infer it
-from shared wrapper state. Wrapper state is isolated by AgentId and physical
-Git worktree and expires after at most 900 seconds for implicit selection.
-Before compacting, pass files explicitly, or pass a still-live ticket from the
-same worktree; compact never imports files from implicit state.
+from wrapper state. The wrapper stores no ticket-selection state. Before
+compacting, pass files explicitly; compact never imports files from ticket or
+wrapper state.
 
 ### Step 1. Agent checkin
 
-Choose one readable unique AgentId for this serious session/workorder and reuse
-it for the related calls; choose a new ID for the next session/workorder.
+The packaged helper derives one stable AgentId from the current execution. A
+direct API client must still carry its own explicit unique AgentId on every
+related call; AgentId is identity and correlation, not authority.
 
 ```bash
 curl -X POST http://localhost:9700/api/agents/checkin \

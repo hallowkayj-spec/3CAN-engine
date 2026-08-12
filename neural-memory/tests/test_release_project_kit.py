@@ -512,7 +512,7 @@ def test_project_kit_blocks_missing_capsule_mutation_before_http(
     )
 
 
-def test_project_kit_ticket_prepare_and_supervise_send_bound_identity(
+def test_project_kit_ticket_and_prepare_send_bound_identity(
     tmp_path,
     monkeypatch,
 ):
@@ -521,20 +521,6 @@ def test_project_kit_ticket_prepare_and_supervise_send_bound_identity(
     monkeypatch.setattr(helper, "PROJECT_ROOT", linked)
     monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
     monkeypatch.setattr(helper, "_record_local_token_estimate", lambda *args, **kwargs: None)
-    monkeypatch.setattr(helper, "_record_error_disposition_ticket", lambda *args, **kwargs: None)
-    monkeypatch.setattr(helper, "_record_route_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(helper, "_record_supervise_state", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        helper,
-        "build_memory_preflight",
-        lambda *args, **kwargs: {
-            "status": "pass",
-            "memory_quality": {},
-            "policy_hits": [],
-            "must_do_next": [],
-            "must_not_do": [],
-        },
-    )
 
     captured: list[tuple[str, dict[str, object] | None]] = []
     expected_target = helper._canonical_physical_path(linked / "root-target.txt")
@@ -580,39 +566,6 @@ def test_project_kit_ticket_prepare_and_supervise_send_bound_identity(
     assert prepare_payload is not None
     assert_project_execution_payload(helper, prepare_payload, linked)
 
-    captured.clear()
-    engine_root = tmp_path / "engine"
-    monkeypatch.setattr(
-        helper,
-        "resolve_engine_root",
-        lambda override=None: {"selected": str(engine_root), "source": "test"},
-    )
-    monkeypatch.setattr(helper, "_selected_graph_root", lambda _root: engine_root / "graph")
-    monkeypatch.setattr(helper, "_validate_stats", lambda *args, **kwargs: (True, None))
-    supervise_args = SimpleNamespace(
-        **vars(prepare_args),
-        engine_root=None,
-        min_nodes=10,
-        max_nodes=8,
-        mode="slim",
-        budget_tokens=1200,
-        timeout_seconds=10.0,
-        ticket_id="",
-        no_consume_ticket=True,
-        skip_ticket=False,
-    )
-    assert helper.supervise(supervise_args) == 0
-    route_payload = next(payload for path, payload in captured if path == "/api/route")
-    supervise_payload = next(
-        payload for path, payload in captured if path == "/api/route/ticket"
-    )
-    assert route_payload is not None
-    assert route_payload["project_id"] == "project-kit"
-    assert route_payload["project_namespace"] == "project-kit"
-    assert route_payload["workspace_id"] == helper._execution_context()["workspace_id"]
-    assert supervise_payload is not None
-    assert_project_execution_payload(helper, supervise_payload, linked)
-
 
 def test_project_kit_rejects_mutation_project_mismatch_bypass(monkeypatch):
     helper = load_project_kit_helper()
@@ -654,10 +607,7 @@ def test_project_kit_rejects_mutation_project_mismatch_bypass(monkeypatch):
         helper._with_execution_context({"task": "mutation"})
 
     assert helper._project_mismatch_bypass_is_read_only(
-        SimpleNamespace(command="failure-gate-sync", apply=False)
-    )
-    assert not helper._project_mismatch_bypass_is_read_only(
-        SimpleNamespace(command="failure-gate-sync", apply=True)
+        SimpleNamespace(command="route")
     )
 
 
@@ -676,6 +626,225 @@ def test_project_kit_has_no_production_runtime_lifecycle_authority():
         "THREECAN_SUPERVISOR_TASK_NAME",
         "--start-if-offline",
         "StartIfOffline",
+    ):
+        assert forbidden not in source
+
+
+def test_project_kit_derives_stable_agent_identity_without_user_ceremony(
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    identity_env = (
+        "THREECAN_AGENT_ID",
+        "CODEX_AGENT_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+        "THREECAN_SESSION_ID",
+        "THREECAN_WORKORDER_ID",
+        "WORKORDER_ID",
+    )
+    for name in identity_env:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="agent_id_stable_execution_identity_required",
+    ):
+        helper._resolve_agent_id()
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-alpha")
+    alpha = helper._resolve_agent_id()
+    assert alpha.startswith("codex-thread-alpha-")
+    assert helper._resolve_agent_id() == alpha
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-beta")
+    assert helper._resolve_agent_id() != alpha
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread:collision")
+    colon = helper._resolve_agent_id()
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread/collision")
+    assert helper._resolve_agent_id() != colon
+
+    long_prefix = "codex-" + ("x" * 200)
+    assert helper._resolve_agent_id(long_prefix + "-one") != helper._resolve_agent_id(
+        long_prefix + "-two"
+    )
+
+    monkeypatch.setenv("THREECAN_AGENT_ID", "codex-configured")
+    assert helper._resolve_agent_id() == "codex-configured"
+    assert helper._resolve_agent_id("codex-explicit") == "codex-explicit"
+    with pytest.raises(ValueError, match="generic_agent_id_forbidden"):
+        helper._resolve_agent_id("codex-main")
+
+    monkeypatch.delenv("THREECAN_AGENT_ID")
+    monkeypatch.delenv("CODEX_THREAD_ID")
+    monkeypatch.setenv("THREECAN_WORKORDER_ID", "workorder-final-fallback")
+    assert helper._resolve_agent_id().startswith(
+        "codex-workorder-final-fallback-"
+    )
+
+
+def test_project_kit_cli_reuses_derived_agent_across_independent_commands(
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    monkeypatch.delenv("THREECAN_AGENT_ID", raising=False)
+    monkeypatch.delenv("CODEX_AGENT_ID", raising=False)
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-shared-flow")
+    parser = helper.build_parser()
+    omitted_value = parser.parse_args(
+        ["route", "--agent-id", "--task", "read current project reality"]
+    )
+    assert omitted_value.agent_id == ""
+    commands = (
+        ["route", "--task", "read current project reality"],
+        [
+            "prepare",
+            "--task-description",
+            "bounded mutation",
+            "--target-file",
+            "README.md",
+            "--tool-name",
+            "apply_patch",
+            "--tool-input-summary",
+            "edit README",
+        ],
+        [
+            "done",
+            "--ticket-id",
+            "TKT-exact",
+            "--detail",
+            "bounded mutation complete",
+        ],
+    )
+    resolved = []
+    for argv in commands:
+        args = parser.parse_args(argv)
+        assert args.agent_id == ""
+        resolved.append(helper._resolve_agent_id(args.agent_id))
+    assert len(set(resolved)) == 1
+    assert resolved[0].startswith("codex-thread-shared-flow-")
+
+
+def test_project_kit_writeback_overrides_file_identity_with_current_execution(
+    monkeypatch,
+    tmp_path,
+):
+    helper = load_project_kit_helper()
+    payload_path = tmp_path / "writeback.json"
+    payload_path.write_text(
+        json.dumps({"agent_id": "stale-agent", "changes": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-current-writeback")
+    monkeypatch.setattr(
+        helper,
+        "_with_execution_context",
+        lambda payload: {**payload, "project_id": "public-demo"},
+    )
+    captured = {}
+    monkeypatch.setattr(
+        helper,
+        "_try_json_request",
+        lambda _base, _path, **kwargs: (
+            captured.update(kwargs["payload"]) is None,
+            {"ok": True},
+        ),
+    )
+    monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
+    monkeypatch.setattr(helper, "_record_local_token_estimate", lambda *args, **kwargs: None)
+    args = helper.build_parser().parse_args(
+        ["writeback", "--file", str(payload_path)]
+    )
+    args.agent_id = helper._resolve_agent_id(args.agent_id)
+
+    assert helper.writeback(args) == 0
+    assert captured["agent_id"].startswith("codex-thread-current-writeback-")
+    assert captured["agent_id"] != "stale-agent"
+
+
+def test_project_kit_session_correlation_is_derived_without_local_state():
+    helper = load_project_kit_helper()
+    session_id = helper._session_id_for_agent("codex-thread-one")
+    assert helper._session_id_for_agent("codex-thread-one") == session_id
+    assert helper._session_id_for_agent("codex-thread-two") != session_id
+    assert not hasattr(helper, "LOCAL_RUNTIME_DIR")
+
+
+def test_project_kit_wrapper_has_no_local_ticket_truth():
+    scripts = PROJECT_KIT_HELPER.parent
+    helper_source = PROJECT_KIT_HELPER.read_text(encoding="utf-8")
+    wrapper = (scripts / "3can_codex_wrapper.ps1").read_text(encoding="utf-8")
+    outer = (scripts / "codex-3can.ps1").read_text(encoding="utf-8")
+    for forbidden in (
+        "codex_wrapper_states",
+        "Load-State",
+        "Save-State",
+        "THREECAN_TICKET_ID",
+        "show-state",
+        "clear-state",
+        "wrapper_state_",
+    ):
+        assert forbidden not in wrapper
+    assert "'state'" not in outer
+    assert "'clear'" not in outer
+    assert "'supervise'" not in outer
+    assert "'supervise-status'" not in outer
+    assert "_record_supervise_state" not in helper_source
+    assert "route-freshness" not in helper_source
+    assert "last_route" not in helper_source
+    assert "session_{_safe_id_part" not in helper_source
+    for forbidden_policy in (
+        "memory-preflight",
+        "failure-gate-sync",
+        "flush-pending",
+        "loop_signatures",
+        "error_disposition_tickets",
+    ):
+        assert forbidden_policy not in helper_source
+        assert forbidden_policy not in outer
+    assert "done requires explicit -TicketId" in wrapper
+
+
+def test_project_kit_hook_commands_resolve_to_shipped_scripts():
+    project_kit = PROJECT_KIT_HELPER.parents[1]
+    hook_config = json.loads(
+        (project_kit / ".codex" / "hooks.json").read_text(encoding="utf-8")
+    )
+    commands = [
+        hook["command"]
+        for groups in hook_config["hooks"].values()
+        for group in groups
+        for hook in group.get("hooks", [])
+        if hook.get("type") == "command"
+    ]
+    for command in commands:
+        parts = command.split()
+        assert parts[0] == "python"
+        assert (project_kit / parts[1]).is_file(), command
+
+
+def test_active_client_guidance_keeps_runtime_machine_owned():
+    active_paths = (
+        RELEASE_ROOT / "3CAN.md",
+        RELEASE_ROOT / "README.md",
+        RELEASE_ROOT / "README.en.md",
+        RELEASE_ROOT / "docs" / "PROJECT_KIT.md",
+        RELEASE_ROOT / "docs" / "USER_GUIDE.md",
+        RELEASE_ROOT / "docs" / "specs" / "3CAN_ENGINE" / "AGENT_BINDING.md",
+        RELEASE_ROOT
+        / "docs"
+        / "specs"
+        / "3CAN_ENGINE"
+        / "recipes"
+        / "CODEX_CLI_INTEGRATION.md",
+        RELEASE_ROOT / "examples" / "codex-cli-project-kit" / "AGENTS.template.md",
+    )
+    source = "\n".join(path.read_text(encoding="utf-8") for path in active_paths)
+    for forbidden in (
+        "starts backend/proxy when allowed and offline",
+        "checks or starts 3CAN",
+        "request Supervisor recovery",
+        "bootstrap the correct project-local 3CAN endpoint",
+        "Resolve the blocked supervisor gates",
     ):
         assert forbidden not in source
 

@@ -255,6 +255,7 @@ class NodeUpdate(BaseModel):
     activation_keywords: list[str] | None = None
     priority: Priority | None = None
     updated_by: str = "system"
+    expected_updated_at: str | None = None
 
 
 # ── 边 ──
@@ -445,7 +446,7 @@ class AgentStatus(str, Enum):
 
 class AgentInfo(BaseModel):
     """注册的Agent信息。"""
-    agent_id: str                                # e.g. "opus3", "opus2-video", "codex-main"
+    agent_id: str                                # e.g. "opus3", "opus2-video", "codex-thread-abc123"
     name: str = ""                               # 人类可读名称
     role: str = ""                               # e.g. "3CAN引擎开发", "视频AI工程", "战略审计"
     status: AgentStatus = AgentStatus.online

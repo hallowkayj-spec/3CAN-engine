@@ -391,7 +391,6 @@ def test_project_kit_sends_projection_and_explicit_mode_wins(tmp_path, monkeypat
     monkeypatch.setattr(helper, "PROJECT_ROOT", root)
     monkeypatch.setattr(helper, "STAGING_ENGINE_ROOT", ROOT)
     monkeypatch.setattr(helper, "_record_local_token_estimate", lambda *a, **k: None)
-    monkeypatch.setattr(helper, "_record_route_state", lambda *a, **k: None)
     monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
     sent = []
 
@@ -627,6 +626,7 @@ def test_project_briefing_filters_activity_and_ranks_applicable_errors_first(
     )
     fake_engine = SimpleNamespace(
         nodes=nodes,
+        list_nodes=lambda: list(nodes.values()),
         _is_error_case_node=lambda node_id, _node: node_id.startswith("ERR-"),
         _is_error_artifact_node=lambda node_id, _node: node_id.startswith("ERR-"),
         _reserved_error_knowledge_id=lambda node_id: node_id.startswith("ERR-"),
@@ -717,6 +717,7 @@ def test_agent_mediated_semantic_checkpoint_updates_meaning_without_commit_mirro
                 "node_id": node_id,
                 "field": "current_state",
                 "value": "accepted: owner intent module verified at the current Git PR",
+                "expected_updated_at": engine.get_node(node_id).updated_at,
             }
         ],
         agent_id="PUBLIC-checkpoint-agent",

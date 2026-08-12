@@ -203,6 +203,7 @@ requests.post("/api/writeback", json={
         "node_id": "DEC-project-current-owner",
         "field": "current_state",
         "value": "用户明确确认的新方向",
+        "expected_updated_at": "<exact-node-updated-at-from-read>",
     }],
 })
 ```

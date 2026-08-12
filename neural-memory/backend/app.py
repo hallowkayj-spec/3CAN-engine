@@ -20,7 +20,6 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from threading import Lock
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
@@ -88,7 +87,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 engine: GraphEngine | None = None
-engine_route_lock = Lock()
 token_usage_store: TokenUsageStore | None = None
 token_usage_import_task: asyncio.Task | None = None
 
@@ -181,15 +179,18 @@ token_usage_import_state: dict[str, Any] = {
 }
 
 
-def _route_sync_locked(req: RoutingRequest):
+async def _engine_in_worker(operation, /, *args, **kwargs):
+    """Keep GraphEngine lock waits and disk/model work off the event loop."""
+
     if engine is None:
         raise RuntimeError("3CAN engine is not initialized")
-    with engine_route_lock:
-        return engine.route(req)
+    return await asyncio.to_thread(operation, *args, **kwargs)
 
 
 async def _route_in_worker(req: RoutingRequest):
-    return await asyncio.to_thread(_route_sync_locked, req)
+    if engine is None:
+        raise RuntimeError("3CAN engine is not initialized")
+    return await _engine_in_worker(engine.route, req)
 
 
 def _request_with_owner_intent(
@@ -365,7 +366,7 @@ async def lifespan(app: FastAPI):
     # Watch paths are configured explicitly or derived from the current project.
     watch_dirs = _default_watch_dirs()
     if watch_dirs:
-        engine.start_sync_watcher(watch_dirs, interval=30)
+        await asyncio.to_thread(engine.start_sync_watcher, watch_dirs, interval=30)
     if token_usage_import_state.get("enabled"):
         token_usage_import_task = asyncio.create_task(_token_usage_auto_import_loop())
     try:
@@ -378,10 +379,7 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
             token_usage_import_task = None
-        try:
-            engine.stop_sync_watcher()
-        finally:
-            engine.close()
+        await asyncio.to_thread(engine.close)
     print("[3CAN] 关闭")
 
 
@@ -544,12 +542,16 @@ async def index():
 
 @app.get("/api/graph")
 async def get_graph():
-    return engine.export_graph()
+    return await _engine_in_worker(engine.export_graph)
 
 
 @app.get("/api/stats")
 async def get_stats(deep: bool = False):
-    return _stats_snapshot(deep=deep)
+    return await _engine_in_worker(
+        engine.run_consistent,
+        _stats_snapshot,
+        deep=deep,
+    )
 
 
 @app.get("/api/health/live")
@@ -563,7 +565,11 @@ async def get_liveness():
 
 @app.get("/api/health/ready")
 async def get_readiness(deep: bool = False):
-    _, _, readiness = _readiness_snapshot(deep=deep)
+    _, _, readiness = await _engine_in_worker(
+        engine.run_consistent,
+        _readiness_snapshot,
+        deep=deep,
+    )
     return JSONResponse(
         content=readiness,
         status_code=200 if readiness["production_ready"] else 503,
@@ -574,7 +580,7 @@ async def get_readiness(deep: bool = False):
 async def get_embedding_status(deep: bool = False):
     """Expose read-only embedding/cache diagnostics without graph mutation."""
 
-    return engine.embedding_status(deep=deep)
+    return await _engine_in_worker(engine.embedding_status, deep=deep)
 
 
 # ── Token usage / cost metering ──
@@ -675,7 +681,8 @@ async def list_nodes(
     status: str | None = Query(None),
     type: str | None = Query(None),
 ):
-    return [n.model_dump() for n in engine.list_nodes(cluster, status, type)]
+    nodes = await _engine_in_worker(engine.list_nodes, cluster, status, type)
+    return [node.model_dump() for node in nodes]
 
 
 @app.get("/api/nodes/{node_id}")
@@ -693,11 +700,7 @@ async def get_node(
                 "reason": "agent_id_required_with_route_correlation",
             },
         )
-    node = engine.get_node(node_id)
-    if not node:
-        raise HTTPException(404, f"节点 {node_id} 不存在")
     # Miss Healer: 自动推断route outcome
-    inferred = None
     if agent_id:
         try:
             if session_instance_id is not None:
@@ -720,12 +723,27 @@ async def get_node(
                     "reason": str(exc),
                 },
             ) from exc
-        inferred = engine.infer_outcome(
-            agent_id,
-            node_id,
-            session_instance_id=session_instance_id,
-            route_id=route_id,
-        )
+    def _read_with_outcome():
+        node = engine.get_node(node_id)
+        if not node:
+            return None, None
+        inferred = None
+        if agent_id:
+            inferred = engine.infer_outcome(
+                agent_id,
+                node_id,
+                session_instance_id=session_instance_id,
+                route_id=route_id,
+            )
+            node = engine.get_node(node_id)
+        return node, inferred
+
+    node, inferred = await _engine_in_worker(
+        engine.run_consistent,
+        _read_with_outcome,
+    )
+    if not node:
+        raise HTTPException(404, f"节点 {node_id} 不存在")
     resp = node.model_dump()
     if inferred:
         resp["_inferred_outcome"] = inferred
@@ -827,7 +845,7 @@ async def create_node(req: NodeCreate, strict: bool = Query(False), force: bool 
             print(f"[R1 probe failed non-fatal] {_e}\n{traceback.format_exc()}", file=sys.stderr)
 
     try:
-        node = engine.create_node(req)
+        node = await _engine_in_worker(engine.create_node, req)
     except (PermissionError, ValueError) as exc:
         message = str(exc)
         status = (
@@ -847,10 +865,15 @@ async def create_node(req: NodeCreate, strict: bool = Query(False), force: bool 
 async def update_node(node_id: str, req: NodeUpdate):
     _guard_error_knowledge_crud(node_id)
     try:
-        node = engine.update_node(node_id, req)
+        node = await _engine_in_worker(engine.update_node, node_id, req)
     except (PermissionError, ValueError) as exc:
-        status = 403 if isinstance(exc, PermissionError) else 422
-        raise HTTPException(status, detail={"error": str(exc)}) from exc
+        message = str(exc)
+        status = (
+            403
+            if isinstance(exc, PermissionError)
+            else (409 if "node_version_conflict" in message else 422)
+        )
+        raise HTTPException(status, detail={"error": message}) from exc
     if not node:
         raise HTTPException(404, f"节点 {node_id} 不存在")
     await manager.broadcast({"event": "node_updated", "node": node.model_dump()})
@@ -861,7 +884,7 @@ async def update_node(node_id: str, req: NodeUpdate):
 async def delete_node(node_id: str):
     _guard_error_knowledge_crud(node_id)
     try:
-        ok = engine.delete_node(node_id)
+        ok = await _engine_in_worker(engine.delete_node, node_id)
     except (PermissionError, ValueError) as exc:
         status = 403 if isinstance(exc, PermissionError) else 422
         raise HTTPException(status, detail={"error": str(exc)}) from exc
@@ -875,7 +898,8 @@ async def delete_node(node_id: str):
 
 @app.get("/api/edges")
 async def list_edges(node_id: str | None = Query(None)):
-    return [e.model_dump() for e in engine.list_edges(node_id)]
+    edges = await _engine_in_worker(engine.list_edges, node_id)
+    return [edge.model_dump() for edge in edges]
 
 
 @app.post("/api/edges")
@@ -883,22 +907,24 @@ async def create_edge(req: EdgeCreate):
     _guard_error_knowledge_crud(req.source, req.target)
     if req.source == req.target:
         raise HTTPException(400, "self_edge_not_allowed")
-    if req.source not in engine.nodes:
-        raise HTTPException(400, f"源节点 {req.source} 不存在")
-    if req.target not in engine.nodes:
-        raise HTTPException(400, f"目标节点 {req.target} 不存在")
-    req_type = str(getattr(req.type, "value", req.type))
-    if any(
-        e.source == req.source
-        and e.target == req.target
-        and str(getattr(e.type, "value", e.type)) == req_type
-        for e in engine.edges
-    ):
-        raise HTTPException(409, "duplicate_edge_exists")
+
+    def _create_edge_once():
+        requested_type = str(getattr(req.type, "value", req.type))
+        if any(
+            edge.source == req.source
+            and edge.target == req.target
+            and str(getattr(edge.type, "value", edge.type)) == requested_type
+            for edge in engine.edges
+        ):
+            raise ValueError("duplicate_edge_exists")
+        return engine.create_edge(req)
+
     try:
-        edge = engine.create_edge(req)
+        edge = await _engine_in_worker(engine.run_consistent, _create_edge_once)
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        message = str(exc)
+        status = 409 if message == "duplicate_edge_exists" else 400
+        raise HTTPException(status, message) from exc
     await manager.broadcast({"event": "edge_created", "edge": edge.model_dump()})
     return edge.model_dump()
 
@@ -907,7 +933,11 @@ async def create_edge(req: EdgeCreate):
 async def cleanup_graph_edges(payload: dict):
     apply_changes = bool(payload.get("apply", False))
     sample_limit = int(payload.get("sample_limit", 50))
-    result = engine.cleanup_edges(apply=apply_changes, sample_limit=sample_limit)
+    result = await _engine_in_worker(
+        engine.cleanup_edges,
+        apply=apply_changes,
+        sample_limit=sample_limit,
+    )
     if apply_changes and result.get("changed"):
         await manager.broadcast({"event": "edges_cleaned", "result": result})
     return result
@@ -917,7 +947,7 @@ async def cleanup_graph_edges(payload: dict):
 async def delete_edge(source: str = Query(...), target: str = Query(...)):
     _guard_error_knowledge_crud(source, target)
     try:
-        ok = engine.delete_edge(source, target)
+        ok = await _engine_in_worker(engine.delete_edge, source, target)
     except PermissionError as exc:
         raise HTTPException(403, detail={"error": str(exc)}) from exc
     if not ok:
@@ -1923,10 +1953,20 @@ async def route_task(req: RoutingRequest, detail: bool = Query(False)):
 @app.get("/api/retrieve/{node_id}")
 async def retrieve_node(node_id: str, agent_id: str = Query("unknown")):
     """CCR 第二段: agent 从 skeleton 选定后取全量 content. 记 expand 活动用于学习."""
-    node = engine.get_node(node_id)
+    def _retrieve_once():
+        node = engine.get_node(node_id)
+        if node:
+            engine.log_activity(
+                agent_id,
+                "expand",
+                f"retrieve {node_id}",
+                affected_nodes=[node_id],
+            )
+        return node
+
+    node = await _engine_in_worker(engine.run_consistent, _retrieve_once)
     if not node:
         raise HTTPException(404, f"节点 {node_id} 不存在")
-    engine.log_activity(agent_id, "expand", f"retrieve {node_id}", affected_nodes=[node_id])
     return node.model_dump()
 
 
@@ -1969,7 +2009,11 @@ async def route_outcome(payload: dict):
     node_id = str(payload.get("node_id") or "").strip()
     raw_signal = payload.get("signal", 1.0)
     try:
-        result = engine.record_route_feedback(query, [(node_id, raw_signal)])
+        result = await _engine_in_worker(
+            engine.record_route_feedback,
+            query,
+            [(node_id, raw_signal)],
+        )
         signal = float(raw_signal)
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, detail={"error": str(exc)}) from exc
@@ -1999,7 +2043,8 @@ async def route_feedback(payload: dict):
     if not isinstance(correct, list) or not isinstance(wrong, list):
         raise HTTPException(400, "correct_node_ids和wrong_node_ids必须是list")
     try:
-        result = engine.record_route_feedback(
+        result = await _engine_in_worker(
+            engine.record_route_feedback,
             query,
             [
                 *((str(node_id), 1.0) for node_id in correct),
@@ -2831,7 +2876,8 @@ async def issue_route_ticket(payload: dict):
         stored_ticket["reused"] = True
         return stored_ticket
 
-    engine.log_activity(
+    await _engine_in_worker(
+        engine.log_activity,
         agent_id=agent_id,
         action="ticket_issued",
         detail=f"task={task_desc[:80]} n_err={len(err_hits)} n_intf={len(intf_hits)}",
@@ -2924,8 +2970,14 @@ async def consume_route_ticket(ticket_id: str, payload: dict):
                 raise LedgerError("ticket_already_consumed")
             activity_hash = str(prior.get("activity_hash") or "").casefold()
             if not activity_hash:
+                activity_entries = await _engine_in_worker(
+                    engine.get_activity,
+                    agent_id=supplied_agent,
+                    action="ticket_consumed",
+                    limit=1_000_000,
+                )
                 for candidate in reversed(
-                    list(getattr(engine, "activity_log", []) or [])
+                    activity_entries
                 ):
                     meta = getattr(candidate, "meta", {}) or {}
                     if (
@@ -2949,7 +3001,8 @@ async def consume_route_ticket(ticket_id: str, payload: dict):
                         )
                     )
             if not activity_hash:
-                repaired = engine.log_activity(
+                repaired = await _engine_in_worker(
+                    engine.log_activity,
                     agent_id=supplied_agent,
                     action="ticket_consumed",
                     detail=(
@@ -2994,7 +3047,8 @@ async def consume_route_ticket(ticket_id: str, payload: dict):
             _ledger_http_status(exc),
             detail={"error": exc.code, "ticket_id": ticket_id},
         ) from exc
-    entry = engine.log_activity(
+    entry = await _engine_in_worker(
+        engine.log_activity,
         agent_id=str(t.get("agent_id") or "unknown"),
         action="ticket_consumed",
         detail=f"tool={consumed['tool_name']} summary={consumed['tool_input_summary'][:120]}",
@@ -3292,7 +3346,11 @@ async def _record_error_occurrence_core(payload: dict):
     if case["promoted"]:
         status = "PROMOTED"
         try:
-            _project_error_case(case)
+            await _engine_in_worker(
+                engine.run_consistent,
+                _project_error_case,
+                case,
+            )
             case = _ticket_ledger().error_case(
                 fingerprint=str(case["fingerprint"])
             )
@@ -3591,7 +3649,7 @@ def _ticketed_consume_activity(
                 409,
                 detail={"error": "consume_activity_binding_mismatch"},
             )
-        return entry
+        return entry.model_copy(deep=True)
     raise HTTPException(
         409,
         detail={"error": "consume_activity_not_found"},
@@ -3611,7 +3669,7 @@ def _find_ticketed_error_activity(
             == event_idempotency_key
             and str(meta.get("occurrence_id") or "") == occurrence_id
         ):
-            return entry
+            return entry.model_copy(deep=True)
     return None
 
 
@@ -3699,7 +3757,9 @@ async def record_ticketed_error_occurrence(payload: dict):
     if str(ticket.get("agent_id") or "") != agent_id:
         raise HTTPException(403, detail={"error": "ticket_agent_mismatch"})
     _ticketed_error_spool_binding(payload, ticket, occurrence)
-    _ticketed_consume_activity(
+    await _engine_in_worker(
+        engine.run_consistent,
+        _ticketed_consume_activity,
         activity_hash=consume_activity_hash,
         ticket_id=ticket_id,
         agent_id=agent_id,
@@ -3813,7 +3873,11 @@ async def record_ticketed_error_occurrence(payload: dict):
                 raise RuntimeError("ticketed occurrence fingerprint conflict")
             case = ledger.error_case(fingerprint=occurrence_fingerprint)
             if case and case.get("promoted"):
-                _project_error_case(case)
+                await _engine_in_worker(
+                    engine.run_consistent,
+                    _project_error_case,
+                    case,
+                )
                 context["occurrence_status"] = "PROMOTED"
                 context["case_id"] = case.get("case_id")
             elif context.get("occurrence_status") == "PARTIAL":
@@ -3827,13 +3891,16 @@ async def record_ticketed_error_occurrence(payload: dict):
             stage = delivery["stage"]
 
         if stage == "projected":
-            activity = _find_ticketed_error_activity(
+            activity = await _engine_in_worker(
+                engine.run_consistent,
+                _find_ticketed_error_activity,
                 event_idempotency_key,
                 occurrence_id,
             )
             if activity is None:
                 affected = [str(context.get("case_id") or "")]
-                activity = engine.log_activity(
+                activity = await _engine_in_worker(
+                    engine.log_activity,
                     agent_id=agent_id,
                     action="error_occurrence_delivered",
                     detail=f"occurrence={occurrence_id}",
@@ -4070,7 +4137,7 @@ async def log_activity_endpoint(payload: dict):
     Body: {agent_id, action, detail, affected_nodes?, meta?, ticket_id?}
     Called by 3can-post-tool-capture.js after Edit/Write/MultiEdit/NotebookEdit
     and mutating Bash. Writes to activity_log (hash chain) + optional ticket
-    back-reference (which ticket authorized this action).
+    back-reference (which ticket recorded this action's bounded scope).
     """
     agent_id = (payload.get("agent_id") or "unknown").strip()
     action = (payload.get("action") or "").strip()
@@ -4084,7 +4151,8 @@ async def log_activity_endpoint(payload: dict):
     if not action:
         raise HTTPException(400, detail={"error": "action_required"})
 
-    entry = engine.log_activity(
+    entry = await _engine_in_worker(
+        engine.log_activity,
         agent_id=agent_id,
         action=action,
         detail=detail,
@@ -4198,7 +4266,7 @@ def _normalize_verification_evidence(value: Any) -> list[dict[str, Any]]:
 def _activity_by_self_hash(self_hash: str) -> Any | None:
     for entry in reversed(list(getattr(engine, "activity_log", []) or [])):
         if str(getattr(entry, "self_hash", "") or "").casefold() == self_hash:
-            return entry
+            return entry.model_copy(deep=True)
     return None
 
 
@@ -4736,7 +4804,7 @@ def _find_completion_activity(ticket_id: str, request_hash: str) -> Any | None:
             and str(meta.get("completion_request_hash") or "") == request_hash
             and str(getattr(entry, "action", "") or "") == "done"
         ):
-            return entry
+            return entry.model_copy(deep=True)
     return None
 
 
@@ -4900,7 +4968,9 @@ async def complete_activity_endpoint(payload: dict):
     resolution_results: list[dict[str, Any]] = []
     resolved_at = _utc_now().isoformat()
     try:
-        targets = _validate_error_resolution_targets(
+        targets = await _engine_in_worker(
+            engine.run_consistent,
+            _validate_error_resolution_targets,
             error_ids,
             ticket_id=ticket_id,
         )
@@ -4929,22 +4999,38 @@ async def complete_activity_endpoint(payload: dict):
                 }
                 for item in blueprints
             ]
-            _upsert_evidence_nodes(blueprints)
+            await _engine_in_worker(
+                engine.run_consistent,
+                _upsert_evidence_nodes,
+                blueprints,
+            )
             ledger.advance_completion(
                 ticket_id, request_hash=request_hash, owner_token=owner_token,
                 stage="evidence_upserted", context=journal_context,
             )
-            _upsert_solution_nodes(blueprints)
+            await _engine_in_worker(
+                engine.run_consistent,
+                _upsert_solution_nodes,
+                blueprints,
+            )
             ledger.advance_completion(
                 ticket_id, request_hash=request_hash, owner_token=owner_token,
                 stage="solution_upserted", context=journal_context,
             )
-            _upsert_resolution_edges(blueprints)
+            await _engine_in_worker(
+                engine.run_consistent,
+                _upsert_resolution_edges,
+                blueprints,
+            )
             ledger.advance_completion(
                 ticket_id, request_hash=request_hash, owner_token=owner_token,
                 stage="edges_upserted", context=journal_context,
             )
-            resolution_results = _update_resolved_error_nodes(blueprints)
+            resolution_results = await _engine_in_worker(
+                engine.run_consistent,
+                _update_resolved_error_nodes,
+                blueprints,
+            )
             ledger.resolve_error_cases(
                 [
                     {
@@ -4963,7 +5049,9 @@ async def complete_activity_endpoint(payload: dict):
                 stage="error_updated", context=journal_context,
             )
         elif targets:
-            resolution_results = _mark_errors_review_required(
+            resolution_results = await _engine_in_worker(
+                engine.run_consistent,
+                _mark_errors_review_required,
                 targets,
                 agent_id=agent_id,
                 ticket_id=ticket_id,
@@ -4986,7 +5074,12 @@ async def complete_activity_endpoint(payload: dict):
                 if value
             ])
         affected_ids = list(dict.fromkeys(affected_ids))
-        entry = _find_completion_activity(ticket_id, request_hash)
+        entry = await _engine_in_worker(
+            engine.run_consistent,
+            _find_completion_activity,
+            ticket_id,
+            request_hash,
+        )
         resolution_outcome = (
             "resolved"
             if targets and evidence_ok
@@ -5009,7 +5102,8 @@ async def complete_activity_endpoint(payload: dict):
                 "error_dispositions": error_dispositions,
                 "resolution_outcome": resolution_outcome,
             }
-            entry = engine.log_activity(
+            entry = await _engine_in_worker(
+                engine.log_activity,
                 agent_id=agent_id,
                 action="done",
                 detail=detail,
@@ -5096,23 +5190,6 @@ async def handoff_create(payload: dict):
             400,
             detail={"error": "handoff_context_node_ids_invalid"},
         )
-    existing_context_ids = [
-        node_id for node_id in context_ids if node_id in engine.nodes
-    ]
-    reserved_context_ids = [
-        node_id
-        for node_id in existing_context_ids
-        if _reserved_error_knowledge_id(node_id)
-    ]
-    if reserved_context_ids:
-        raise HTTPException(
-            403,
-            detail={
-                "error": "handoff_reserved_context_not_allowed",
-                "node_ids": reserved_context_ids,
-            },
-        )
-
     now = _utc_now()
     ts = now.strftime("%Y%m%d-%H%M%S")
     node_id = f"HO-{ts}-{from_agent.replace('-', '_')}"
@@ -5138,19 +5215,47 @@ async def handoff_create(payload: dict):
         activation_keywords=["handoff", "交接", from_agent, to_agent, "pending", "待办"],
         priority="high",
     )
-    node = engine.create_node(req)
-
-    # 建立context edges
-    for cid in existing_context_ids:
-        engine.create_edge(
-            EdgeCreate(
-                source=node_id,
-                target=cid,
-                type=EdgeType.informs,
-                weight=0.5,
-                description="handoff上下文",
+    def _create_handoff_once():
+        existing_context_ids = [
+            context_id for context_id in context_ids if context_id in engine.nodes
+        ]
+        reserved_context_ids = [
+            context_id
+            for context_id in existing_context_ids
+            if _reserved_error_knowledge_id(context_id)
+        ]
+        if reserved_context_ids:
+            raise PermissionError(
+                "handoff_reserved_context_not_allowed:"
+                + ",".join(reserved_context_ids)
             )
+        node = engine.create_node(req)
+        for context_id in existing_context_ids:
+            engine.create_edge(
+                EdgeCreate(
+                    source=node_id,
+                    target=context_id,
+                    type=EdgeType.informs,
+                    weight=0.5,
+                    description="handoff上下文",
+                )
+            )
+        return node
+
+    try:
+        node = await _engine_in_worker(
+            engine.run_consistent,
+            _create_handoff_once,
         )
+    except PermissionError as exc:
+        _, _, raw_node_ids = str(exc).partition(":")
+        raise HTTPException(
+            403,
+            detail={
+                "error": "handoff_reserved_context_not_allowed",
+                "node_ids": [item for item in raw_node_ids.split(",") if item],
+            },
+        ) from exc
 
     await manager.broadcast({"event": "handoff_created", "node": node.model_dump()})
     return {"handoff_id": node_id, "to_agent": to_agent}
@@ -5160,7 +5265,7 @@ async def handoff_create(payload: dict):
 async def handoff_pending(agent_id: str = Query(...)):
     """返回指向本agent或广播的未ack handoff. 新session冷启动时调用."""
     pending = []
-    for n in engine.nodes.values():
+    for n in await _engine_in_worker(engine.list_nodes):
         if not n.id.startswith("HO-"):
             continue
         if n.status.value != "active":
@@ -5189,24 +5294,32 @@ async def handoff_ack(handoff_id: str, payload: dict):
     if not isinstance(raw_agent_id, str) or not raw_agent_id.strip():
         raise HTTPException(400, detail={"error": "handoff_agent_id_required"})
     agent_id = raw_agent_id.strip()
-    node = engine.nodes.get(handoff_id)
-    if not node:
-        raise HTTPException(404, "handoff不存在")
-    extra = node.content.extra if isinstance(node.content.extra, dict) else {}
-    node_type = str(getattr(node.type, "value", node.type)).strip().casefold()
-    if (
-        not handoff_id.startswith("HO-")
-        or node_type != "session"
-        or not isinstance(extra.get("from_agent"), str)
-        or not isinstance(extra.get("to_agent"), str)
-        or not isinstance(extra.get("acknowledged_by"), dict)
-    ):
-        raise HTTPException(400, detail={"error": "handoff_identity_invalid"})
-    ack = dict(extra["acknowledged_by"])
-    ack[agent_id] = _utc_now().isoformat()
-    node.content.extra["acknowledged_by"] = ack
-    node.updated_at = _utc_now().isoformat()
-    engine._save_node(node)
+    def _ack_handoff_once():
+        node = engine.nodes.get(handoff_id)
+        if not node:
+            raise LookupError("handoff_not_found")
+        extra = node.content.extra if isinstance(node.content.extra, dict) else {}
+        node_type = str(getattr(node.type, "value", node.type)).strip().casefold()
+        if (
+            not handoff_id.startswith("HO-")
+            or node_type != "session"
+            or not isinstance(extra.get("from_agent"), str)
+            or not isinstance(extra.get("to_agent"), str)
+            or not isinstance(extra.get("acknowledged_by"), dict)
+        ):
+            raise ValueError("handoff_identity_invalid")
+        acknowledged_by = dict(extra["acknowledged_by"])
+        acknowledged_by[agent_id] = _utc_now().isoformat()
+        node.content.extra["acknowledged_by"] = acknowledged_by
+        node.updated_at = _utc_now().isoformat()
+        engine._save_node(node)
+
+    try:
+        await _engine_in_worker(engine.run_consistent, _ack_handoff_once)
+    except LookupError as exc:
+        raise HTTPException(404, "handoff不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(400, detail={"error": str(exc)}) from exc
     return {"acknowledged": handoff_id, "agent_id": agent_id}
 
 
@@ -5216,6 +5329,7 @@ async def handoff_ack(handoff_id: str, payload: dict):
 _WB_COUNTER: dict[tuple[str, str], list[float]] = {}
 _WB_WINDOW_SEC = 60
 _WB_MAX_PER_WINDOW = 5
+_WB_RATE_LOCK = asyncio.Lock()
 
 
 def _writeback_rate_limit_violators(agent_id: str, node_ids: list[str]) -> list[str]:
@@ -5265,7 +5379,8 @@ async def session_writeback(payload: dict):
             detail={"error": "writeback_changes_must_be_list"},
         )
 
-    # v9.4 #32 Rate limit 检查
+    # v9.4 #32 Rate limit targets. The check and successful accounting are
+    # serialized below so concurrent requests cannot overrun the same quota.
     target_nodes = [
         node_id
         for change in changes
@@ -5273,21 +5388,6 @@ async def session_writeback(payload: dict):
         and isinstance((node_id := change.get("node_id")), str)
         and node_id
     ]
-    if target_nodes:
-        violators = _writeback_rate_limit_violators(agent_id, target_nodes)
-        if violators:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "error": "writeback_rate_limit",
-                    "agent_id": agent_id,
-                    "violators": violators,
-                    "window_sec": _WB_WINDOW_SEC,
-                    "max_per_window": _WB_MAX_PER_WINDOW,
-                    "guidance": f"Agent {agent_id} 在 {_WB_WINDOW_SEC}s 窗口内对节点 {violators} writeback 次数已超 {_WB_MAX_PER_WINDOW}. 防刷. 等 60s 再写, 或合并多次变更为一次.",
-                },
-            )
-
     execution_context = _execution_identity_context(
         payload if isinstance(payload, dict) else {}
     )
@@ -5304,23 +5404,43 @@ async def session_writeback(payload: dict):
             status_code=400,
             detail={"error": "writeback_provenance_invalid", "message": str(exc)},
         ) from exc
-    try:
-        updated = engine.session_writeback(
-            changes,
-            agent_id=agent_id,
-            execution_context=execution_context,
-            provenance=provenance,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "writeback_change_invalid",
-                "reason": str(exc),
-            },
-        ) from exc
-    if updated:
-        _record_writeback_rate_limit(agent_id, updated)
+    async with _WB_RATE_LOCK:
+        if target_nodes:
+            violators = _writeback_rate_limit_violators(agent_id, target_nodes)
+            if violators:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": "writeback_rate_limit",
+                        "agent_id": agent_id,
+                        "violators": violators,
+                        "window_sec": _WB_WINDOW_SEC,
+                        "max_per_window": _WB_MAX_PER_WINDOW,
+                    },
+                )
+        try:
+            updated = await _engine_in_worker(
+                engine.session_writeback,
+                changes,
+                agent_id=agent_id,
+                execution_context=execution_context,
+                provenance=provenance,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            raise HTTPException(
+                status_code=(
+                    409
+                    if reason.startswith("writeback_node_version_conflict:")
+                    else 400
+                ),
+                detail={
+                    "error": "writeback_change_invalid",
+                    "reason": reason,
+                },
+            ) from exc
+        if updated:
+            _record_writeback_rate_limit(agent_id, updated)
     await manager.broadcast({"event": "writeback", "updated": updated, "agent_id": agent_id})
     return {"updated": updated, "count": len(updated), "agent_id": agent_id}
 
@@ -5333,7 +5453,7 @@ async def learn_preference(payload: dict):
     key = payload.get("key", "general")
     value = payload.get("value", "")
     context = payload.get("context", "")
-    node = engine.learn_preference(key, value, context)
+    node = await _engine_in_worker(engine.learn_preference, key, value, context)
     await manager.broadcast({"event": "preference_learned", "key": key})
     return {"status": "ok", "preferences": node.content.extra.get("preferences", {})}
 
@@ -5344,7 +5464,7 @@ async def learn_preference(payload: dict):
 async def list_skills(active_only: bool = Query(True)):
     """列出所有 type=skill 节点 + 使用统计."""
     out = []
-    for n in engine.nodes.values():
+    for n in await _engine_in_worker(engine.list_nodes):
         # NodeType(str, Enum): n.type.value == "skill", 也接受字符串直写
         ntype = getattr(n.type, "value", n.type)
         if ntype != "skill":
@@ -5383,47 +5503,59 @@ async def record_skill_invocation(payload: dict):
     agent_id = payload.get("agent_id", "unknown")
     outcome = payload.get("outcome", "success")
     duration_s = payload.get("duration_s")
-    node = engine.get_node(skill_id)
-    if not node:
-        raise HTTPException(404, f"skill {skill_id} 不存在")
-    ntype = getattr(node.type, "value", node.type)
-    if ntype != "skill":
-        raise HTTPException(400, f"{skill_id} 不是 skill 节点 (type={ntype})")
+    def _record_invocation_once():
+        node = engine.nodes.get(skill_id)
+        if not node:
+            raise LookupError(f"skill {skill_id} 不存在")
+        node_type = getattr(node.type, "value", node.type)
+        if node_type != "skill":
+            raise ValueError(f"{skill_id} 不是 skill 节点 (type={node_type})")
 
-    extra = dict(node.content.extra or {})
-    sc = int(extra.get("success_count", 0) or 0)
-    fc = int(extra.get("fail_count", 0) or 0)
-    avg = extra.get("avg_duration_s")
-
-    if outcome == "success":
-        sc += 1
-    else:
-        fc += 1
-    # 运行平均 duration
-    if duration_s is not None:
-        n_calls = sc + fc
-        if avg is None or n_calls <= 1:
-            avg = float(duration_s)
+        extra = dict(node.content.extra or {})
+        success_count = int(extra.get("success_count", 0) or 0)
+        fail_count = int(extra.get("fail_count", 0) or 0)
+        average = extra.get("avg_duration_s")
+        if outcome == "success":
+            success_count += 1
         else:
-            avg = (avg * (n_calls - 1) + float(duration_s)) / n_calls
+            fail_count += 1
+        if duration_s is not None:
+            call_count = success_count + fail_count
+            if average is None or call_count <= 1:
+                average = float(duration_s)
+            else:
+                average = (
+                    average * (call_count - 1) + float(duration_s)
+                ) / call_count
 
-    extra.update({
-        "success_count": sc,
-        "fail_count": fc,
-        "avg_duration_s": round(avg, 3) if avg is not None else None,
-        "last_invoked_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-        "last_outcome": outcome,
-        "last_agent": agent_id,
-    })
-    node.content.extra = extra
-    node.activation_count += 1
-    engine._save_node(node)
+        extra.update({
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "avg_duration_s": round(average, 3) if average is not None else None,
+            "last_invoked_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "last_outcome": outcome,
+            "last_agent": agent_id,
+        })
+        node.content.extra = extra
+        node.activation_count += 1
+        engine._save_node(node)
+        engine.log_activity(
+            agent_id,
+            "skill_invoked",
+            f"skill={skill_id} outcome={outcome} dur={duration_s}",
+            affected_nodes=[skill_id],
+        )
+        return success_count, fail_count, extra
 
-    engine.log_activity(
-        agent_id, "skill_invoked",
-        f"skill={skill_id} outcome={outcome} dur={duration_s}",
-        affected_nodes=[skill_id],
-    )
+    try:
+        sc, fc, extra = await _engine_in_worker(
+            engine.run_consistent,
+            _record_invocation_once,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     total = sc + fc
     rate = sc / total if total else None
@@ -5441,22 +5573,24 @@ async def record_skill_invocation(payload: dict):
 @app.get("/api/audit/verify")
 async def audit_verify_chain():
     """校验 activity_log 的 hash chain 完整性. 开源后给第三方审计用."""
-    return engine.verify_activity_chain()
+    return await _engine_in_worker(engine.verify_activity_chain)
 
 
 # ── 热重载 ──
 
 @app.post("/api/reload")
 async def reload_graph(background: bool = True):
-    """热重载. background=True (默认) 在线程池执行不阻塞event loop. 即使触发全量rebuild, 其他API正常服务."""
-    if background:
-        asyncio.create_task(asyncio.to_thread(engine.reload))
-        await manager.broadcast({"event": "graph_reload_started"})
-        return {"status": "started", "background": True, "nodes_before": len(engine.nodes), "hint": "查询 /api/stats 直到node数变化"}
-    else:
-        await asyncio.to_thread(engine.reload)
-        await manager.broadcast({"event": "graph_reloaded"})
-        return {"nodes": len(engine.nodes), "edges": len(engine.edges)}
+    """Reload in a worker and return only after the coherent state is committed."""
+    del background  # retained for request compatibility; detached mutation is unsafe
+    await _engine_in_worker(engine.reload)
+    await manager.broadcast({"event": "graph_reloaded"})
+    current = await _engine_in_worker(engine.stats)
+    return {
+        "status": "completed",
+        "background": False,
+        "nodes": current.total_nodes,
+        "edges": current.total_edges,
+    }
 
 
 # ── Feature 1: 同步层 ──
@@ -5466,13 +5600,13 @@ async def start_sync(payload: dict = {}):
     """启动文件变更监听。"""
     memory_dir = Path(payload.get("memory_dir") or _default_memory_dir())
     interval = payload.get("interval", 30)
-    engine.start_sync_watcher([memory_dir], interval=interval)
+    await _engine_in_worker(engine.start_sync_watcher, [memory_dir], interval=interval)
     return {"status": "watching", "dirs": [str(memory_dir)], "interval": interval}
 
 
 @app.post("/api/sync/stop")
 async def stop_sync():
-    engine.stop_sync_watcher()
+    await _engine_in_worker(engine.stop_sync_watcher)
     return {"status": "stopped"}
 
 
@@ -5480,7 +5614,7 @@ async def stop_sync():
 async def rescan_memory(payload: dict = {}):
     """手动触发memory目录全量rescan。"""
     memory_dir = Path(payload.get("memory_dir") or _default_memory_dir())
-    result = engine.rescan_memory_dir(memory_dir)
+    result = await _engine_in_worker(engine.rescan_memory_dir, memory_dir)
     return result
 
 
@@ -5491,21 +5625,21 @@ async def lifecycle_sweep(payload: dict = {}):
     """执行节点生命周期扫描: active→stale→archived。永不删除。
     v7.3 async: CPU重操作卸载到thread, 不阻塞event loop。
     """
-    import asyncio
     stale_days = int(payload.get("stale_days", 30))
     archive_days = int(payload.get("archive_days", 60))
-    background = bool(payload.get("background", False))
-    if background:
-        asyncio.create_task(asyncio.to_thread(engine.lifecycle_sweep, stale_days, archive_days))
-        return {"status": "started", "background": True}
-    result = await asyncio.to_thread(engine.lifecycle_sweep, stale_days, archive_days)
+    result = await _engine_in_worker(
+        engine.lifecycle_sweep,
+        stale_days,
+        archive_days,
+    )
+    result["background"] = False
     return result
 
 
 @app.get("/api/lifecycle/stats")
 async def lifecycle_stats():
     """节点生命周期统计。"""
-    return engine.get_lifecycle_stats()
+    return await _engine_in_worker(engine.get_lifecycle_stats)
 
 
 # ── R12-R16 节点瘦身体系 ──
@@ -5522,41 +5656,45 @@ async def outcome_stats():
     """Layer 4 sidecar: outcome学习统计。
     返回click_log状态、shadow/active/demoted计数、token效率趋势。
     """
-    log = engine._click_log
-    total_queries = len(log)
-    total_signals = sum(len(v) for v in log.values())
-    # shadow: signal < 3, active: signal >= 3, demoted: signal <= -2
-    shadow = active = demoted = 0
-    for query, nodes in log.items():
-        for nid, sig in nodes.items():
-            if sig >= 3.0:
-                active += 1
-            elif sig <= -2.0:
-                demoted += 1
-            else:
-                shadow += 1
+    def _snapshot():
+        log = engine._click_log
+        total_queries = len(log)
+        total_signals = sum(len(v) for v in log.values())
+        # shadow: signal < 3, active: signal >= 3, demoted: signal <= -2
+        shadow = active = demoted = 0
+        for nodes in log.values():
+            for sig in nodes.values():
+                if sig >= 3.0:
+                    active += 1
+                elif sig <= -2.0:
+                    demoted += 1
+                else:
+                    shadow += 1
 
-    code_index_size = sum(len(v) for v in engine._code_index.values())
+        code_index_size = sum(len(v) for v in engine._code_index.values())
+        pending_kw = engine._pending_keywords
+        pending_nodes = len(pending_kw)
+        pending_tokens = sum(len(v) for v in pending_kw.values())
+        near_promote = sum(
+            1
+            for node_keywords in pending_kw.values()
+            for count in node_keywords.values()
+            if count >= 2
+        )
+        return {
+            "click_log_queries": total_queries,
+            "click_log_signals": total_signals,
+            "mapping_shadow": shadow,
+            "mapping_active": active,
+            "mapping_demoted": demoted,
+            "code_index_entries": code_index_size,
+            "code_index_codes": len(engine._code_index),
+            "miss_healer_pending_nodes": pending_nodes,
+            "miss_healer_pending_tokens": pending_tokens,
+            "miss_healer_near_promote": near_promote,
+        }
 
-    # Miss Healer stats
-    pending_kw = engine._pending_keywords
-    pending_nodes = len(pending_kw)
-    pending_tokens = sum(len(v) for v in pending_kw.values())
-    near_promote = sum(1 for nid_kws in pending_kw.values()
-                       for count in nid_kws.values() if count >= 2)
-
-    return {
-        "click_log_queries": total_queries,
-        "click_log_signals": total_signals,
-        "mapping_shadow": shadow,
-        "mapping_active": active,
-        "mapping_demoted": demoted,
-        "code_index_entries": code_index_size,
-        "code_index_codes": len(engine._code_index),
-        "miss_healer_pending_nodes": pending_nodes,
-        "miss_healer_pending_tokens": pending_tokens,
-        "miss_healer_near_promote": near_promote,
-    }
+    return await _engine_in_worker(engine.run_consistent, _snapshot)
 
 
 @app.post("/api/nodes/merge")
@@ -5570,7 +5708,12 @@ async def merge_nodes(payload: dict):
     if not keep_id or not remove_id:
         raise HTTPException(422, "need keep_id and remove_id")
     _guard_error_knowledge_crud(keep_id, remove_id)
-    result = engine.merge_nodes(keep_id, remove_id, approver=approver)
+    result = await _engine_in_worker(
+        engine.merge_nodes,
+        keep_id,
+        remove_id,
+        approver=approver,
+    )
     if "error" in result:
         error = str(result["error"])
         status = 404 if "不存在" in error else (403 if "forbidden" in error else 400)
@@ -5586,7 +5729,7 @@ async def batch_dormant(payload: dict):
     reason = payload.get("reason", "manual")
     if not node_ids:
         raise HTTPException(422, "need node_ids list")
-    result = engine.batch_dormant(node_ids, reason=reason)
+    result = await _engine_in_worker(engine.batch_dormant, node_ids, reason=reason)
     await manager.broadcast({"event": "batch_dormant", "result": result})
     return result
 
@@ -5656,7 +5799,8 @@ async def agent_checkin(payload: dict):
     agent_id = payload.get("agent_id")
     if not agent_id:
         raise HTTPException(400, "agent_id is required")
-    agent = engine.agent_checkin(
+    agent = await _engine_in_worker(
+        engine.agent_checkin,
         agent_id=agent_id,
         name=payload.get("name", ""),
         role=payload.get("role", ""),
@@ -5739,7 +5883,7 @@ async def list_agents(
 ):
     """列出Agent登记；超过心跳TTL的条目投影为offline。"""
     agents = _agents_with_heartbeat_presence(
-        engine.list_agents(),
+        await _engine_in_worker(engine.list_agents),
         status_filter=status,
         heartbeat_ttl_sec=heartbeat_ttl_sec,
     )
@@ -5752,7 +5896,8 @@ async def update_agent_task(agent_id: str, payload: dict):
 
     {"current_task":"正在写knowledge_purifier.py", "status":"busy"}
     """
-    agent = engine.agent_update_task(
+    agent = await _engine_in_worker(
+        engine.agent_update_task,
         agent_id=agent_id,
         current_task=payload.get("current_task", ""),
         status=payload.get("status", "busy"),
@@ -5836,13 +5981,14 @@ async def agent_briefing(
                 "assertion_origin": "server_local_file",
             }
 
+    all_nodes = await _engine_in_worker(engine.list_nodes)
     rf = _ROLE_FILTERS.get(role or "brain", _ROLE_FILTERS["brain"])
     error_history_enabled = bool(
         include_error_history and (role or "brain") == "review"
     )
     error_candidates = [
         candidate
-        for candidate in engine.nodes.values()
+        for candidate in all_nodes
         if engine._is_error_case_node(candidate.id, candidate)
         and candidate.status.value == "active"
     ]
@@ -5898,7 +6044,7 @@ async def agent_briefing(
     # role-filtered nodes
     role_nodes: list = []
     if rf["prefix_boost"] or rf["cluster_boost"]:
-        for n in engine.nodes.values():
+        for n in all_nodes:
             if n.status.value != "active":
                 continue
             if not _briefing_node_visible(n):
@@ -5921,7 +6067,7 @@ async def agent_briefing(
         hot_nodes = sorted(
             [
                 n
-                for n in engine.nodes.values()
+                for n in all_nodes
                 if not n.id.startswith("INTF-")
                 and n.status.value == "active"
                 and _briefing_node_visible(n)
@@ -5932,9 +6078,14 @@ async def agent_briefing(
     # agent历史活动 + 过往节点
     agent_activity = []
     if not (project_id and project_namespace):
+        recent_activity = await _engine_in_worker(
+            engine.get_activity,
+            agent_id=agent_id,
+            limit=10,
+        )
         agent_activity = [
             entry
-            for entry in engine.get_activity(agent_id=agent_id, limit=10)
+            for entry in recent_activity
             if error_history_enabled
             or not any(
                 engine._reserved_error_knowledge_id(str(node_id))
@@ -5942,14 +6093,14 @@ async def agent_briefing(
             )
         ][:5]
     agent_nodes = [
-        n for n in engine.nodes.values()
+        n for n in all_nodes
         if n.content.extra.get("agent") == agent_id
         and _briefing_node_visible(n)
     ][:3]
 
     # pending handoffs指向本agent
     pending_handoffs = [
-        n for n in engine.nodes.values()
+        n for n in all_nodes
         if n.id.startswith("HO-") and n.status.value == "active"
         and _briefing_node_visible(n)
         and (n.content.extra.get("to_agent") == agent_id or n.content.extra.get("to_agent") == "*")
@@ -5973,11 +6124,11 @@ async def agent_briefing(
         "agent_related_nodes": [fmt(n) for n in agent_nodes],
         "pending_handoffs": [fmt(n) for n in pending_handoffs],
         "total_active": sum(
-            1 for n in engine.nodes.values()
+            1 for n in all_nodes
             if n.status.value == "active" and _briefing_node_visible(n)
         ),
         "total_dormant": sum(
-            1 for n in engine.nodes.values()
+            1 for n in all_nodes
             if n.status.value == "dormant" and _briefing_node_visible(n)
         ),
     }
@@ -5990,7 +6141,12 @@ async def get_activity(
     limit: int = Query(50, ge=1, le=500),
 ):
     """查询活动日志。支持按agent_id和action过滤。"""
-    entries = engine.get_activity(agent_id=agent_id, action=action, limit=limit)
+    entries = await _engine_in_worker(
+        engine.get_activity,
+        agent_id=agent_id,
+        action=action,
+        limit=limit,
+    )
     return [e.model_dump() for e in entries]
 
 

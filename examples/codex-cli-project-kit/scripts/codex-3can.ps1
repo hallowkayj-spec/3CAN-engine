@@ -7,9 +7,8 @@ param(
             throw "Action '$_' is unsupported in this release package because its implementation harness is not shipped."
         }
         $supportedPackagedActions = @(
-            'doctor', 'bootstrap', 'start', 'route', 'supervise',
-            'supervise-status', 'prepare', 'fail', 'failure-gate-sync',
-            'done', 'compact', 'state', 'clear', 'pr-check', 'pr-create'
+            'doctor', 'bootstrap', 'start', 'route', 'prepare',
+            'done', 'compact'
         )
         if ($supportedPackagedActions -notcontains $_) {
             throw "Unsupported 3CAN action '$($_)'."
@@ -26,12 +25,6 @@ param(
     [string[]]$ScopeKeywords = @(),
     [string]$ToolName = 'apply_patch',
     [string]$ToolInputSummary,
-    [string]$CommandSummary,
-    [string]$ErrorExcerpt,
-    [string]$Diagnosis,
-    [string]$OperationClass,
-    [string]$Component,
-    [string]$ErrorType,
     [string]$Detail,
     [string[]]$AffectedNodes = @(),
     [string[]]$ResolvedErrors = @(),
@@ -42,26 +35,14 @@ param(
     [string]$FixedIn,
     [string]$TaskSummary,
     [string]$Title,
-    [string]$Body,
-    [string]$BodyFile,
-    [string]$HeadBranch,
-    [string]$BaseBranch = 'main',
-    [string]$ApprovalId,
-    [string]$GitWorktree,
     [string[]]$NextSteps = @(),
     [string[]]$RelatedNodes = @(),
-    [string[]]$NodeIds = @(),
-    [string[]]$Signatures = @(),
     [string]$TicketId,
     [string]$Mode = 'skeleton',
     [int]$MaxNodes = 6,
     [int]$BudgetTokens = 800,
-    [switch]$SkipTicket,
     [string]$BaseUrl = 'http://127.0.0.1:9700',
-    [string]$EngineRoot,
-    [double]$SinceHours = 72.0,
-    [switch]$Apply,
-    [switch]$EnsureExistingEdges
+    [string]$EngineRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,21 +52,16 @@ $OutputEncoding = $Utf8NoBom
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
 
-$AgentlessActions = @('doctor', 'pr-check', 'pr-create')
-if ($AgentlessActions -notcontains $Action) {
-    if ([string]::IsNullOrWhiteSpace($AgentId)) {
-        throw "$Action requires an explicit unique -AgentId."
-    }
+if (-not [string]::IsNullOrWhiteSpace($AgentId)) {
     $AgentId = $AgentId.Trim()
     if ([string]::Equals($AgentId, 'codex-main', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Generic AgentId 'codex-main' is not allowed. Use a session- or workorder-specific id such as 'codex-main-<session-or-workorder>'."
+        throw "Generic AgentId 'codex-main' is not allowed. Let the helper derive the current execution identity or pass a unique id."
     }
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Helper = Join-Path $ProjectRoot 'scripts\3can_codex.py'
 $Wrapper = Join-Path $ProjectRoot 'scripts\3can_codex_wrapper.ps1'
-$PrHarness = Join-Path $ProjectRoot 'scripts\3can_pr_harness.py'
 
 function Resolve-Codex3CanEngineRoot {
     if ($EngineRoot) {
@@ -156,12 +132,7 @@ function Invoke-Codex3CanHelperObject {
         $joined = $output -join "`n"
         $compact = $null
         try {
-            $parsed = $joined | ConvertFrom-Json
-            if ($parsed.command -eq 'supervise') {
-                $compact = Select-Codex3CanSupervisionSummary -Supervision $parsed
-            } else {
-                $compact = $parsed
-            }
+            $compact = $joined | ConvertFrom-Json
         } catch {
             $compact = $null
         }
@@ -177,17 +148,21 @@ function Invoke-Codex3CanHelperObject {
     return ($output -join "`n") | ConvertFrom-Json
 }
 
-function Invoke-Codex3CanWrapper {
-    param([string[]]$WrapperArgs)
-    & $Wrapper @WrapperArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "3CAN wrapper failed with exit code $LASTEXITCODE."
-    }
-}
-
 function Invoke-Codex3CanWrapperObject {
     param([string[]]$WrapperArgs)
-    $output = & $Wrapper @WrapperArgs
+    if (-not $WrapperArgs -or (($WrapperArgs.Count - 1) % 2) -ne 0) {
+        throw '3CAN wrapper arguments must be one command plus exact name/value pairs.'
+    }
+    $command = $WrapperArgs[0]
+    $parameters = @{}
+    for ($index = 1; $index -lt $WrapperArgs.Count; $index += 2) {
+        $name = ([string]$WrapperArgs[$index]).TrimStart('-')
+        if (-not $name) {
+            throw '3CAN wrapper parameter name must not be empty.'
+        }
+        $parameters[$name] = $WrapperArgs[$index + 1]
+    }
+    $output = & $Wrapper $command @parameters
     if ($LASTEXITCODE -ne 0) {
         $joined = $output -join "`n"
         throw "3CAN wrapper failed with exit code $LASTEXITCODE. Output: $joined"
@@ -198,71 +173,14 @@ function Invoke-Codex3CanWrapperObject {
     return ($output -join "`n") | ConvertFrom-Json
 }
 
-function Select-Codex3CanGateSummary {
-    param([object[]]$Gates)
-    $summaries = @()
-    foreach ($gate in $Gates) {
-        $summary = [ordered]@{
-            name = $gate.name
-            status = $gate.status
-        }
-        if ($gate.warning) {
-            $summary.warning = $gate.warning
-        }
-        if ($gate.error) {
-            $summary.error = $gate.error
-        }
-        if ($gate.ticket_id) {
-            $summary.ticket_id = $gate.ticket_id
-        }
-        if ($gate.route_token_estimate) {
-            $summary.route_token_estimate = $gate.route_token_estimate
-        }
-        $summaries += [pscustomobject]$summary
-    }
-    return $summaries
-}
-
-function Select-Codex3CanSupervisionSummary {
-    param([object]$Supervision)
-    return [ordered]@{
-        ok = $Supervision.ok
-        status = $Supervision.supervision_status
-        task_description = $Supervision.task_description
-        target_files = $Supervision.target_files
-        scope_keywords = $Supervision.scope_keywords
-        ticket_mode = $Supervision.ticket_mode
-        ticket_id = $Supervision.ticket_id
-        state_path = $Supervision.supervision_state_path
-        gates = Select-Codex3CanGateSummary -Gates $Supervision.gates
-        route_node_ids = @($Supervision.route.nodes | ForEach-Object { $_.id })
-    }
-}
-
 function Select-Codex3CanPrepareSummary {
     param([object]$PrepareResult)
     return [ordered]@{
         ticket_id = $PrepareResult.ticket.ticket_id
-        ticket_valid = $PrepareResult.ticket_status.valid
-        remaining_ttl_sec = $PrepareResult.ticket_status.remaining_ttl_sec
-        consume_ok = $PrepareResult.consume.response.ok
-        consume_count = $PrepareResult.consume.response.consume_count
-        memory_status = $PrepareResult.memory_preflight.status
-        memory_quality = $PrepareResult.memory_preflight.memory_quality
-        wrapper_state_path = $PrepareResult.wrapper_state_path
-    }
-}
-
-function Select-Codex3CanSuperviseStatusSummary {
-    param([object]$StatusResult)
-    return [ordered]@{
-        valid = $StatusResult.valid
-        age_sec = $StatusResult.age_sec
-        ttl_sec = $StatusResult.ttl_sec
-        supervision_status = $StatusResult.state.supervision_status
-        gate_statuses = $StatusResult.state.gate_statuses
-        target_files = $StatusResult.state.target_files
-        ticket_mode = $StatusResult.state.ticket_mode
+        ticket_state = $PrepareResult.ticket.state
+        ttl_sec = $PrepareResult.ticket.ttl_sec
+        consume_ok = $PrepareResult.consume.ok
+        consume_count = $PrepareResult.consume.consume_count
     }
 }
 
@@ -273,9 +191,6 @@ function Select-Codex3CanDoneSummary {
         status = $DoneResult.status
         action = $DoneResult.action
         ticket_id_used = $DoneResult.ticket_id_used
-        ticket_valid = $DoneResult.ticket_status.valid
-        remaining_ttl_sec = $DoneResult.ticket_status.remaining_ttl_sec
-        invalid_cached_ticket_cleared = $DoneResult.invalid_cached_ticket_cleared
         affected_nodes = $DoneResult.affected_nodes
     }
 }
@@ -296,9 +211,6 @@ $ResolvedVerificationEvidence = @(
 )
 $ResolvedNextSteps = Split-Codex3CanList $NextSteps
 $ResolvedRelatedNodes = Split-Codex3CanList $RelatedNodes
-$ResolvedNodeIds = Split-Codex3CanList $NodeIds
-$ResolvedSignatures = Split-Codex3CanList $Signatures
-
 switch ($Action) {
     'doctor' {
         Invoke-Codex3CanHelper -HelperArgs @('--base-url', $BaseUrl, 'doctor')
@@ -332,16 +244,15 @@ switch ($Action) {
         [ordered]@{
             ok = $true
             action = 'bootstrap'
-            agent_id = $AgentId
+            agent_id = $session.checkin.agent_id
             role = $Role
             task = $Task
             session = $session
             route = $route
             next_commands = @(
-                "scripts\codex-3can.cmd prepare -AgentId $AgentId -TaskDescription `"edit focused area`" -TargetFiles path/to/file -ToolName apply_patch -ToolInputSummary `"edit focused area`"",
-                "scripts\codex-3can.cmd done -AgentId $AgentId -TicketId <ticket-id> -Detail `"what changed and why`"",
-                "scripts\codex-3can.cmd compact -AgentId $AgentId -TaskSummary `"handoff summary`"",
-                "For GitHub PR creation: scripts\codex-3can.cmd pr-check -GitWorktree <worktree>; then scripts\codex-3can.cmd pr-create -GitWorktree <worktree> -HeadBranch <branch> -BaseBranch <base> -Title `<title`> -Body `<body`> -ApprovalId <approval>"
+                "scripts\codex-3can.cmd prepare -TaskDescription `"edit focused area`" -TargetFiles path/to/file -ToolName apply_patch -ToolInputSummary `"edit focused area`"",
+                "scripts\codex-3can.cmd done -TicketId <ticket-id> -Detail `"what changed and why`"",
+                "scripts\codex-3can.cmd compact -TaskSummary `"handoff summary`""
             )
         } | ConvertTo-Json -Depth 10
     }
@@ -364,55 +275,6 @@ switch ($Action) {
         )
     }
 
-    'supervise' {
-        if (-not $TaskDescription) {
-            throw 'supervise requires -TaskDescription.'
-        }
-        $args = @(
-            '--base-url', $BaseUrl,
-            'supervise',
-            '--agent-id', $AgentId,
-            '--task-description', $TaskDescription,
-            '--task-type', 'Edit',
-            '--tool-name', $ToolName,
-            '--mode', $Mode,
-            '--max-nodes', "$MaxNodes",
-            '--budget-tokens', "$BudgetTokens",
-            '--timeout-seconds', '90'
-        )
-        if ($ToolInputSummary) {
-            $args += @('--tool-input-summary', $ToolInputSummary)
-        }
-        if ($TicketId) {
-            $args += @('--ticket-id', $TicketId)
-        }
-        if ($SkipTicket) {
-            $args += @('--skip-ticket')
-        }
-        foreach ($path in $ResolvedTargetFiles) {
-            $args += @('--target-file', $path)
-        }
-        foreach ($keyword in $ResolvedScopeKeywords) {
-            $args += @('--scope-keyword', $keyword)
-        }
-        Invoke-Codex3CanHelper -HelperArgs $args
-    }
-
-    'supervise-status' {
-        $args = @(
-            '--base-url', $BaseUrl,
-            'supervise-status',
-            '--agent-id', $AgentId
-        )
-        if ($TaskDescription) {
-            $args += @('--expect-scope-text', $TaskDescription)
-        }
-        foreach ($path in $ResolvedTargetFiles) {
-            $args += @('--expect-target-file', $path)
-        }
-        Invoke-Codex3CanHelper -HelperArgs $args
-    }
-
     'prepare' {
         if (-not $TaskDescription) {
             throw 'prepare requires -TaskDescription.'
@@ -423,28 +285,6 @@ switch ($Action) {
         if (-not $ToolInputSummary) {
             throw 'prepare requires -ToolInputSummary.'
         }
-        $superviseArgs = @(
-            '--base-url', $BaseUrl,
-            'supervise',
-            '--agent-id', $AgentId,
-            '--task-description', $TaskDescription,
-            '--task-type', 'Edit',
-            '--tool-name', $ToolName,
-            '--tool-input-summary', $ToolInputSummary,
-            '--mode', $Mode,
-            '--max-nodes', "$MaxNodes",
-            '--budget-tokens', "$BudgetTokens",
-            '--timeout-seconds', '90',
-            '--skip-ticket'
-        )
-        foreach ($path in $ResolvedTargetFiles) {
-            $superviseArgs += @('--target-file', $path)
-        }
-        foreach ($keyword in $ResolvedScopeKeywords) {
-            $superviseArgs += @('--scope-keyword', $keyword)
-        }
-        $supervision = Invoke-Codex3CanHelperObject -HelperArgs $superviseArgs
-
         $prepareArgs = @(
             'prepare-mutate',
             '-AgentId', $AgentId,
@@ -464,72 +304,8 @@ switch ($Action) {
         [ordered]@{
             ok = $true
             action = 'prepare'
-            supervision = Select-Codex3CanSupervisionSummary -Supervision $supervision
             prepare = Select-Codex3CanPrepareSummary -PrepareResult $prepareResult
         } | ConvertTo-Json -Depth 30
-    }
-
-    'fail' {
-        if (-not $CommandSummary) {
-            throw 'fail requires -CommandSummary.'
-        }
-        if (-not $ErrorExcerpt) {
-            throw 'fail requires -ErrorExcerpt.'
-        }
-        $failArgs = @(
-            '--base-url', $BaseUrl,
-            'fail',
-            '--agent-id', $AgentId,
-            '--command-summary', $CommandSummary,
-            '--error-excerpt', $ErrorExcerpt
-        )
-        if ($Diagnosis) {
-            $failArgs += @('--diagnosis', $Diagnosis)
-        }
-        if ($OperationClass) {
-            $failArgs += @('--operation-class', $OperationClass)
-        }
-        if ($Component) {
-            $failArgs += @('--component', $Component)
-        }
-        if ($ErrorType) {
-            $failArgs += @('--error-type', $ErrorType)
-        }
-        if ($RootCause) {
-            $failArgs += @('--root-cause', $RootCause)
-        }
-        foreach ($path in $ResolvedTargetFiles) {
-            $failArgs += @('--target-file', $path)
-        }
-        foreach ($keyword in $ResolvedScopeKeywords) {
-            $failArgs += @('--scope-keyword', $keyword)
-        }
-        foreach ($node in $ResolvedRelatedNodes) {
-            $failArgs += @('--related-node', $node)
-        }
-        Invoke-Codex3CanHelper -HelperArgs $failArgs
-    }
-
-    'failure-gate-sync' {
-        $syncArgs = @(
-            '--base-url', $BaseUrl,
-            'failure-gate-sync',
-            '--agent-id', $AgentId,
-            '--since-hours', ([string]$SinceHours)
-        )
-        foreach ($signature in $ResolvedSignatures) {
-            $syncArgs += @('--signature', $signature)
-        }
-        foreach ($nodeId in $ResolvedNodeIds) {
-            $syncArgs += @('--node-id', $nodeId)
-        }
-        if ($Apply) {
-            $syncArgs += @('--apply')
-        }
-        if ($EnsureExistingEdges) {
-            $syncArgs += @('--ensure-existing-edges')
-        }
-        Invoke-Codex3CanHelper -HelperArgs $syncArgs
     }
 
     'done' {
@@ -607,9 +383,8 @@ switch ($Action) {
         $doneArgs += @('-BaseUrl', $BaseUrl)
         $doneResult = Invoke-Codex3CanWrapperObject -WrapperArgs $doneArgs
 
-        # Completion is authorized by the backend's durable consumed-ticket
-        # receipt. A stale local supervise TTL is informative only and must not
-        # prevent a valid expired-consumed ticket from completing.
+        # Completion integrity is bound by the backend's durable consumed-ticket
+        # receipt; the wrapper carries the exact TicketId without local policy.
         (Select-Codex3CanDoneSummary -DoneResult $doneResult) | ConvertTo-Json -Depth 30
     }
 
@@ -626,52 +401,6 @@ switch ($Action) {
             -RelatedNodes $ResolvedRelatedNodes `
             -TicketId $TicketId `
             -BaseUrl $BaseUrl
-    }
-
-    'state' {
-        & $Wrapper show-state -AgentId $AgentId -BaseUrl $BaseUrl
-    }
-
-    'clear' {
-        & $Wrapper clear-state -AgentId $AgentId -BaseUrl $BaseUrl
-    }
-
-    'pr-check' {
-        $cwd = if ($GitWorktree) { $GitWorktree } else { $ProjectRoot }
-        & python $PrHarness check --cwd $cwd --check-token
-        if ($LASTEXITCODE -ne 0) {
-            throw "3CAN PR harness check failed with exit code $LASTEXITCODE."
-        }
-    }
-
-    'pr-create' {
-        if (-not $Title) {
-            throw 'pr-create requires -Title.'
-        }
-        if (-not $ApprovalId) {
-            throw 'pr-create requires -ApprovalId. PR creation is an external publish action.'
-        }
-        $cwd = if ($GitWorktree) { $GitWorktree } else { $ProjectRoot }
-        $args = @(
-            $PrHarness,
-            'create-pr',
-            '--cwd', $cwd,
-            '--base', $BaseBranch,
-            '--title', $Title,
-            '--approval-id', $ApprovalId
-        )
-        if ($HeadBranch) {
-            $args += @('--head', $HeadBranch)
-        }
-        if ($BodyFile) {
-            $args += @('--body-file', $BodyFile)
-        } else {
-            $args += @('--body', $Body)
-        }
-        & python @args
-        if ($LASTEXITCODE -ne 0) {
-            throw "3CAN PR harness create-pr failed with exit code $LASTEXITCODE."
-        }
     }
 
 }

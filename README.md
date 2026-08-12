@@ -60,7 +60,7 @@ The v0.2 candidate turns error history into bounded, reusable knowledge:
   explicit error routes return at most three applicable records;
 - verified `done` writeback creates a solution and evidence chain and marks the
   case resolved;
-- route-ticket authorization uses a process-safe SQLite/WAL ledger, scoped
+- route-ticket evidence uses a process-safe SQLite/WAL ledger, scoped
   digests, append-only events, and a replay-safe completion journal;
 - a reversible maintenance tool archives legacy one-off error nodes and removes
   their global mandatory-route edges.
@@ -225,7 +225,7 @@ Codex CLI:
 
 1. Copy `examples/codex-cli-project-kit/` into your project.
 2. Merge `.gitignore.template` into the target project's `.gitignore`; it
-   excludes local tickets, error outboxes, route state, and test receipts.
+   excludes local test and research receipts.
 3. Rename `AGENTS.template.md` to `AGENTS.md`.
 4. Copy this repository's root `3CAN.md` to the target project root and edit
    only its supported flat front matter. It is the single Owner steering file;
@@ -255,10 +255,10 @@ not become configurable. A shared-authority request is reported as
 `client_asserted`; only a file read by that server is `server_local_file`.
 Neither label is authentication or objective evidence.
 
-Route tickets, prepare/done wrappers, and hooks are optional policy adapters.
-Use them for a specific guarded-write or evidence requirement, not as a
-universal concurrency mechanism. The wrapper never directly launches or stops
-the engine.
+Route tickets are scoped evidence envelopes, and prepare/done wrappers are
+optional transport adapters. Project hooks, when explicitly enabled, remain a
+separate project policy surface. None is a universal concurrency mechanism, and
+the wrapper never directly launches or stops the engine.
 
 Claude Code:
 
