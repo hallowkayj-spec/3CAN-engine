@@ -1308,12 +1308,39 @@ def test_server_automatically_records_and_promotes_ticket_identity_rejections(
         for entry in fake.activity_log
     )
     with sqlite3.connect(app._TICKET_LEDGER_PATH) as connection:
-        stored = "\n".join(
-            row[0]
+        stored_payloads = [
+            json.loads(row[0])
             for row in connection.execute(
                 "SELECT payload_json FROM error_occurrences ORDER BY occurred_at"
             )
-        )
+        ]
+    first_context = next(
+        payload["context"]
+        for payload in stored_payloads
+        if payload["context"]["evidence_ref"]
+        == f"route-ticket:{first_ticket['ticket_id']}"
+    )
+    assert first_context == {
+        "schema": "3can.issue-observation/v1",
+        "source": "server_http_response",
+        "recording_tier": "error_knowledge",
+        "category": "error",
+        "severity": "P2",
+        "project_id": "project",
+        "project_namespace": "project",
+        "workspace_id": "workspace",
+        "endpoint": "/api/route/ticket/{ticket_id}/consume",
+        "operation": "POST consume_route_ticket",
+        "status_code": 403,
+        "error_code": "ticket_agent_mismatch",
+        "evidence_ref": f"route-ticket:{first_ticket['ticket_id']}",
+        "retryable": False,
+        "workorder_id": "workorder",
+        "identity_source": "route_ticket",
+    }
+    stored = "\n".join(
+        json.dumps(payload, sort_keys=True) for payload in stored_payloads
+    )
     assert "must-not-be-recorded" not in stored
     assert "wrong-agent" not in stored
 
@@ -1485,6 +1512,7 @@ def test_server_error_observer_does_not_trust_unverified_ticket_project(
     assert len(observations) == 1
     assert observations[0].meta["project_id"] == "3can-runtime"
     assert observations[0].meta["recording_tier"] == "activity"
+    assert observations[0].affected_nodes == ["DOC-3can-issue-intake-v1"]
 
     unverified_500 = {
         "event_id": "unverified-500",
@@ -1512,10 +1540,13 @@ def test_server_error_observer_does_not_trust_unverified_ticket_project(
             "WHERE fingerprint=? ORDER BY occurred_at DESC LIMIT 1",
             (runtime_500["fingerprint"],),
         ).fetchone()[0])["context"]
-    assert stored_context["ticket_id"] == ""
-    assert stored_context["project_namespace"] == ""
-    assert stored_context["workspace_id"] == ""
-    assert stored_context["workorder_id"] == ""
+    assert stored_context["schema"] == "3can.issue-observation/v1"
+    assert stored_context["category"] == "runtime"
+    assert stored_context["severity"] == "P2"
+    assert stored_context["project_namespace"] == "3can-runtime"
+    assert stored_context["workspace_id"] == "3can-runtime"
+    assert "workorder_id" not in stored_context
+    assert stored_context["evidence_ref"] == "server-event:unverified-500"
 
 
 def test_server_error_observer_uses_ticket_id_from_error_response_detail(
@@ -1751,10 +1782,27 @@ def test_server_observer_records_missing_agent_id_as_bounded_activity(
         if entry.action == "3can_issue_observed"
     ]
     assert len(observed) == 1
-    assert observed[0].meta["error_code"] == "agent_id_required"
-    assert observed[0].meta["recording_tier"] == "activity"
-    assert "occurrence_id" not in observed[0].meta
-    assert re.fullmatch(r"[0-9a-f]{32}", observed[0].meta["observation_id"])
+    entry = observed[0]
+    assert entry.agent_id == "3can-server-error-observer"
+    assert entry.affected_nodes == ["DOC-3can-issue-intake-v1"]
+    assert entry.meta == {
+        "schema": "3can.issue-observation/v1",
+        "source": "server_http_response",
+        "recording_tier": "activity",
+        "category": "gate",
+        "severity": "info",
+        "project_id": "3can-runtime",
+        "project_namespace": "3can-runtime",
+        "workspace_id": "3can-runtime",
+        "endpoint": "/api/agents/checkin",
+        "operation": "POST agent_checkin",
+        "status_code": 400,
+        "error_code": "agent_id_required",
+        "evidence_ref": f"server-event:{entry.meta['observation_id']}",
+        "retryable": False,
+        "observation_id": entry.meta["observation_id"],
+    }
+    assert re.fullmatch(r"[0-9a-f]{32}", entry.meta["observation_id"])
 
 
 @pytest.mark.parametrize(
@@ -1872,6 +1920,13 @@ def test_server_observer_keeps_inactive_ticket_binding_failure_as_activity(
     assert len(observed) == 1
     assert observed[0].meta["recording_tier"] == "activity"
     assert observed[0].meta["project_id"] == "project"
+    assert observed[0].agent_id == "agent-a"
+    assert observed[0].meta["project_namespace"] == "project"
+    assert observed[0].meta["workspace_id"] == "workspace"
+    assert observed[0].meta["workorder_id"] == "workorder"
+    assert observed[0].meta["evidence_ref"] == (
+        f"route-ticket:{ticket['ticket_id']}"
+    )
 
 
 def test_server_observer_does_not_delay_original_rejection(

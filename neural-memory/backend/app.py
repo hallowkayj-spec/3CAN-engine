@@ -3414,7 +3414,8 @@ async def _record_error_occurrence_core(payload: dict):
 
 _AUTO_ERROR_OBSERVER_ACTOR = "3can-server-error-observer"
 _AUTO_ERROR_OBSERVER_COMPONENT = "3can-http-api"
-_AUTO_ERROR_OBSERVER_SCHEMA = "3can.server-error-observation/v1"
+_AUTO_ERROR_OBSERVER_SCHEMA = "3can.issue-observation/v1"
+_AUTO_ISSUE_INTAKE_NODE_ID = "DOC-3can-issue-intake-v1"
 _AUTO_ERROR_OBSERVER_MAX_TASKS = 64
 _AUTO_ERROR_ACTIVITY_COOLDOWN_SECONDS = 60.0
 _AUTO_ERROR_OBSERVER_DROPS = 0
@@ -3571,6 +3572,18 @@ async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None
         )
 
     project_id = ticket_project if authoritative_ticket else "3can-runtime"
+    project_namespace = (
+        ticket_namespace if authoritative_ticket else "3can-runtime"
+    )
+    workspace_id = ticket_workspace if authoritative_ticket else "3can-runtime"
+    workorder_id = (
+        str(ticket.get("workorder_id") or "") if authoritative_ticket else ""
+    )
+    observed_agent_id = (
+        _specified_identity(ticket.get("agent_id"))
+        if authoritative_ticket
+        else _AUTO_ERROR_OBSERVER_ACTOR
+    ) or _AUTO_ERROR_OBSERVER_ACTOR
     identity_source = "route_ticket" if authoritative_ticket else "server_runtime"
     route_name = str(snapshot.get("route_name") or "unmatched_route")
     operation = f"{snapshot['method']} {route_name}"
@@ -3580,38 +3593,68 @@ async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None
         component=_AUTO_ERROR_OBSERVER_COMPONENT,
         error_type=error_code,
     )
-
-    if tier == "activity":
-        if not _claim_automatic_activity(fingerprint) or engine is None:
-            return
-        await _engine_in_worker(
-            engine.log_activity,
-            agent_id=_AUTO_ERROR_OBSERVER_ACTOR,
-            action="3can_issue_observed",
-            detail=(
-                f"{snapshot['method']} {route_name} -> "
-                f"{snapshot['status_code']} {error_code}"
-            ),
-            affected_nodes=[],
-            meta={
-                "schema_version": _AUTO_ERROR_OBSERVER_SCHEMA,
-                "source": "server_http_response",
-                "recording_tier": tier,
-                "status_code": int(snapshot["status_code"]),
-                "error_code": error_code,
-                "route_name": route_name,
-                "project_id": project_id,
-                "observation_id": str(snapshot["event_id"]),
-            },
-        )
-        return
-
     correlation = (
         ticket_id
         if authoritative_ticket
         else str(snapshot.get("request_correlation_digest") or "")
         or str(snapshot["event_id"])
     )
+    evidence_ref = (
+        f"route-ticket:{ticket_id}"
+        if authoritative_ticket
+        else (
+            f"request-id-sha256:{snapshot['request_correlation_digest']}"
+            if snapshot.get("request_correlation_digest")
+            else f"server-event:{snapshot['event_id']}"
+        )
+    )
+    status_code = int(snapshot["status_code"])
+    if status_code >= 500:
+        category, severity = "runtime", "P2"
+    elif tier == "error_knowledge":
+        category, severity = "error", "P2"
+    elif status_code == 403:
+        category, severity = "refusal", "info"
+    else:
+        category, severity = "gate", "info"
+    issue_meta = {
+        "schema": _AUTO_ERROR_OBSERVER_SCHEMA,
+        "source": "server_http_response",
+        "recording_tier": tier,
+        "category": category,
+        "severity": severity,
+        "project_id": project_id,
+        "project_namespace": project_namespace,
+        "workspace_id": workspace_id,
+        "endpoint": str(snapshot.get("route_path") or ""),
+        "operation": operation,
+        "status_code": status_code,
+        "error_code": error_code,
+        "evidence_ref": evidence_ref,
+        "retryable": status_code == 429 or status_code >= 500,
+    }
+    if workorder_id:
+        issue_meta["workorder_id"] = workorder_id
+
+    if tier == "activity":
+        if not _claim_automatic_activity(fingerprint) or engine is None:
+            return
+        await _engine_in_worker(
+            engine.log_activity,
+            agent_id=observed_agent_id,
+            action="3can_issue_observed",
+            detail=(
+                f"{snapshot['method']} {route_name} -> "
+                f"{snapshot['status_code']} {error_code}"
+            ),
+            affected_nodes=[_AUTO_ISSUE_INTAKE_NODE_ID],
+            meta={
+                **issue_meta,
+                "observation_id": str(snapshot["event_id"]),
+            },
+        )
+        return
+
     occurrence_id = "auto-http-" + hashlib.sha256(
         f"{fingerprint}\n{correlation}".encode("utf-8")
     ).hexdigest()[:40]
@@ -3629,21 +3672,10 @@ async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None
             else "undetermined"
         ),
         "occurred_at": _utc_now().isoformat(),
-        "agent_id": _AUTO_ERROR_OBSERVER_ACTOR,
+        "agent_id": observed_agent_id,
         "context": {
-            "schema_version": _AUTO_ERROR_OBSERVER_SCHEMA,
-            "source": "server_http_response",
-            "status_code": int(snapshot["status_code"]),
-            "route_name": route_name,
+            **issue_meta,
             "identity_source": identity_source,
-            "ticket_id": ticket_id if authoritative_ticket else "",
-            "project_namespace": ticket_namespace if authoritative_ticket else "",
-            "workspace_id": ticket_workspace if authoritative_ticket else "",
-            "workorder_id": (
-                str(ticket.get("workorder_id") or "")
-                if authoritative_ticket
-                else ""
-            ),
         },
     })
 

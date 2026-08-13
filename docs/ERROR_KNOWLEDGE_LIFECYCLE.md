@@ -140,6 +140,14 @@ routes, and it does not enable the public unticketed occurrence endpoint.
 Endpoints that intentionally return an error-shaped `JSONResponse` without
 raising are outside this observer boundary.
 
+Each automatic observation uses the existing `3can.issue-observation/v1`
+contract and points to `DOC-3can-issue-intake-v1`. Its sanitized metadata binds
+category, severity, project/namespace/workspace, endpoint and operation,
+machine error code, evidence reference, and retryability. A verified route
+ticket supplies its Agent and project scope; otherwise the observer uses the
+explicit `3can-runtime` scope and never attributes the failure to a caller-
+asserted project. This intake anchor is not mutated when an incident is added.
+
 This boundary covers errors that reach 3CAN through MCP, the project kit,
 PowerShell, or direct HTTP. Local validation and transport failures that occur
 before a request reaches the server remain `UNAVAILABLE` until an authorized
