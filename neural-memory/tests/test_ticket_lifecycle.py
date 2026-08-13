@@ -1757,6 +1757,123 @@ def test_server_observer_records_missing_agent_id_as_bounded_activity(
     assert re.fullmatch(r"[0-9a-f]{32}", observed[0].meta["observation_id"])
 
 
+@pytest.mark.parametrize(
+    ("missing_field", "error_code"),
+    [
+        ("agent_id", "agent_id_required"),
+        ("target_digest", "target_digest_required"),
+        ("scope_digest", "scope_digest_required"),
+    ],
+)
+def test_server_observer_records_valid_ticket_consume_binding_failures(
+    ticket_runtime,
+    missing_field,
+    error_code,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    ticket = _issue(app, task=f"missing consume binding {missing_field}")
+    payload = {
+        "agent_id": ticket["agent_id"],
+        "tool_name": "Edit",
+        "tool_input_summary": "binding failure must remain attributable",
+        "target_digest": ticket["target_digest"],
+        "scope_digest": ticket["scope_digest"],
+    }
+    payload.pop(missing_field)
+
+    response = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{ticket['ticket_id']}/consume",
+        payload,
+    ))
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == error_code
+    fingerprint = app.deterministic_fingerprint(
+        project_id="project",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type=error_code,
+    )
+    occurrence = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert occurrence["occurrence_count"] == 1
+    assert occurrence["case_id"] is None
+    assert not any(
+        entry.action == "3can_issue_observed"
+        and entry.meta.get("error_code") == error_code
+        for entry in fake.activity_log
+    )
+
+
+def test_server_observer_promotes_second_independent_consume_agent_binding_failure(
+    ticket_runtime,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    for index in (1, 2):
+        ticket = _issue(app, task=f"independent missing consume agent {index}")
+        response = asyncio.run(_asgi_post(
+            app,
+            f"/api/route/ticket/{ticket['ticket_id']}/consume",
+            {
+                "tool_name": "Edit",
+                "tool_input_summary": f"missing agent occurrence {index}",
+                "target_digest": ticket["target_digest"],
+                "scope_digest": ticket["scope_digest"],
+            },
+        ))
+        assert response.status_code == 400
+
+    fingerprint = app.deterministic_fingerprint(
+        project_id="project",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type="agent_id_required",
+    )
+    promoted = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert promoted["occurrence_count"] == 2
+    assert promoted["case_id"].startswith("ERR-case-")
+
+
+def test_server_observer_keeps_inactive_ticket_binding_failure_as_activity(
+    ticket_runtime,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    ticket = _issue(app, task="inactive ticket missing consume agent")
+    with sqlite3.connect(app._TICKET_LEDGER_PATH) as connection:
+        connection.execute(
+            "UPDATE tickets SET expires_at=0 WHERE ticket_id=?",
+            (ticket["ticket_id"],),
+        )
+
+    response = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{ticket['ticket_id']}/consume",
+        {
+            "tool_name": "Edit",
+            "tool_input_summary": "inactive ticket must not become durable",
+            "target_digest": ticket["target_digest"],
+            "scope_digest": ticket["scope_digest"],
+        },
+    ))
+
+    assert response.status_code == 400
+    project_fingerprint = app.deterministic_fingerprint(
+        project_id="project",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type="agent_id_required",
+    )
+    assert app._ticket_ledger().error_case(fingerprint=project_fingerprint) is None
+    observed = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+        and entry.meta.get("error_code") == "agent_id_required"
+    ]
+    assert len(observed) == 1
+    assert observed[0].meta["recording_tier"] == "activity"
+    assert observed[0].meta["project_id"] == "project"
+
+
 def test_server_observer_does_not_delay_original_rejection(
     ticket_runtime,
     monkeypatch,

@@ -3427,6 +3427,11 @@ _AUTO_ERROR_OBSERVER_IGNORED_CODES = {
     "low_confidence_requires_confirmation",
     "unticketed_error_occurrence_disabled",
 }
+_AUTO_TICKET_CONSUME_BINDING_CODES = {
+    "agent_id_required",
+    "target_digest_required",
+    "scope_digest_required",
+}
 _AUTO_ERROR_KNOWLEDGE_EXACT_CODES = _TICKET_INTEGRITY_ERROR_CODES | {
     "consume_activity_receipt_missing",
     "ticket_already_consumed",
@@ -3503,7 +3508,11 @@ def _automatic_failure_tier(snapshot: Mapping[str, Any]) -> str | None:
         return None
     if status_code >= 500:
         return "error_knowledge"
-    if error_code in _AUTO_ERROR_KNOWLEDGE_EXACT_CODES:
+    if error_code in _AUTO_ERROR_KNOWLEDGE_EXACT_CODES or (
+        str(snapshot.get("route_name") or "") == "consume_route_ticket"
+        and bool(snapshot.get("ticket_id"))
+        and error_code in _AUTO_TICKET_CONSUME_BINDING_CODES
+    ):
         return "error_knowledge_candidate"
     return "activity"
 
@@ -3551,14 +3560,20 @@ async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None
         and ticket_namespace
         and ticket_workspace
     )
+    error_code = str(snapshot["error_code"])
     if tier == "error_knowledge_candidate":
-        tier = "error_knowledge" if authoritative_ticket else "activity"
+        binding_required = error_code in _AUTO_TICKET_CONSUME_BINDING_CODES
+        tier = (
+            "error_knowledge"
+            if authoritative_ticket
+            and (not binding_required or ticket.get("state") in {"issued", "consumed"})
+            else "activity"
+        )
 
     project_id = ticket_project if authoritative_ticket else "3can-runtime"
     identity_source = "route_ticket" if authoritative_ticket else "server_runtime"
     route_name = str(snapshot.get("route_name") or "unmatched_route")
     operation = f"{snapshot['method']} {route_name}"
-    error_code = str(snapshot["error_code"])
     fingerprint = deterministic_fingerprint(
         project_id=project_id,
         operation=operation,
