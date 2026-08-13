@@ -23,10 +23,16 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # 确保 models 可导入
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -379,6 +385,7 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
             token_usage_import_task = None
+        await _drain_automatic_error_observer()
         await asyncio.to_thread(engine.close)
     print("[3CAN] 关闭")
 
@@ -2655,16 +2662,18 @@ def _prune_expired_tickets() -> None:
     _ticket_ledger().active_count()
 
 
+_TICKET_INTEGRITY_ERROR_CODES = frozenset({
+    "ticket_agent_mismatch",
+    "ticket_target_digest_mismatch",
+    "ticket_scope_digest_mismatch",
+    "ticket_consumption_activity_mismatch",
+    "ticket_consumption_binding_mismatch",
+    "ticket_consumption_not_exclusive",
+})
+
+
 def _ledger_http_status(error: LedgerError) -> int:
-    if error.code in {
-        "ticket_agent_mismatch",
-        "ticket_target_digest_mismatch",
-        "ticket_scope_digest_mismatch",
-        "ticket_error_not_allowed",
-        "ticket_consumption_activity_mismatch",
-        "ticket_consumption_binding_mismatch",
-        "ticket_consumption_not_exclusive",
-    }:
+    if error.code in _TICKET_INTEGRITY_ERROR_CODES | {"ticket_error_not_allowed"}:
         return 403
     if error.code in {"ticket_not_found", "ticket_not_active"}:
         return 404
@@ -2737,6 +2746,12 @@ async def issue_route_ticket(payload: dict):
         project_id=project_id if project_id != "unspecified" else "",
         project_namespace=project_namespace,
         workspace_id=workspace_id if workspace_id != "unspecified" else "",
+    )
+    project_identity_verified = bool(
+        _normalize_lease_values(target_files)
+        and project_id != "unspecified"
+        and project_namespace
+        and workspace_id != "unspecified"
     )
     if client_target_digest and not secrets.compare_digest(
         client_target_digest,
@@ -2864,6 +2879,7 @@ async def issue_route_ticket(payload: dict):
         "workorder_id": workorder_id,
         "target_digest": target_digest,
         "target_digest_source": target_digest_source,
+        "project_identity_verified": project_identity_verified,
         "target_set_digest": canonical_hash(_normalize_lease_values(target_files)),
         "scope_digest": scope_digest,
         "policy_version": policy_version,
@@ -3353,7 +3369,10 @@ async def _record_error_occurrence_core(payload: dict):
             detail={"error": "occurrence_context_too_large"},
         )
     try:
-        result = _ticket_ledger().record_error_occurrence(occurrence)
+        result = await asyncio.to_thread(
+            _ticket_ledger().record_error_occurrence,
+            occurrence,
+        )
     except LedgerError as exc:
         raise HTTPException(
             409,
@@ -3392,6 +3411,339 @@ async def _record_error_occurrence_core(payload: dict):
         "projection_error": projection_error,
     }
 
+
+_AUTO_ERROR_OBSERVER_ACTOR = "3can-server-error-observer"
+_AUTO_ERROR_OBSERVER_COMPONENT = "3can-http-api"
+_AUTO_ERROR_OBSERVER_SCHEMA = "3can.server-error-observation/v1"
+_AUTO_ERROR_OBSERVER_MAX_TASKS = 64
+_AUTO_ERROR_ACTIVITY_COOLDOWN_SECONDS = 60.0
+_AUTO_ERROR_OBSERVER_DROPS = 0
+_AUTO_ERROR_OBSERVER_SUPPRESSED = 0
+_AUTO_ERROR_OBSERVER_TASKS: set[asyncio.Task] = set()
+_AUTO_ERROR_ACTIVITY_LAST_SEEN: dict[str, float] = {}
+_AUTO_ERROR_OBSERVER_IGNORED_CODES = {
+    "error_case_not_found",
+    "error_occurrence_not_found",
+    "low_confidence_requires_confirmation",
+    "unticketed_error_occurrence_disabled",
+}
+_AUTO_ERROR_KNOWLEDGE_EXACT_CODES = _TICKET_INTEGRITY_ERROR_CODES | {
+    "consume_activity_receipt_missing",
+    "ticket_already_consumed",
+    "ticket_target_state_changed",
+}
+
+
+def _automatic_observer_drop(_exc: BaseException | None = None) -> None:
+    global _AUTO_ERROR_OBSERVER_DROPS
+    _AUTO_ERROR_OBSERVER_DROPS = min(_AUTO_ERROR_OBSERVER_DROPS + 1, 2_147_483_647)
+
+
+def _automatic_exception_code(exc: BaseException) -> str:
+    class_name = type(exc).__name__
+    token = re.sub(
+        r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])",
+        "_",
+        class_name,
+    ).casefold()
+    token = re.sub(r"[^a-z0-9_]+", "_", token).strip("_")
+    return f"unhandled_{token or 'server_error'}"[:80]
+
+
+def _automatic_failure_snapshot(
+    request: Request,
+    *,
+    status_code: int,
+    error_code: str,
+    ticket_id: str = "",
+) -> dict[str, Any]:
+    route = request.scope.get("route")
+    route_path = str(getattr(route, "path", "") or "")
+    route_name = str(getattr(route, "name", "") or "")
+    normalized_error = str(error_code or "").strip().casefold()
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", normalized_error):
+        normalized_error = (
+            "http_500_internal_error" if status_code >= 500 else ""
+        )
+    response_ticket_id = str(ticket_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", response_ticket_id):
+        response_ticket_id = ""
+    request_correlation = str(request.headers.get("x-request-id") or "").strip()
+    correlation_digest = (
+        hashlib.sha256(request_correlation.encode("utf-8")).hexdigest()
+        if request_correlation
+        else ""
+    )
+    return {
+        "event_id": uuid.uuid4().hex,
+        "method": request.method.upper(),
+        "route_path": route_path,
+        "route_name": route_name,
+        "ticket_id": (
+            str(request.path_params.get("ticket_id") or "").strip()
+            or response_ticket_id
+        ),
+        "request_correlation_digest": correlation_digest,
+        "status_code": int(status_code),
+        "error_code": normalized_error,
+    }
+
+
+def _automatic_failure_tier(snapshot: Mapping[str, Any]) -> str | None:
+    route_path = str(snapshot.get("route_path") or "")
+    status_code = int(snapshot.get("status_code") or 0)
+    error_code = str(snapshot.get("error_code") or "")
+    if (
+        not route_path.startswith("/api/")
+        or route_path.startswith(("/api/errors/", "/api/health/", "/api/stats"))
+        or status_code < 400
+        or not error_code
+        or error_code in _AUTO_ERROR_OBSERVER_IGNORED_CODES
+    ):
+        return None
+    if status_code >= 500:
+        return "error_knowledge"
+    if error_code in _AUTO_ERROR_KNOWLEDGE_EXACT_CODES:
+        return "error_knowledge_candidate"
+    return "activity"
+
+
+def _claim_automatic_activity(fingerprint: str) -> bool:
+    global _AUTO_ERROR_OBSERVER_SUPPRESSED
+    now = asyncio.get_running_loop().time()
+    previous = _AUTO_ERROR_ACTIVITY_LAST_SEEN.get(fingerprint)
+    if previous is not None and now - previous < _AUTO_ERROR_ACTIVITY_COOLDOWN_SECONDS:
+        _AUTO_ERROR_OBSERVER_SUPPRESSED = min(
+            _AUTO_ERROR_OBSERVER_SUPPRESSED + 1,
+            2_147_483_647,
+        )
+        return False
+    if len(_AUTO_ERROR_ACTIVITY_LAST_SEEN) >= 512:
+        _AUTO_ERROR_ACTIVITY_LAST_SEEN.clear()
+    _AUTO_ERROR_ACTIVITY_LAST_SEEN[fingerprint] = now
+    return True
+
+
+async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None:
+    tier = _automatic_failure_tier(snapshot)
+    if tier is None:
+        return
+
+    ticket_id = str(snapshot.get("ticket_id") or "")
+    try:
+        ticket = (
+            await asyncio.to_thread(
+                _ticket_ledger().get,
+                ticket_id,
+                active_only=False,
+            )
+            if ticket_id else None
+        )
+    except Exception:
+        ticket = None
+    ticket = ticket if isinstance(ticket, dict) else {}
+    ticket_project = _specified_identity(ticket.get("project_id"))
+    ticket_namespace = _specified_identity(ticket.get("project_namespace"))
+    ticket_workspace = _specified_identity(ticket.get("workspace_id"))
+    authoritative_ticket = bool(
+        ticket.get("project_identity_verified") is True
+        and ticket_project
+        and ticket_namespace
+        and ticket_workspace
+    )
+    if tier == "error_knowledge_candidate":
+        tier = "error_knowledge" if authoritative_ticket else "activity"
+
+    project_id = ticket_project if authoritative_ticket else "3can-runtime"
+    identity_source = "route_ticket" if authoritative_ticket else "server_runtime"
+    route_name = str(snapshot.get("route_name") or "unmatched_route")
+    operation = f"{snapshot['method']} {route_name}"
+    error_code = str(snapshot["error_code"])
+    fingerprint = deterministic_fingerprint(
+        project_id=project_id,
+        operation=operation,
+        component=_AUTO_ERROR_OBSERVER_COMPONENT,
+        error_type=error_code,
+    )
+
+    if tier == "activity":
+        if not _claim_automatic_activity(fingerprint) or engine is None:
+            return
+        await _engine_in_worker(
+            engine.log_activity,
+            agent_id=_AUTO_ERROR_OBSERVER_ACTOR,
+            action="3can_issue_observed",
+            detail=(
+                f"{snapshot['method']} {route_name} -> "
+                f"{snapshot['status_code']} {error_code}"
+            ),
+            affected_nodes=[],
+            meta={
+                "schema_version": _AUTO_ERROR_OBSERVER_SCHEMA,
+                "source": "server_http_response",
+                "recording_tier": tier,
+                "status_code": int(snapshot["status_code"]),
+                "error_code": error_code,
+                "route_name": route_name,
+                "project_id": project_id,
+                "observation_id": str(snapshot["event_id"]),
+            },
+        )
+        return
+
+    correlation = (
+        ticket_id
+        if authoritative_ticket
+        else str(snapshot.get("request_correlation_digest") or "")
+        or str(snapshot["event_id"])
+    )
+    occurrence_id = "auto-http-" + hashlib.sha256(
+        f"{fingerprint}\n{correlation}".encode("utf-8")
+    ).hexdigest()[:40]
+    await _record_error_occurrence_core({
+        "occurrence_id": occurrence_id,
+        "fingerprint": fingerprint,
+        "project_id": project_id,
+        "operation": operation,
+        "component": _AUTO_ERROR_OBSERVER_COMPONENT,
+        "error_type": error_code,
+        "error": f"HTTP {snapshot['status_code']} {error_code}",
+        "root_cause": (
+            "server_exception"
+            if int(snapshot["status_code"]) >= 500
+            else "undetermined"
+        ),
+        "occurred_at": _utc_now().isoformat(),
+        "agent_id": _AUTO_ERROR_OBSERVER_ACTOR,
+        "context": {
+            "schema_version": _AUTO_ERROR_OBSERVER_SCHEMA,
+            "source": "server_http_response",
+            "status_code": int(snapshot["status_code"]),
+            "route_name": route_name,
+            "identity_source": identity_source,
+            "ticket_id": ticket_id if authoritative_ticket else "",
+            "project_namespace": ticket_namespace if authoritative_ticket else "",
+            "workspace_id": ticket_workspace if authoritative_ticket else "",
+            "workorder_id": (
+                str(ticket.get("workorder_id") or "")
+                if authoritative_ticket
+                else ""
+            ),
+        },
+    })
+
+
+async def _try_observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None:
+    try:
+        await _observe_automatic_server_failure(snapshot)
+    except Exception as exc:
+        _automatic_observer_drop(exc)
+
+
+def _automatic_observer_task_done(task: asyncio.Task) -> None:
+    _AUTO_ERROR_OBSERVER_TASKS.discard(task)
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except BaseException as exc:
+        _automatic_observer_drop(exc)
+
+
+def _schedule_automatic_server_failure(snapshot: Mapping[str, Any]) -> None:
+    if _automatic_failure_tier(snapshot) is None:
+        return
+    if len(_AUTO_ERROR_OBSERVER_TASKS) >= _AUTO_ERROR_OBSERVER_MAX_TASKS:
+        _automatic_observer_drop()
+        return
+    try:
+        task = asyncio.create_task(_try_observe_automatic_server_failure(dict(snapshot)))
+    except BaseException as exc:
+        _automatic_observer_drop(exc)
+        return
+    _AUTO_ERROR_OBSERVER_TASKS.add(task)
+    task.add_done_callback(_automatic_observer_task_done)
+
+
+def _try_schedule_automatic_server_failure(
+    request: Request,
+    *,
+    status_code: int,
+    error_code: str,
+    ticket_id: str = "",
+) -> None:
+    try:
+        _schedule_automatic_server_failure(_automatic_failure_snapshot(
+            request,
+            status_code=status_code,
+            error_code=error_code,
+            ticket_id=ticket_id,
+        ))
+    except BaseException as exc:
+        _automatic_observer_drop(exc)
+
+
+async def _drain_automatic_error_observer(timeout: float = 5.0) -> None:
+    pending = list(_AUTO_ERROR_OBSERVER_TASKS)
+    if not pending:
+        return
+    _, pending = await asyncio.wait(pending, timeout=timeout)
+    for task in pending:
+        _automatic_observer_drop()
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _observe_http_exception(
+    request: Request,
+    exc: StarletteHTTPException,
+):
+    detail = exc.detail
+    error_code = (
+        str(detail.get("error") or "")
+        if isinstance(detail, dict)
+        else ""
+    )
+    ticket_id = (
+        str(detail.get("ticket_id") or "")
+        if isinstance(detail, dict)
+        else ""
+    )
+    _try_schedule_automatic_server_failure(
+        request,
+        status_code=int(exc.status_code),
+        error_code=error_code,
+        ticket_id=ticket_id,
+    )
+    return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def _observe_request_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+):
+    _try_schedule_automatic_server_failure(
+        request,
+        status_code=422,
+        error_code="request_validation_error",
+    )
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.middleware("http")
+async def _observe_unhandled_server_error(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        _try_schedule_automatic_server_failure(
+            request,
+            status_code=500,
+            error_code=_automatic_exception_code(exc),
+        )
+        raise
 
 def _unticketed_error_occurrence_enabled() -> bool:
     explicit = os.environ.get(_UNTICKETED_ERROR_OCCURRENCE_ENV, "")
@@ -3723,6 +4075,15 @@ async def ticketed_error_occurrence_capabilities():
         "receipt_schema_version": _TICKETED_ERROR_RECEIPT_SCHEMA,
         "requires_route_ticket": True,
         "idempotency_scope": "event_idempotency_key",
+        "server_failure_observer": {
+            "schema_version": _AUTO_ERROR_OBSERVER_SCHEMA,
+            "enabled": True,
+            "scope": "failures_returned_by_this_3can_runtime",
+            "original_response_preserved": True,
+            "drop_count": _AUTO_ERROR_OBSERVER_DROPS,
+            "suppressed_activity_count": _AUTO_ERROR_OBSERVER_SUPPRESSED,
+            "pending_count": len(_AUTO_ERROR_OBSERVER_TASKS),
+        },
     }
 
 
@@ -5817,7 +6178,7 @@ async def agent_checkin(payload: dict):
     """
     agent_id = payload.get("agent_id")
     if not agent_id:
-        raise HTTPException(400, "agent_id is required")
+        raise HTTPException(400, detail={"error": "agent_id_required"})
     agent = await _engine_in_worker(
         engine.agent_checkin,
         agent_id=agent_id,

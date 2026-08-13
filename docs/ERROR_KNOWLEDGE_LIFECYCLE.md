@@ -122,6 +122,29 @@ Expected, handled, or transient conditions MAY remain telemetry-only. A single
 retry MUST NOT create a new canonical case unless its signature or impact is
 materially different.
 
+The canonical server observes typed exception, validation, and unhandled
+failure paths that it returns to clients.
+Expected gates become rate-bounded, sanitized `3can_issue_observed` Activity;
+only stable protocol, identity-binding, integrity, and server failures enter
+this occurrence ledger. The original HTTP response is unchanged, and observer
+failure never replaces or delays the original error. Replays bound to the same
+authoritative ticket or the same caller-supplied `X-Request-ID` are idempotent;
+without either
+correlation, separate failed requests remain separate occurrences, and a second
+occurrence is required before graph projection. The request-ID value is hashed
+for correlation and is never stored verbatim.
+Expected gates remain bounded Activity observations and do not become blocking
+ErrorCases. The observer never records request bodies, headers, raw exception
+text, unmatched URL paths, or failures from `/api/errors/*`, health, or stats
+routes, and it does not enable the public unticketed occurrence endpoint.
+Endpoints that intentionally return an error-shaped `JSONResponse` without
+raising are outside this observer boundary.
+
+This boundary covers errors that reach 3CAN through MCP, the project kit,
+PowerShell, or direct HTTP. Local validation and transport failures that occur
+before a request reaches the server remain `UNAVAILABLE` until an authorized
+ticketed delivery can succeed; the server MUST NOT claim to have observed them.
+
 ### 4.2 `ErrorCase`: canonical recurring problem
 
 An `ErrorCase` groups compatible occurrences. The SQLite ledger is

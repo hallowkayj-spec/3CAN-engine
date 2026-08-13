@@ -97,6 +97,14 @@ processes. Explicit `-StartServer`/`--start-server` is an operator setup
 action. A managed Windows installation may use one machine-owned Supervisor
 Scheduled Task; wrappers only observe Runtime readiness.
 
+No Session hook is required to report an error returned by 3CAN. The canonical
+server records its own typed exception and validation failures through the existing
+Activity and ErrorKnowledge lifecycle, without changing the response seen by
+the caller. Health/stats probes and endpoints that directly return an
+error-shaped response are not included. A helper validation or connection failure that occurs before the
+request reaches 3CAN cannot be recorded immediately and remains explicitly
+`UNAVAILABLE`; clients must not fabricate server-side success.
+
 ## Optional GitHub PR Fallback
 
 If `gh` is unavailable or a GitHub connector cannot create a PR for a private

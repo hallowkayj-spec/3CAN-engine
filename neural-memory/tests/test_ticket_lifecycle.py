@@ -8,12 +8,14 @@ import hmac
 import importlib.util
 import json
 import multiprocessing
+import re
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -318,11 +320,17 @@ def ticket_runtime(tmp_path, monkeypatch):
     return app, fake, error_node, tmp_path
 
 
-def _issue(app, *, task="Fix deterministic ticket lifecycle"):
+def _issue(
+    app,
+    *,
+    task="Fix deterministic ticket lifecycle",
+    project_id="project",
+    project_namespace="project",
+):
     return asyncio.run(app.issue_route_ticket({
         "agent_id": "agent-a",
-        "project_id": "project",
-        "project_namespace": "project",
+        "project_id": project_id,
+        "project_namespace": project_namespace,
         "workspace_id": "workspace",
         "workorder_id": "workorder",
         "task_description": task,
@@ -330,6 +338,36 @@ def _issue(app, *, task="Fix deterministic ticket lifecycle"):
         "scope_keywords": ["ticket", "error"],
         "task_type": "Edit",
     }))
+
+
+async def _asgi_post(
+    app,
+    path: str,
+    payload: dict,
+    *,
+    drain: bool = True,
+    headers: dict[str, str] | None = None,
+):
+    transport = httpx.ASGITransport(app=app.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://3can.test",
+    ) as client:
+        response = await client.post(path, json=payload, headers=headers)
+    if drain:
+        await app._drain_automatic_error_observer()
+    return response
+
+
+async def _asgi_get(app, path: str):
+    transport = httpx.ASGITransport(app=app.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://3can.test",
+    ) as client:
+        response = await client.get(path)
+    await app._drain_automatic_error_observer()
+    return response
 
 
 def test_target_manifest_accepts_only_capsule_bound_git_worktree(
@@ -1193,6 +1231,748 @@ def test_fault_injection_recovers_from_journal_without_duplicate_activity(
     assert recovered["resolution_outcome"] == "resolved"
     assert app._ticket_ledger().journal(ticket["ticket_id"])["stage"] == "completed"
     assert len([entry for entry in fake.activity_log if entry.action == "done"]) == 1
+
+
+def test_server_automatically_records_and_promotes_ticket_identity_rejections(
+    ticket_runtime,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    first_ticket = _issue(app, task="automatic observer first identity rejection")
+    payload = {
+        "agent_id": "wrong-agent",
+        "tool_name": "Edit",
+        "tool_input_summary": "automatic observer test",
+        "target_digest": first_ticket["target_digest"],
+        "scope_digest": first_ticket["scope_digest"],
+        "authorization": "Bearer must-not-be-recorded",
+    }
+
+    first = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{first_ticket['ticket_id']}/consume",
+        payload,
+    ))
+    assert first.status_code == 403
+    assert first.json() == {
+        "detail": {
+            "error": "ticket_agent_mismatch",
+            "ticket_id": first_ticket["ticket_id"],
+        }
+    }
+    fingerprint = app.deterministic_fingerprint(
+        project_id="project",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type="ticket_agent_mismatch",
+    )
+    first_case = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert first_case["occurrence_count"] == 1
+    assert first_case["case_id"] is None
+
+    async def concurrent_replays():
+        responses = await asyncio.gather(*[
+            _asgi_post(
+                app,
+                f"/api/route/ticket/{first_ticket['ticket_id']}/consume",
+                payload,
+                drain=False,
+            )
+            for _ in range(2)
+        ])
+        await app._drain_automatic_error_observer()
+        return responses
+
+    replays = asyncio.run(concurrent_replays())
+    assert [response.status_code for response in replays] == [403, 403]
+    assert app._ticket_ledger().error_case(
+        fingerprint=fingerprint,
+    )["occurrence_count"] == 1
+
+    second_ticket = _issue(app, task="automatic observer second identity rejection")
+    payload["target_digest"] = second_ticket["target_digest"]
+    payload["scope_digest"] = second_ticket["scope_digest"]
+    second = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{second_ticket['ticket_id']}/consume",
+        payload,
+    ))
+    assert second.status_code == 403
+    promoted = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert promoted["occurrence_count"] == 2
+    assert promoted["case_id"].startswith("ERR-case-")
+
+    assert promoted["case_id"] in fake.nodes
+
+    assert not any(
+        entry.action == "3can_issue_observed"
+        for entry in fake.activity_log
+    )
+    with sqlite3.connect(app._TICKET_LEDGER_PATH) as connection:
+        stored = "\n".join(
+            row[0]
+            for row in connection.execute(
+                "SELECT payload_json FROM error_occurrences ORDER BY occurred_at"
+            )
+        )
+    assert "must-not-be-recorded" not in stored
+    assert "wrong-agent" not in stored
+
+
+def test_server_error_observer_preserves_response_and_fails_open(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    ticket = _issue(app, task="automatic observer injected failure")
+    before_drops = app._AUTO_ERROR_OBSERVER_DROPS
+
+    async def fail_record(_payload):
+        raise OSError("injected observer failure")
+
+    monkeypatch.setattr(app, "_record_error_occurrence_core", fail_record)
+    response = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{ticket['ticket_id']}/consume",
+        {
+            "agent_id": "wrong-agent",
+            "tool_name": "Edit",
+            "tool_input_summary": "observer failure must not mask rejection",
+            "target_digest": ticket["target_digest"],
+            "scope_digest": ticket["scope_digest"],
+        },
+    ))
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "ticket_agent_mismatch"
+    assert app._AUTO_ERROR_OBSERVER_DROPS == before_drops + 1
+    assert not any(
+        entry.action == "3can_issue_observed"
+        for entry in fake.activity_log
+    )
+
+    async def fail_observer(*_args, **_kwargs):
+        raise RuntimeError("injected observer boundary failure")
+
+    monkeypatch.setattr(app, "_observe_automatic_server_failure", fail_observer)
+    boundary_failure = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{ticket['ticket_id']}/consume",
+        {
+            "agent_id": "wrong-agent",
+            "tool_name": "Edit",
+            "tool_input_summary": "observer boundary failure",
+            "target_digest": ticket["target_digest"],
+            "scope_digest": ticket["scope_digest"],
+        },
+    ))
+    assert boundary_failure.status_code == 403
+    assert boundary_failure.json()["detail"]["error"] == "ticket_agent_mismatch"
+    assert app._AUTO_ERROR_OBSERVER_DROPS == before_drops + 2
+
+    monkeypatch.setattr(
+        app,
+        "_automatic_failure_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(BrokenPipeError()),
+    )
+    scheduling_failure = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{ticket['ticket_id']}/consume",
+        {
+            "agent_id": "wrong-agent",
+            "tool_name": "Edit",
+            "tool_input_summary": "observer scheduling failure",
+            "target_digest": ticket["target_digest"],
+            "scope_digest": ticket["scope_digest"],
+        },
+    ))
+    assert scheduling_failure.status_code == 403
+    assert scheduling_failure.json()["detail"]["error"] == "ticket_agent_mismatch"
+    assert app._AUTO_ERROR_OBSERVER_DROPS == before_drops + 3
+
+
+def test_server_error_observer_uses_authoritative_ticket_project_scope(
+    ticket_runtime,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    ticket = _issue(
+        app,
+        task="automatic observer other project",
+        project_id="other-project",
+        project_namespace="other-namespace",
+    )
+    response = asyncio.run(_asgi_post(
+        app,
+        f"/api/route/ticket/{ticket['ticket_id']}/consume",
+        {
+            "agent_id": "wrong-agent",
+            "project_id": "forged-project",
+            "tool_name": "Edit",
+            "tool_input_summary": "scope must come from the ticket",
+            "target_digest": ticket["target_digest"],
+            "scope_digest": ticket["scope_digest"],
+        },
+    ))
+    assert response.status_code == 403
+
+    authoritative = app.deterministic_fingerprint(
+        project_id="other-project",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type="ticket_agent_mismatch",
+    )
+    forged = app.deterministic_fingerprint(
+        project_id="forged-project",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type="ticket_agent_mismatch",
+    )
+    assert app._ticket_ledger().error_case(fingerprint=authoritative) is not None
+    assert app._ticket_ledger().error_case(fingerprint=forged) is None
+
+
+def test_server_error_observer_does_not_trust_unverified_ticket_project(
+    ticket_runtime,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+
+    def issue_unverified(suffix):
+        return asyncio.run(app.issue_route_ticket({
+            "agent_id": "agent-a",
+            "project_id": "victim-project",
+            "project_namespace": "victim-namespace",
+            "workspace_id": "fabricated-workspace",
+            "workorder_id": f"workorder-{suffix}",
+            "task_description": f"unverified project ticket {suffix}",
+            "target_files": [],
+            "scope_keywords": ["identity"],
+            "task_type": "Edit",
+        }))
+
+    for suffix in ("one", "two"):
+        ticket = issue_unverified(suffix)
+        assert ticket["project_identity_verified"] is False
+        response = asyncio.run(_asgi_post(
+            app,
+            f"/api/route/ticket/{ticket['ticket_id']}/consume",
+            {
+                "agent_id": "wrong-agent",
+                "tool_name": "Edit",
+                "tool_input_summary": "must not claim victim project",
+                "target_digest": ticket["target_digest"],
+                "scope_digest": ticket["scope_digest"],
+            },
+        ))
+        assert response.status_code == 403
+
+    victim_fingerprint = app.deterministic_fingerprint(
+        project_id="victim-project",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type="ticket_agent_mismatch",
+    )
+    runtime_fingerprint = app.deterministic_fingerprint(
+        project_id="3can-runtime",
+        operation="POST consume_route_ticket",
+        component="3can-http-api",
+        error_type="ticket_agent_mismatch",
+    )
+    assert app._ticket_ledger().error_case(fingerprint=victim_fingerprint) is None
+    assert app._ticket_ledger().error_case(fingerprint=runtime_fingerprint) is None
+    observations = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]
+    assert len(observations) == 1
+    assert observations[0].meta["project_id"] == "3can-runtime"
+    assert observations[0].meta["recording_tier"] == "activity"
+
+    unverified_500 = {
+        "event_id": "unverified-500",
+        "method": "POST",
+        "route_path": "/api/route/ticket/{ticket_id}/consume",
+        "route_name": "consume_route_ticket",
+        "ticket_id": ticket["ticket_id"],
+        "request_correlation_digest": "",
+        "status_code": 500,
+        "error_code": "unhandled_os_error",
+    }
+    asyncio.run(app._observe_automatic_server_failure(unverified_500))
+    runtime_500 = app._ticket_ledger().error_case(
+        fingerprint=app.deterministic_fingerprint(
+            project_id="3can-runtime",
+            operation="POST consume_route_ticket",
+            component="3can-http-api",
+            error_type="unhandled_os_error",
+        )
+    )
+    assert runtime_500["project_id"] == "3can-runtime"
+    with sqlite3.connect(app._TICKET_LEDGER_PATH) as connection:
+        stored_context = json.loads(connection.execute(
+            "SELECT payload_json FROM error_occurrences "
+            "WHERE fingerprint=? ORDER BY occurred_at DESC LIMIT 1",
+            (runtime_500["fingerprint"],),
+        ).fetchone()[0])["context"]
+    assert stored_context["ticket_id"] == ""
+    assert stored_context["project_namespace"] == ""
+    assert stored_context["workspace_id"] == ""
+    assert stored_context["workorder_id"] == ""
+
+
+def test_server_error_observer_uses_ticket_id_from_error_response_detail(
+    ticket_runtime,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    ticket = _issue(
+        app,
+        task="automatic observer completion identity rejection",
+        project_id="completion-project",
+        project_namespace="completion-namespace",
+    )
+    _consume(app, ticket)
+
+    response = asyncio.run(_asgi_post(
+        app,
+        "/api/activity/done",
+        {
+            "agent_id": "wrong-agent",
+            "ticket_id": ticket["ticket_id"],
+            "detail": "must remain rejected",
+            "affected_nodes": [],
+            "meta": {},
+        },
+    ))
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == {
+        "error": "ticket_agent_mismatch",
+        "ticket_id": ticket["ticket_id"],
+    }
+    fingerprint = app.deterministic_fingerprint(
+        project_id="completion-project",
+        operation="POST complete_activity_endpoint",
+        component="3can-http-api",
+        error_type="ticket_agent_mismatch",
+    )
+    case = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert case["occurrence_count"] == 1
+    assert case["project_id"] == "completion-project"
+
+
+def test_ticket_activity_integrity_mismatch_is_error_knowledge_candidate(
+    ticket_runtime,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    assert "ticket_consumption_activity_mismatch" in (
+        app._TICKET_INTEGRITY_ERROR_CODES
+    )
+    assert app._automatic_failure_tier({
+        "route_path": "/api/activity/done",
+        "status_code": 403,
+        "error_code": "ticket_consumption_activity_mismatch",
+    }) == "error_knowledge_candidate"
+
+
+def test_error_recorder_failures_do_not_recurse_into_the_observer(
+    ticket_runtime,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    before = len([
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ])
+    response = asyncio.run(_asgi_post(
+        app,
+        "/api/errors/occurrences",
+        {"secret": "not-an-occurrence"},
+    ))
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "occurrence_fields_missing"
+    after = len([
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ])
+    assert after == before
+
+
+def test_server_observer_keeps_validation_as_activity_and_ignores_read_miss(
+    ticket_runtime,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    validation = asyncio.run(_asgi_post(app, "/api/route", {}))
+    assert validation.status_code == 422
+    observations = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]
+    assert len(observations) == 1
+    assert observations[0].meta["recording_tier"] == "activity"
+    assert observations[0].meta["error_code"] == "request_validation_error"
+
+    repeated = asyncio.run(_asgi_post(app, "/api/route", {}))
+    assert repeated.status_code == 422
+    assert app._AUTO_ERROR_OBSERVER_SUPPRESSED == 1
+    assert len([
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]) == 1
+
+    missing = asyncio.run(_asgi_get(app, "/api/nodes/DOC-not-present"))
+    assert missing.status_code == 404
+    assert len([
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]) == 1
+
+
+def test_server_observer_records_unhandled_500_without_exposing_exception(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+
+    async def fail_route(_req):
+        raise OSError("private path C:\\Users\\secret and token=do-not-return")
+
+    monkeypatch.setattr(app, "_route_in_worker", fail_route)
+    response = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {
+            "task": "trigger bounded automatic observer test",
+            "confirm_low_confidence": True,
+        },
+        headers={"x-request-id": "stable-retry-correlation"},
+    ))
+    assert response.status_code == 500
+    assert "do-not-return" not in response.text
+
+    fingerprint = app.deterministic_fingerprint(
+        project_id="3can-runtime",
+        operation="POST route_task",
+        component="3can-http-api",
+        error_type="unhandled_os_error",
+    )
+    case = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert case["occurrence_count"] == 1
+    with sqlite3.connect(app._TICKET_LEDGER_PATH) as connection:
+        stored = "\n".join(
+            row[0]
+            for row in connection.execute(
+                "SELECT payload_json FROM error_occurrences ORDER BY occurred_at"
+            )
+        )
+    assert "do-not-return" not in stored
+    assert "C:\\Users\\secret" not in stored
+
+    retry = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {
+            "task": "retry the same request correlation",
+            "confirm_low_confidence": True,
+        },
+        headers={"x-request-id": "stable-retry-correlation"},
+    ))
+    assert retry.status_code == 500
+    assert app._ticket_ledger().error_case(
+        fingerprint=fingerprint,
+    )["occurrence_count"] == 1
+
+    repeated = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {
+            "task": "trigger a second independent bounded observer test",
+            "confirm_low_confidence": True,
+        },
+        headers={"x-request-id": "independent-correlation-2"},
+    ))
+    assert repeated.status_code == 500
+    promoted = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert promoted["occurrence_count"] == 2
+    assert promoted["case_id"].startswith("ERR-case-")
+
+    third = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {
+            "task": "record a third independent server failure",
+            "confirm_low_confidence": True,
+        },
+        headers={"x-request-id": "independent-correlation-3"},
+    ))
+    assert third.status_code == 500
+    assert app._ticket_ledger().error_case(
+        fingerprint=fingerprint,
+    )["occurrence_count"] == 3
+
+    long_request_id = "long-correlation-" + ("x" * 240)
+    long_first = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {"task": "long correlation first", "confirm_low_confidence": True},
+        headers={"x-request-id": long_request_id},
+    ))
+    long_retry = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {"task": "long correlation retry", "confirm_low_confidence": True},
+        headers={"x-request-id": long_request_id},
+    ))
+    assert long_first.status_code == long_retry.status_code == 500
+    assert app._ticket_ledger().error_case(
+        fingerprint=fingerprint,
+    )["occurrence_count"] == 4
+
+    same_prefix_different_suffix = (
+        "long-correlation-" + ("x" * 240) + "-different"
+    )
+    distinct_long = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {"task": "distinct long correlation", "confirm_low_confidence": True},
+        headers={"x-request-id": same_prefix_different_suffix},
+    ))
+    assert distinct_long.status_code == 500
+    assert app._ticket_ledger().error_case(
+        fingerprint=fingerprint,
+    )["occurrence_count"] == 5
+
+def test_server_observer_records_missing_agent_id_as_bounded_activity(
+    ticket_runtime,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    response = asyncio.run(_asgi_post(app, "/api/agents/checkin", {}))
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"error": "agent_id_required"}}
+    observed = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]
+    assert len(observed) == 1
+    assert observed[0].meta["error_code"] == "agent_id_required"
+    assert observed[0].meta["recording_tier"] == "activity"
+    assert "occurrence_id" not in observed[0].meta
+    assert re.fullmatch(r"[0-9a-f]{32}", observed[0].meta["observation_id"])
+
+
+def test_server_observer_does_not_delay_original_rejection(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    ticket = _issue(app, task="observer response independence")
+
+    async def exercise():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hanging_observer(_snapshot):
+            entered.set()
+            await release.wait()
+
+        monkeypatch.setattr(app, "_observe_automatic_server_failure", hanging_observer)
+        response = await asyncio.wait_for(
+            _asgi_post(
+                app,
+                f"/api/route/ticket/{ticket['ticket_id']}/consume",
+                {
+                    "agent_id": "wrong-agent",
+                    "tool_name": "Edit",
+                    "tool_input_summary": "response must not wait for observer",
+                    "target_digest": ticket["target_digest"],
+                    "scope_digest": ticket["scope_digest"],
+                },
+                drain=False,
+            ),
+            timeout=1,
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert response.status_code == 403
+        assert response.json()["detail"]["error"] == "ticket_agent_mismatch"
+        release.set()
+        await app._drain_automatic_error_observer()
+
+    asyncio.run(exercise())
+
+
+def test_server_observer_bounds_pending_work_and_cleans_finished_tasks(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+
+    async def exercise():
+        release = asyncio.Event()
+
+        async def wait_for_release(_snapshot):
+            await release.wait()
+
+        monkeypatch.setattr(
+            app,
+            "_observe_automatic_server_failure",
+            wait_for_release,
+        )
+        before_drops = app._AUTO_ERROR_OBSERVER_DROPS
+        for index in range(app._AUTO_ERROR_OBSERVER_MAX_TASKS + 1):
+            app._schedule_automatic_server_failure({
+                "event_id": f"event-{index}",
+                "method": "POST",
+                "route_path": "/api/route",
+                "route_name": "route_task",
+                "ticket_id": "",
+                "request_correlation_digest": "",
+                "status_code": 422,
+                "error_code": "request_validation_error",
+            })
+        assert len(app._AUTO_ERROR_OBSERVER_TASKS) == (
+            app._AUTO_ERROR_OBSERVER_MAX_TASKS
+        )
+        assert app._AUTO_ERROR_OBSERVER_DROPS == before_drops + 1
+        await asyncio.sleep(0)
+        release.set()
+        await app._drain_automatic_error_observer()
+        assert not app._AUTO_ERROR_OBSERVER_TASKS
+
+    asyncio.run(exercise())
+
+
+def test_server_observer_keeps_route_names_distinct_for_same_500_code(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+
+    async def fail_route(_req):
+        raise OSError("route failed")
+
+    monkeypatch.setattr(app, "_route_in_worker", fail_route)
+
+    def fail_checkin(**_kwargs):
+        raise OSError("checkin failed")
+
+    monkeypatch.setattr(fake, "agent_checkin", fail_checkin, raising=False)
+    route_response = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {"task": "route failure", "confirm_low_confidence": True},
+    ))
+    assert route_response.status_code == 500
+
+    checkin_response = asyncio.run(_asgi_post(
+        app,
+        "/api/agents/checkin",
+        {"agent_id": "agent-a"},
+    ))
+    assert checkin_response.status_code == 500
+
+    route_fingerprint = app.deterministic_fingerprint(
+        project_id="3can-runtime",
+        operation="POST route_task",
+        component="3can-http-api",
+        error_type="unhandled_os_error",
+    )
+    checkin_fingerprint = app.deterministic_fingerprint(
+        project_id="3can-runtime",
+        operation="POST agent_checkin",
+        component="3can-http-api",
+        error_type="unhandled_os_error",
+    )
+    route_case = app._ticket_ledger().error_case(fingerprint=route_fingerprint)
+    checkin_case = app._ticket_ledger().error_case(fingerprint=checkin_fingerprint)
+    assert route_case["operation"] == "post route_task"
+    assert checkin_case["operation"] == "post agent_checkin"
+    assert route_case["fingerprint"] != checkin_case["fingerprint"]
+
+
+def test_server_observer_keeps_incompatible_500_types_separate(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+
+    async def fail_with_os_error(_req):
+        raise OSError("private details")
+
+    monkeypatch.setattr(app, "_route_in_worker", fail_with_os_error)
+    first = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {"task": "first failure", "confirm_low_confidence": True},
+    ))
+    assert first.status_code == 500
+
+    async def fail_with_value_error(_req):
+        raise ValueError("different private details")
+
+    monkeypatch.setattr(app, "_route_in_worker", fail_with_value_error)
+    second = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {"task": "second failure", "confirm_low_confidence": True},
+    ))
+    assert second.status_code == 500
+
+    os_fingerprint = app.deterministic_fingerprint(
+        project_id="3can-runtime",
+        operation="POST route_task",
+        component="3can-http-api",
+        error_type="unhandled_os_error",
+    )
+    value_fingerprint = app.deterministic_fingerprint(
+        project_id="3can-runtime",
+        operation="POST route_task",
+        component="3can-http-api",
+        error_type="unhandled_value_error",
+    )
+    os_case = app._ticket_ledger().error_case(fingerprint=os_fingerprint)
+    value_case = app._ticket_ledger().error_case(fingerprint=value_fingerprint)
+    assert os_case["occurrence_count"] == 1
+    assert value_case["occurrence_count"] == 1
+    assert os_case["fingerprint"] != value_case["fingerprint"]
+
+
+def test_server_observer_preserves_safe_structured_500_code(
+    ticket_runtime,
+    monkeypatch,
+):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+
+    async def fail_route(_req):
+        raise HTTPException(
+            503,
+            detail={
+                "error": "embedding_backend_unavailable",
+                "diagnostic": "token=must-not-be-stored",
+            },
+        )
+
+    monkeypatch.setattr(app, "_route_in_worker", fail_route)
+    response = asyncio.run(_asgi_post(
+        app,
+        "/api/route",
+        {"task": "structured failure", "confirm_low_confidence": True},
+    ))
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "embedding_backend_unavailable"
+
+    fingerprint = app.deterministic_fingerprint(
+        project_id="3can-runtime",
+        operation="POST route_task",
+        component="3can-http-api",
+        error_type="embedding_backend_unavailable",
+    )
+    case = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert case["occurrence_count"] == 1
+    with sqlite3.connect(app._TICKET_LEDGER_PATH) as connection:
+        stored = "\n".join(
+            row[0]
+            for row in connection.execute(
+                "SELECT payload_json FROM error_occurrences ORDER BY occurred_at"
+            )
+        )
+    assert "must-not-be-stored" not in stored
 
 
 def test_occurrence_ledger_promotes_only_second_and_uses_core_24_hex_id(

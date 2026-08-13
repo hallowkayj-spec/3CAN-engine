@@ -237,9 +237,15 @@ paths:
       tags: [errors]
       summary: Idempotently record one normalized error occurrence.
       description: >
-        The server recomputes the ek2 fingerprint. The first occurrence remains
-        ledger-only; the second promotes a canonical ERR-case graph projection.
-        Projection failure returns PARTIAL without losing ledger truth.
+        Development-only explicit intake; production keeps this public
+        unticketed endpoint disabled. The server recomputes the ek2 fingerprint.
+        The first occurrence remains ledger-only; the second promotes a canonical
+        ERR-case graph projection. Projection failure returns PARTIAL without
+        losing ledger truth. The canonical server also observes selected
+        typed exception, validation, and unhandled failure paths from normal API
+        operations and records them internally without enabling a public
+        ticketless write path or changing the original response. Health, stats,
+        and direct error-shaped JSON responses are outside that observer boundary.
       requestBody:
         required: true
         content:
@@ -251,6 +257,8 @@ paths:
           description: RECORDED, PROMOTED, or PARTIAL.
         '409':
           description: Fingerprint mismatch or occurrence-id conflict.
+        '403':
+          description: Public unticketed intake is disabled outside an explicit development profile.
 
   /api/errors/cases:
     get:
@@ -683,6 +691,7 @@ components:
         - workspace_id
         - workorder_id
         - target_digest
+        - project_identity_verified
         - scope_digest
         - policy_version
         - allowed_error_ids
@@ -697,6 +706,9 @@ components:
         workspace_id: { type: string }
         workorder_id: { type: string }
         target_digest: { type: string }
+        project_identity_verified:
+          type: boolean
+          description: True only when at least one target was bound to the declared project capsule and physical Git workspace.
         scope_digest: { type: string }
         policy_version: { type: string }
         allowed_error_ids:
