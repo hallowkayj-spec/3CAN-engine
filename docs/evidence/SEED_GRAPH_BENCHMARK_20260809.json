@@ -1,9 +1,9 @@
 {
   "schema_version": "3can.benchmark-receipt/v1",
   "status": "VERIFIED_CANDIDATE",
-  "observed_at_utc": "2026-08-13T16:14:31.2633043Z",
+  "observed_at_utc": "2026-08-13T17:10:06.6427527Z",
   "scope": "fresh release seed graph",
-  "source_commit": "50e9f4299ef3c723bcbf7236d6eb1b3fa5b7295e",
+  "source_commit": "1c6f60e22ae44e512e24465dfe65b5c68251efe0",
   "runtime": {
     "python": "3.14.0",
     "readiness_mode": "development",
@@ -15,7 +15,7 @@
   },
   "source_sha256": {
     "3CAN.md": "f0696fe25ba48419beea6c9ed881b134b95066d26ced233da0c2526e4effb9fe",
-    "neural-memory/backend/app.py": "f0cd72ed0f2cd44d95635300a9b4a870345b651cb6b92869baacd83a32f951f7",
+    "neural-memory/backend/app.py": "18d4efb85ef3ecdf1c994a3199a7065ffb52bc527a77be316d2f84406cbe5b38",
     "neural-memory/backend/graph_engine.py": "0d713e47c40d97d4964ae0e69aefb212bacd86d70b70ba5563b7a628c01ac8fd",
     "neural-memory/backend/models.py": "77049ee3c2914654ffbc61d6cdf74d67d739292ee54fc64dcc26188e906631c6",
     "neural-memory/backend/owner_intent.py": "9a4fe56a1416b34f3819e896df88b05fe70f4054ce9276a6e152cd87696733f5",
@@ -28,12 +28,12 @@
     "neural-memory/benchmark/substrate_bench_runner.py": "fd3253cb3a95659f137fd3f1ef7c235f734c63b26c04be769174c819cbc34169"
   },
   "run_artifact_sha256": {
-    "completion.json": "980aa0be5ffc3881c8bf120356e415d1fe6aaf47a0a80f662a4183324dfe967d",
+    "completion.json": "3a950b36ba9b27935caa105ada1a568a799bd2a95b60992bf8d6696d1ca9575c",
     "verify.json": "8b15338d838d3d9f12a4620939380ee7f72629ab2fa28a6da1950bde918802a5",
-    "route.json": "a5bb302e94ffe8e1bd1563ada6e8a84ecf4c504cdfb67c0ceb4d6a6b9fefc345",
-    "run-identity.json": "d3dd1c0df5922c7f3196af62aac358193dedc669e8c06b387f8db51e2f220259",
-    "stats.json": "ef916f05d35b20bb964814237028cda992b9a4b2291162d5e66d6104b503a234",
-    "substrate.json": "79c66722b79f40270a1b94ab50773da524f9a57ed3c67cea01a4ecb11c5d05e0"
+    "route.json": "a062c1d7c81dff44d6264fc5b55f8be2b9feb7814dad2af33c7ff51c006bc9cf",
+    "run-identity.json": "19a885ad14b3cf04c600c375a04b7e9800b1f3c3d5aca1520b329a6358186950",
+    "stats.json": "fdc4fae5dd4ef8114e9151aa6211094465c24875715a377bec5ff06fe45a0366",
+    "substrate.json": "e9a96618999e87fae48f132e5c36712c573e4a7297592ff9ec1435a75b144f3c"
   },
   "commands": [
     "python -B scripts/verify_project.py --base-url http://127.0.0.1:9797 --min-nodes 10 --project-id public-rc --project-namespace public-scope --json",
@@ -55,7 +55,7 @@
     "Recall@1": 0.8261,
     "Recall@3": 1.0,
     "Hit@3": 1.0,
-    "latency_p95_ms": 38,
+    "latency_p95_ms": 34,
     "grep_fallback_rate": 0.0,
     "verdict": "coordination"
   },
@@ -64,7 +64,7 @@
     "top1_accuracy": 1.0,
     "top3_recall_mean": 0.8167,
     "err_proactive_rate_at_top3": 1.0,
-    "latency_p95_ms": 40
+    "latency_p95_ms": 41
   },
   "limitations": [
     "This receipt proves the public synthetic seed fixture, not a private production graph.",
