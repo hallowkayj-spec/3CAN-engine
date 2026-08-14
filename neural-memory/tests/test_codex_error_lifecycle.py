@@ -336,8 +336,14 @@ path = pathlib.Path(os.environ['THREECAN_TEST_CALL_LOG'])
 with path.open('a', encoding='utf-8') as handle:
     handle.write(json.dumps(sys.argv[1:]) + '\\n')
 print(json.dumps({
-    'ticket': {'ticket_id': 'TKT-thin', 'state': 'consumed', 'ttl_sec': 900},
+    'ticket': {
+        'ticket_id': 'TKT-thin',
+        'state': 'consumed',
+        'workorder_id': os.environ.get('THREECAN_WORKORDER_ID'),
+        'ttl_sec': 900,
+    },
     'consume': {'ok': True, 'consume_count': 1},
+    'workorder_id': os.environ.get('THREECAN_WORKORDER_ID'),
 }))
 """,
         encoding="utf-8",
@@ -355,6 +361,8 @@ print(json.dumps({
             "-File",
             str(scripts_dir / "codex-3can.ps1"),
             "prepare",
+            "-WorkorderId",
+            "workorder-thin-prepare",
             "-TaskDescription",
             "bounded update",
             "-TargetFiles",
@@ -375,6 +383,9 @@ print(json.dumps({
     assert len(calls) == 1
     assert "prepare" in calls[0]
     assert "supervise" not in calls[0]
+    assert json.loads(result.stdout)["prepare"]["workorder_id"] == (
+        "workorder-thin-prepare"
+    )
 
 
 def test_packaged_outer_compact_preserves_explicit_target_files(tmp_path):
