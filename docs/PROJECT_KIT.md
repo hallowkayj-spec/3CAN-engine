@@ -28,6 +28,11 @@ From the target project root:
 ..\3CAN-engine\scripts\init-project.ps1 -ProjectDir . -Port 9711 -StartServer
 ```
 
+The Windows launcher is idempotent and fail-closed: it serializes concurrent
+start attempts, accepts only one loopback listener with the expected Python and
+engine/graph identities, waits for deep development readiness, and writes an
+atomic `neural-memory/logs/3can_<port>.sidecar-owner.json` receipt.
+
 The script sets:
 
 - `THREECAN_ENGINE_ROOT` to the sidecar engine directory

@@ -36,6 +36,7 @@ PROJECT_KIT_CAPSULE_TEMPLATE = (
 ROUTE_BENCHMARK = ROOT / "benchmark" / "route_benchmark_v1.json"
 ROUTE_BENCHMARK_RUNNER = ROOT / "benchmark" / "run_benchmark.py"
 VERIFY_PROJECT = RELEASE_ROOT / "scripts" / "verify_project.py"
+INIT_PROJECT = RELEASE_ROOT / "scripts" / "init-project.ps1"
 CLAUDE_SUBAGENT_STOP_HOOK = (
     RELEASE_ROOT / "examples" / "claude-code-hooks" / "3can-subagent-stop.js"
 )
@@ -170,6 +171,23 @@ def test_prerelease_scan_accepts_complete_extracted_package(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "[pre-release scan] clean" in result.stdout
+
+
+def test_windows_sidecar_launcher_is_identity_bound_and_receipted():
+    source = INIT_PROJECT.read_text(encoding="utf-8")
+
+    for required in (
+        "Get-NetTCPConnection -State Listen -ErrorAction Stop",
+        "THREECAN_SIDECAR_START_BUSY",
+        "runtime_identity.engine_root_sha256",
+        "runtime_identity.graph_root_sha256",
+        "readiness.development_ready",
+        "-PassThru",
+        ".sidecar-owner.json",
+        "[System.IO.File]::Replace",
+    ):
+        assert required in source
+    assert 'Write-Host "[3CAN] started $BaseUrl"' not in source
 
 
 def test_prerelease_scan_blocks_runtime_graph_artifacts(tmp_path):
