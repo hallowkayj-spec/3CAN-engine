@@ -103,14 +103,17 @@ function Write-SidecarReceipt {
         development_ready = [bool]$Bound.stats.readiness.development_ready
         production_ready = [bool]$Bound.stats.readiness.production_ready
     }
-    $temp = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
+    $transactionId = [Guid]::NewGuid().ToString("N")
+    $temp = "$Path.$transactionId.tmp"
     [System.IO.File]::WriteAllText(
         $temp,
         ($payload | ConvertTo-Json -Depth 5),
         [System.Text.UTF8Encoding]::new($false)
     )
     if (Test-Path -LiteralPath $Path) {
-        [System.IO.File]::Replace($temp, $Path, $null)
+        $backup = "$Path.$transactionId.bak"
+        [System.IO.File]::Replace($temp, $Path, $backup)
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
     }
     else {
         [System.IO.File]::Move($temp, $Path)

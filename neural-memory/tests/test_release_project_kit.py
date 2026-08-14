@@ -184,9 +184,10 @@ def test_windows_sidecar_launcher_is_identity_bound_and_receipted():
         "readiness.development_ready",
         "-PassThru",
         ".sidecar-owner.json",
-        "[System.IO.File]::Replace",
+        "[System.IO.File]::Replace($temp, $Path, $backup)",
     ):
         assert required in source
+    assert "Replace($temp, $Path, $null)" not in source
     assert 'Write-Host "[3CAN] started $BaseUrl"' not in source
 
 
