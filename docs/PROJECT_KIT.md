@@ -10,6 +10,18 @@ own runtime graph after initialization.
 
 ## Windows Quick Start
 
+For a portable release, create the package from an exact reviewed Git commit
+with `git archive`. After extraction, verify its manifest and contents without
+copying `.git` into the package:
+
+```powershell
+python scripts\prerelease_scan.py . --strict --extracted-package
+```
+
+The same scan without `--extracted-package` remains fail-closed in a source
+checkout when required files are not tracked by Git. Record the source commit
+and archive SHA-256 alongside the extracted package.
+
 From the target project root:
 
 ```powershell
@@ -89,6 +101,11 @@ The kit includes optional adapters:
 - standing-order and task-ledger helpers
 - the 3CAN deep-research skill
 - `.codex/` hook config
+
+`neural-memory/mcp_server.py` uses `THREECAN_URL`, then
+`THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint
+in each MCP client process when the project uses an isolated port such as
+`9711`; do not copy or patch a second MCP server for each sidecar.
 
 Read-only routing does not require a ticket, check-in, hook, or wrapper. Use the
 prepare/done lifecycle only when a project has a concrete guarded-write or

@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -146,6 +147,31 @@ def test_prerelease_scan_is_project_root_relative(tmp_path):
     assert "high-confidence secret" not in result.stdout
 
 
+def test_prerelease_scan_accepts_complete_extracted_package(tmp_path):
+    package = tmp_path / "3can-engine"
+    shutil.copytree(
+        RELEASE_ROOT,
+        package,
+        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+    )
+    script = package / "scripts" / "prerelease_scan.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(package),
+            "--strict",
+            "--extracted-package",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "[pre-release scan] clean" in result.stdout
+
+
 def test_prerelease_scan_blocks_runtime_graph_artifacts(tmp_path):
     root = tmp_path / "release"
     graph = root / "neural-memory" / "graph"
@@ -216,6 +242,15 @@ def test_mcp_route_returns_exact_correlation_and_read_node_forwards_it(monkeypat
             "session_instance_id": "session-public-1",
         },
     }
+
+
+def test_mcp_uses_configured_sidecar_endpoint(monkeypatch):
+    monkeypatch.setenv("THREECAN_BASE_URL", "http://127.0.0.1:9711/")
+    monkeypatch.delenv("THREECAN_URL", raising=False)
+
+    server = load_mcp_server()
+
+    assert server.BASE == "http://127.0.0.1:9711"
 
 
 def test_mcp_read_without_correlation_is_read_only(monkeypatch):
