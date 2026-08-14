@@ -724,6 +724,34 @@ def test_project_kit_cli_reuses_derived_agent_across_independent_commands(
     assert resolved[0].startswith("codex-thread-shared-flow-")
 
 
+def test_project_kit_cli_explicit_workorder_overrides_missing_child_environment(
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    monkeypatch.setenv("THREECAN_WORKORDER_ID", "")
+    monkeypatch.delenv("WORKORDER_ID", raising=False)
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-explicit-workorder")
+    captured: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        helper,
+        "route",
+        lambda _args: captured.append(helper._execution_context()) or 0,
+    )
+
+    result = helper.main(
+        [
+            "--workorder-id",
+            "workorder-explicit-child",
+            "route",
+            "--task",
+            "verify explicit Workorder propagation",
+        ]
+    )
+
+    assert result == 0
+    assert captured[0]["workorder_id"] == "workorder-explicit-child"
+
+
 def test_project_kit_writeback_overrides_file_identity_with_current_execution(
     monkeypatch,
     tmp_path,
