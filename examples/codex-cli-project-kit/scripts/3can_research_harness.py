@@ -120,9 +120,12 @@ NEGATIVE_EVIDENCE_DIMENSIONS = ("risk", "conflict")
 
 SOURCE_TYPES = (
     "official_primary",
+    "academic_or_standard",
     "targeted_web",
     "github_or_issue",
+    "model_hub_or_dataset",
     "community_practice",
+    "community_forum",
     "benchmark_or_user_report",
     "public_platform_signal",
     "rpa_video_comment_asr_ocr",
@@ -131,24 +134,37 @@ SOURCE_TYPES = (
 )
 
 SOURCE_STRATEGIES: dict[str, list[str]] = {
-    "quick": ["official_primary", "targeted_web", "known_3can_context"],
-    "standard": ["official_primary", "github_or_issue", "community_practice", "known_3can_context"],
-    "deep": [
+    "standard": [
         "official_primary",
+        "academic_or_standard",
         "github_or_issue",
-        "community_practice",
-        "benchmark_or_user_report",
+        "community_forum",
         "known_3can_context",
     ],
-    "rpa_deep": [
+    "deep": [
         "official_primary",
-        "community_practice",
+        "academic_or_standard",
+        "github_or_issue",
+        "model_hub_or_dataset",
+        "community_forum",
+        "benchmark_or_user_report",
         "public_platform_signal",
-        "rpa_video_comment_asr_ocr",
-        "rpa_pipeline_artifact",
         "known_3can_context",
     ],
 }
+
+SOURCE_FAMILIES: dict[str, frozenset[str]] = {
+    "primary": frozenset({"official_primary"}),
+    "academic": frozenset({"academic_or_standard", "benchmark_or_user_report"}),
+    "implementation": frozenset({"github_or_issue", "model_hub_or_dataset"}),
+    "community": frozenset({"community_practice", "community_forum"}),
+    "platform": frozenset(
+        {"public_platform_signal", "rpa_video_comment_asr_ocr", "rpa_pipeline_artifact"}
+    ),
+    "web": frozenset({"targeted_web"}),
+}
+
+LEGACY_TIER_ALIASES = {"quick": "standard", "rpa_deep": "deep"}
 
 RPA_EVIDENCE_KINDS = (
     "video",
@@ -177,35 +193,23 @@ RPA_APPROVAL_FLAGS = (
 SAFE_RPA_PROBE_PLATFORMS = ("creator-content", "taobao")
 
 TIME_BUDGETS: dict[str, dict[str, Any]] = {
-    "quick": {
-        "decision_check_minutes": 5,
-        "target_minutes": 5,
-        "hard_cap_minutes": 8,
-        "min_sources": 3,
-        "max_query_variants": 6,
-        "sidecar_required": False,
-    },
     "standard": {
-        "decision_check_minutes": 5,
-        "target_minutes": 10,
-        "hard_cap_minutes": 20,
-        "min_sources": 5,
-        "max_query_variants": 12,
+        "decision_check_minutes": 6,
+        "target_minutes": 8,
+        "hard_cap_minutes": 10,
+        "min_sources": 6,
+        "min_source_families": 3,
+        "min_query_variants": 2,
+        "max_query_variants": 14,
         "sidecar_required": True,
     },
     "deep": {
-        "decision_check_minutes": 5,
-        "target_minutes": 20,
+        "decision_check_minutes": 15,
+        "target_minutes": 25,
         "hard_cap_minutes": 30,
-        "min_sources": 8,
-        "max_query_variants": 24,
-        "sidecar_required": True,
-    },
-    "rpa_deep": {
-        "decision_check_minutes": 5,
-        "target_minutes": 30,
-        "hard_cap_minutes": 45,
-        "min_sources": 8,
+        "min_sources": 12,
+        "min_source_families": 5,
+        "min_query_variants": 5,
         "max_query_variants": 30,
         "sidecar_required": True,
         "approval_note": "Real platform login, paid API, bulk scraping, or private data requires approval.",
@@ -759,7 +763,15 @@ def run_rpa_probe(
     cross_validate: bool = True,
 ) -> dict[str, Any]:
     if mode == "control-plane":
-        from tools.rpa.control_plane import build_control_plane_summary
+        try:
+            from tools.rpa.control_plane import build_control_plane_summary
+        except ModuleNotFoundError:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "adapter": "rpa_probe",
+                "error": "project_rpa_adapter_unavailable",
+            }
 
         return {
             "ok": True,
@@ -781,7 +793,15 @@ def run_rpa_probe(
             "error": "Approval id is required before running this RPA probe.",
         }
 
-    from tools.rpa.adapter_review_pipeline import run_adapter_review_pipeline
+    try:
+        from tools.rpa.adapter_review_pipeline import run_adapter_review_pipeline
+    except ModuleNotFoundError:
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "adapter": "rpa_probe",
+            "error": "project_rpa_adapter_unavailable",
+        }
 
     probe_dir = DEFAULT_RPA_PROBE_DIR
     selected_db_path = db_path or probe_dir / "rpa_probe.db"
@@ -872,15 +892,19 @@ def load_source_artifacts(paths: list[str]) -> tuple[list[dict[str, Any]], list[
 
 
 def _classify_research_tier(hit_rules: set[str]) -> str:
-    if "rpa_or_platform_intel" in hit_rules:
-        return "rpa_deep"
-    if "failure_escalation" in hit_rules and (
-        "complex_or_multi_constraint" in hit_rules or "provider_api_model_change" in hit_rules
-    ):
+    if hit_rules & {"rpa_or_platform_intel", "failure_escalation"}:
         return "deep"
-    if "complex_or_multi_constraint" in hit_rules or "keyword_planning" in hit_rules:
-        return "standard"
-    return "quick"
+    if "technical_selection" in hit_rules and hit_rules & {
+        "complex_or_multi_constraint",
+        "provider_api_model_change",
+    }:
+        return "deep"
+    return "standard"
+
+
+def _normalize_research_tier(value: str) -> str:
+    selected = LEGACY_TIER_ALIASES.get(value, value)
+    return selected if selected in TIME_BUDGETS else "standard"
 
 
 def _infer_query_planning(prompt: str, hit_rules: set[str]) -> dict[str, Any]:
@@ -891,11 +915,13 @@ def _infer_query_planning(prompt: str, hit_rules: set[str]) -> dict[str, Any]:
         "seed_terms": seed_terms,
         "expansion_axes": [
             "official_terms",
+            "academic_terms",
+            "implementation_terms",
             "community_terms",
-            "platform_slang",
             "english_chinese_variants",
             "negative_or_failure_terms",
         ],
+        "platform_relevant": "rpa_or_platform_intel" in hit_rules,
     }
 
 
@@ -906,9 +932,16 @@ def _query_templates_for_tier(tier: str) -> dict[str, list[str]]:
             "{term} API reference",
             "{term} changelog release notes",
         ],
+        "academic_terms": [
+            "{term} paper arXiv DOI",
+            "{term} benchmark reproducibility limitations",
+        ],
+        "implementation_terms": [
+            "{term} GitHub repository issue",
+            "{term} Hugging Face model dataset discussion",
+        ],
         "community_terms": [
-            "{term} GitHub issue",
-            "{term} user report benchmark",
+            "{term} Reddit forum field report",
             "{term} implementation gotcha",
         ],
         "english_chinese_variants": [
@@ -920,34 +953,28 @@ def _query_templates_for_tier(tier: str) -> dict[str, list[str]]:
             "{term} limitation pricing quota",
         ],
     }
-    if tier == "rpa_deep":
-        base["platform_slang"] = [
+    if tier == "deep":
+        base["platform_terms"] = [
             "{term} 抖音 博主 评论",
-            "{term} 小红书 经验 转评赞",
+            "{term} 小红书 B站 博主 实测 字幕",
             "{term} TikTok creator comments transcript",
             "{term} YouTube review benchmark transcript",
-        ]
-    else:
-        base["platform_slang"] = [
-            "{term} community feedback",
-            "{term} Reddit discussion",
         ]
     return base
 
 
 def build_query_plan(question: str, *, tier: str = "", focus_terms: list[str] | None = None) -> dict[str, Any]:
     requirement = detect_research_requirement(question)
-    selected_tier = tier or str(requirement.get("research_tier") or "quick")
+    selected_tier = tier or str(requirement.get("research_tier") or "standard")
     if selected_tier == "none":
-        selected_tier = "quick"
-    if selected_tier not in TIME_BUDGETS:
-        selected_tier = "quick"
+        selected_tier = "standard"
+    selected_tier = _normalize_research_tier(selected_tier)
 
     hit_rules = {item["rule"] for item in requirement.get("trigger_rules", [])}
     planning = _infer_query_planning(question, hit_rules)
-    if selected_tier == "rpa_deep":
+    if selected_tier == "deep" and planning.get("platform_relevant"):
         axes = planning.get("expansion_axes", [])
-        planning["expansion_axes"] = _dedupe(["platform_slang", *axes])
+        planning["expansion_axes"] = _dedupe([*axes, "platform_terms"])
     seed_terms = _dedupe([*(focus_terms or []), *planning.get("seed_terms", [])], limit=12)
     if not seed_terms:
         seed_terms = _dedupe([question], limit=1)
@@ -955,9 +982,9 @@ def build_query_plan(question: str, *, tier: str = "", focus_terms: list[str] | 
     max_variants = int(TIME_BUDGETS[selected_tier]["max_query_variants"])
     templates = _query_templates_for_tier(selected_tier)
     variants: list[dict[str, str]] = []
-    for axis in planning.get("expansion_axes", []):
-        for template in templates.get(axis, []):
-            for term in seed_terms:
+    for term in seed_terms:
+        for axis in planning.get("expansion_axes", []):
+            for template in templates.get(axis, []):
                 variants.append({"axis": axis, "query": template.format(term=term)})
                 if len(variants) >= max_variants:
                     break
@@ -981,6 +1008,13 @@ def build_query_plan(question: str, *, tier: str = "", focus_terms: list[str] | 
         "sidecar_judges": ["evidence_sufficiency", "task_fit"]
         if TIME_BUDGETS[selected_tier].get("sidecar_required")
         else [],
+        "completion_gates": {
+            "min_sources": TIME_BUDGETS[selected_tier]["min_sources"],
+            "min_source_families": TIME_BUDGETS[selected_tier]["min_source_families"],
+            "min_query_variants": TIME_BUDGETS[selected_tier]["min_query_variants"],
+            "requires_context_status": True,
+            "requires_contradiction_status": True,
+        },
     }
 
 
@@ -1305,17 +1339,20 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
             prompt=prompt,
             requirement=requirement,
         )
+        tier = requirement.get("research_tier", "standard")
         command = (
             "scripts/3can_research_harness.py done "
             f"--session-id {session_id or 'unknown-session'} "
             f"--turn-id {turn_id or 'unknown-turn'} "
+            f"--research-tier {tier} "
+            "--elapsed-minutes <active-research-minutes> "
             "--question \"<research question>\" "
-            f"--min-sources {requirement.get('min_sources') or DEFAULT_MIN_SOURCES} "
-            "--source-url https://example.com/source-1 "
-            "--source-url https://example.com/source-2 "
-            "--source-url https://example.com/source-3"
+            "--source-artifact <collected-source.json> [...] "
+            "--query-variant \"<query used>\" [...] "
+            "--context-status <used|unavailable|not_applicable> "
+            "--contradiction-status <checked_no_material_conflict|resolved|unresolved|not_applicable> "
+            "--sidecar-evidence-sufficiency pass --sidecar-task-fit pass"
         )
-        tier = requirement.get("research_tier", "quick")
         budget = requirement.get("time_budget", {})
         return 0, {
             "hookSpecificOutput": {
@@ -1324,9 +1361,9 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
                     f"3CAN deep research is mandatory for this turn. Tier={tier}, "
                     f"decision_check={budget.get('decision_check_minutes', 5)}min, "
                     f"target={budget.get('target_minutes', 5)}min, "
-                    f"hard_cap={budget.get('hard_cap_minutes', 8)}min. Invoke "
-                    "$3can-deep-research, prefer official/primary sources, keep citations visible, "
-                    "run query planning when required, use sidecar evidence/task-fit judgement when listed, "
+                    f"hard_cap={budget.get('hard_cap_minutes', 10)}min. Invoke "
+                    "$3can-deep-research, cover the required source families, keep citations visible, "
+                    "run query planning and contradiction checks, use sidecar evidence/task-fit judgement, "
                     "and record the source ledger before file edits or final conclusions. "
                     f"Ledger command shape: {command}"
                 ),
@@ -1473,6 +1510,15 @@ def _build_source_records(source_urls: list[str], source_types: list[str]) -> li
     return records
 
 
+def _source_family_counts(source_types: list[str], context_status: str) -> dict[str, int]:
+    counts = {
+        family: sum(1 for source_type in source_types if source_type in members)
+        for family, members in SOURCE_FAMILIES.items()
+    }
+    counts["internal"] = 1 if context_status == "used" else 0
+    return {family: count for family, count in counts.items() if count}
+
+
 def score_evidence(evidence_scores: dict[str, Any]) -> dict[str, Any]:
     numeric: dict[str, float] = {}
     for key in EVIDENCE_DIMENSIONS:
@@ -1496,34 +1542,66 @@ def score_evidence(evidence_scores: dict[str, Any]) -> dict[str, Any]:
 
 def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     risks: list[str] = []
-    tier = str(ledger.get("research_tier") or "quick")
+    tier = _normalize_research_tier(str(ledger.get("research_tier") or "standard"))
+    budget = TIME_BUDGETS[tier]
     source_count = int(ledger.get("source_count") or 0)
-    min_sources = int(ledger.get("min_sources") or TIME_BUDGETS.get(tier, {}).get("min_sources") or DEFAULT_MIN_SOURCES)
+    min_sources = max(int(ledger.get("min_sources") or 0), int(budget["min_sources"]))
     source_type_list = [
         item.get("source_type")
         for item in ledger.get("source_records", [])
         if isinstance(item, dict) and item.get("source_type")
     ]
     source_types = set(source_type_list)
+    context = ledger.get("internal_context", {}) if isinstance(ledger.get("internal_context"), dict) else {}
+    context_status = str(context.get("status") or "")
+    source_family_counts = _source_family_counts(source_type_list, context_status)
+    source_family_count = len(source_family_counts)
+    query_plan = ledger.get("query_plan", {}) if isinstance(ledger.get("query_plan"), dict) else {}
+    query_variants = query_plan.get("query_variants", []) if isinstance(query_plan.get("query_variants"), list) else []
+    contradiction_status = str(ledger.get("contradiction_status") or "")
+    platform_relevant = bool(ledger.get("platform_relevant"))
+    elapsed_minutes = ledger.get("elapsed_minutes")
     score = score_evidence(ledger.get("evidence_scores", {}) if isinstance(ledger.get("evidence_scores"), dict) else {})
     sidecar = ledger.get("sidecar_judgement", {}) if isinstance(ledger.get("sidecar_judgement"), dict) else {}
 
     if ledger.get("status") != "pass":
         risks.append("ledger_status_not_pass")
+    if not isinstance(elapsed_minutes, (int, float)) or float(elapsed_minutes) <= 0:
+        risks.append("missing_elapsed_time")
+    elif float(elapsed_minutes) > float(budget["hard_cap_minutes"]):
+        risks.append("research_timebox_exceeded")
     if source_count < min_sources:
         risks.append("insufficient_source_count")
-    if tier in {"standard", "deep", "rpa_deep"} and not source_types.intersection({"official_primary", "github_or_issue"}):
+    if source_family_count < int(budget["min_source_families"]):
+        risks.append("insufficient_source_family_coverage")
+    if not source_types.intersection({"official_primary", "academic_or_standard"}):
         risks.append("missing_boundary_or_contract_source")
-    if tier in {"deep", "rpa_deep"} and not source_types.intersection({"community_practice", "benchmark_or_user_report", "public_platform_signal", "rpa_video_comment_asr_ocr", "rpa_pipeline_artifact"}):
-        risks.append("missing_practice_evidence")
-    if tier == "rpa_deep" and not source_types.intersection({"public_platform_signal", "rpa_video_comment_asr_ocr", "rpa_pipeline_artifact"}):
+    if not source_types.intersection({"github_or_issue", "model_hub_or_dataset", "community_practice", "community_forum"}):
+        risks.append("missing_implementation_or_practice_source")
+    if tier == "deep" and not source_types.intersection({"academic_or_standard", "benchmark_or_user_report"}):
+        risks.append("missing_academic_or_benchmark_source")
+    if tier == "deep" and not source_types.intersection({"github_or_issue", "model_hub_or_dataset"}):
+        risks.append("missing_implementation_evidence")
+    if tier == "deep" and not source_types.intersection({"community_practice", "community_forum"}):
+        risks.append("missing_community_evidence")
+    if platform_relevant and not source_types.intersection(SOURCE_FAMILIES["platform"]):
         risks.append("missing_platform_signal")
+    if len(query_variants) < int(budget["min_query_variants"]):
+        risks.append("missing_query_plan")
+    if context_status not in {"used", "unavailable", "not_applicable"}:
+        risks.append("missing_internal_context_status")
+    elif context_status == "used" and not _as_string_list(context.get("evidence_refs")):
+        risks.append("missing_internal_context_evidence_ref")
+    if contradiction_status not in {"checked_no_material_conflict", "resolved", "unresolved", "not_applicable"}:
+        risks.append("missing_contradiction_status")
+    elif contradiction_status == "unresolved":
+        risks.append("unresolved_material_conflict")
     if not score["score_available"]:
         risks.append("missing_evidence_scores")
     elif score["weighted_score"] < score["threshold"]:
         risks.append("low_evidence_score")
 
-    sidecar_required = bool(TIME_BUDGETS.get(tier, {}).get("sidecar_required"))
+    sidecar_required = bool(budget.get("sidecar_required"))
     if sidecar_required:
         if sidecar.get("evidence_sufficiency") not in {"pass", "sufficient"}:
             risks.append("sidecar_evidence_sufficiency_not_pass")
@@ -1544,7 +1622,12 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         "decision": decision,
         "research_tier": tier,
         "source_count": source_count,
+        "elapsed_minutes": elapsed_minutes,
+        "hard_cap_minutes": int(budget["hard_cap_minutes"]),
         "min_sources": min_sources,
+        "source_family_count": source_family_count,
+        "min_source_families": int(budget["min_source_families"]),
+        "source_family_counts": source_family_counts,
         "source_type_counts": {
             source_type: source_type_list.count(source_type) for source_type in sorted(source_types) if source_type
         },
@@ -1568,7 +1651,7 @@ def record_done(
     ledger_dir: Path,
     notes: str = "",
     min_sources: int = DEFAULT_MIN_SOURCES,
-    research_tier: str = "quick",
+    research_tier: str = "standard",
     source_types: list[str] | None = None,
     query_terms: list[str] | None = None,
     query_variants: list[str] | None = None,
@@ -1577,6 +1660,11 @@ def record_done(
     sidecar_task_fit: str = "not_recorded",
     rpa_metadata: dict[str, Any] | None = None,
     source_artifact_files: list[str] | None = None,
+    context_status: str = "",
+    context_refs: list[str] | None = None,
+    contradiction_status: str = "",
+    platform_relevant: bool = False,
+    elapsed_minutes: float = 0.0,
 ) -> dict[str, Any]:
     source_artifacts, invalid_artifacts = load_source_artifacts(source_artifact_files or [])
     artifact_urls = [str(item["url"]) for item in source_artifacts if item.get("url")]
@@ -1584,8 +1672,13 @@ def record_done(
     urls = [url.strip() for url in [*artifact_urls, *source_urls] if url.strip()]
     invalid = [url for url in urls if not re.match(r"^https?://", url, re.I)]
     unique_urls = list(dict.fromkeys(urls))
-    status = "pass" if len(unique_urls) >= min_sources and not invalid and not invalid_artifacts else "block"
-    selected_tier = research_tier if research_tier in TIME_BUDGETS else "quick"
+    selected_tier = _normalize_research_tier(research_tier)
+    required_min_sources = max(int(min_sources), int(TIME_BUDGETS[selected_tier]["min_sources"]))
+    structural_status = (
+        "pass"
+        if len(unique_urls) >= required_min_sources and not invalid and not invalid_artifacts
+        else "block"
+    )
     source_records = _build_source_records(unique_urls, [*artifact_source_types, *(source_types or [])])
     artifact_by_url = {item["url"]: item for item in source_artifacts if item.get("url")}
     for record in source_records:
@@ -1606,9 +1699,10 @@ def record_done(
     score = score_evidence(evidence)
 
     ledger = {
-        "status": status,
+        "status": structural_status,
         "question": question,
         "research_tier": selected_tier,
+        "elapsed_minutes": elapsed_minutes,
         "time_budget": TIME_BUDGETS[selected_tier],
         "source_strategy": SOURCE_STRATEGIES[selected_tier],
         "session_id": session_id,
@@ -1619,7 +1713,7 @@ def record_done(
         "invalid_source_artifacts": invalid_artifacts,
         "invalid_source_urls": invalid,
         "source_count": len(unique_urls),
-        "min_sources": min_sources,
+        "min_sources": required_min_sources,
         "query_plan": {
             "seed_terms": _dedupe(query_terms or []),
             "query_variants": [{"query": item} for item in _dedupe(query_variants or [])],
@@ -1630,7 +1724,11 @@ def record_done(
         "evidence_score_summary": score,
         "source_type_guidance": {
             "official_primary": "docs, changelog, API reference, release notes, standards, regulator pages",
-            "community_practice": "GitHub issues, forum posts, user reports, implementation writeups",
+            "academic_or_standard": "paper, standard, or systematic technical review",
+            "github_or_issue": "repository implementation, issue, pull request, or release evidence",
+            "model_hub_or_dataset": "Hugging Face model/dataset card, discussion, version, license, or eval evidence",
+            "community_practice": "implementation writeup or practitioner case",
+            "community_forum": "Reddit or professional forum field report",
             "public_platform_signal": "public video/blogger/comment signals with timestamp and engagement when approved",
             "rpa_video_comment_asr_ocr": "authorized RPA capture with frame/OCR/ASR/engagement metadata; no private data",
             "rpa_pipeline_artifact": "safe local RPA probe or approved pipeline artifact normalized into source ledger evidence",
@@ -1639,11 +1737,19 @@ def record_done(
             "evidence_sufficiency": sidecar_evidence_sufficiency,
             "task_fit": sidecar_task_fit,
         },
+        "internal_context": {
+            "status": context_status,
+            "evidence_refs": _dedupe(context_refs or []),
+        },
+        "contradiction_status": contradiction_status,
+        "platform_relevant": platform_relevant,
         "rpa_metadata": rpa_metadata or {},
         "created_at": _now(),
         "required_writeback": "DOC/DEC/ERR/INTF when the conclusion is durable or changes engineering direction.",
     }
     ledger["sidecar_decision"] = judge_ledger(ledger)
+    status = "pass" if structural_status == "pass" and ledger["sidecar_decision"]["ok"] else "block"
+    ledger["status"] = status
     name = f"{_now().replace(':', '').replace('-', '')}_{_hash_text(question + session_id + turn_id)}.json"
     ledger_dir.mkdir(parents=True, exist_ok=True)
     ledger_path = ledger_dir / name
@@ -1660,7 +1766,9 @@ def record_done(
         ledger["ok"] = True
     else:
         ledger["ok"] = False
-        ledger["reason"] = f"Need at least {min_sources} valid http(s) sources and no invalid source URLs."
+        ledger["reason"] = (
+            f"Research completion gates not met: {', '.join(ledger['sidecar_decision']['risks']) or 'invalid sources'}."
+        )
     return ledger
 
 
@@ -1674,7 +1782,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("plan", help="Build a deterministic query/source plan for a research question.")
     plan.add_argument("--question", required=True)
-    plan.add_argument("--research-tier", choices=sorted(TIME_BUDGETS), default="")
+    plan.add_argument("--research-tier", choices=sorted({*TIME_BUDGETS, *LEGACY_TIER_ALIASES}), default="")
     plan.add_argument("--focus-term", action="append", default=[])
 
     collect = sub.add_parser("collect-url", help="Collect a public http(s) URL into a source artifact.")
@@ -1738,13 +1846,26 @@ def build_parser() -> argparse.ArgumentParser:
     done.add_argument("--ledger-dir", default=str(DEFAULT_LEDGER_DIR))
     done.add_argument("--notes", default="")
     done.add_argument("--min-sources", type=int, default=DEFAULT_MIN_SOURCES)
-    done.add_argument("--research-tier", choices=sorted(TIME_BUDGETS), default="quick")
+    done.add_argument(
+        "--research-tier",
+        choices=sorted({*TIME_BUDGETS, *LEGACY_TIER_ALIASES}),
+        default="standard",
+    )
+    done.add_argument("--elapsed-minutes", type=float, default=0.0)
     done.add_argument("--source-type", action="append", default=[], choices=SOURCE_TYPES)
     done.add_argument("--query-term", action="append", default=[])
     done.add_argument("--query-variant", action="append", default=[])
     done.add_argument("--evidence-score", action="append", default=[], help="key=value, 0-5. Keys: evidence dimensions.")
     done.add_argument("--sidecar-evidence-sufficiency", default="not_recorded")
     done.add_argument("--sidecar-task-fit", default="not_recorded")
+    done.add_argument("--context-status", choices=["used", "unavailable", "not_applicable"], default="")
+    done.add_argument("--context-ref", action="append", default=[])
+    done.add_argument(
+        "--contradiction-status",
+        choices=["checked_no_material_conflict", "resolved", "unresolved", "not_applicable"],
+        default="",
+    )
+    done.add_argument("--platform-relevant", action="store_true")
     done.add_argument("--rpa-meta", action="append", default=[], help="key=value metadata for approved RPA/platform evidence.")
 
     judge = sub.add_parser("judge", help="Evaluate whether a research ledger is sufficient for task decision.")
@@ -1875,6 +1996,11 @@ def main(argv: list[str] | None = None) -> int:
             sidecar_task_fit=args.sidecar_task_fit,
             rpa_metadata=rpa_metadata,
             source_artifact_files=args.source_artifact,
+            context_status=args.context_status,
+            context_refs=args.context_ref,
+            contradiction_status=args.contradiction_status,
+            platform_relevant=args.platform_relevant,
+            elapsed_minutes=args.elapsed_minutes,
         )
         _print_json(result)
         return 0 if result["ok"] else 2
