@@ -239,8 +239,11 @@ Codex CLI:
 6. Run `python scripts/3can_codex.py doctor` and require
    `project_identity.status=pass` before requesting a mutation ticket.
 7. Adjust the runtime port and graph path through environment configuration.
-8. If you use the wrapper workflow, bootstrap the session with
-   `scripts/codex-3can.cmd bootstrap ...`.
+8. Optional: within the current agent task, use
+   `scripts/codex-3can.cmd bootstrap ...` to combine readiness, check-in,
+   briefing, and route. It does not create a separate ChatGPT/Codex session or
+   start the 3CAN Runtime; direct route and appropriately gated writeback remain
+   available without it.
 
 The capsule is optional only for read-only routing. Mutation commands require it
 so the authority can bind the write to a repository and physical Git worktree,

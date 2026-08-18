@@ -13,12 +13,14 @@
 1. 能执行 shell command (`curl` 或等价)
 2. 能把 JSON 响应 parse 出关键字段注入 prompt
 
-## 3 步最小接入
+## 最小接入与可选辅助流程
 
-### Codex wrapper harness (recommended on Windows / Codex CLI)
+### Optional Codex orientation wrapper (Windows / Codex CLI)
 
-If the host project ships the Codex helper scripts, prefer a single bootstrap
-entrypoint instead of manually remembering each HTTP call:
+The minimum integration is a direct HTTP route with one stable AgentId. It does
+not require a dedicated ChatGPT/Codex task, a prior check-in, or a wrapper. If
+the host project ships the helper scripts and the current task wants a combined
+readiness, check-in, briefing, and route call, it may run:
 
 ```powershell
 scripts\codex-3can.cmd bootstrap `
@@ -26,7 +28,7 @@ scripts\codex-3can.cmd bootstrap `
   -Task "current task"
 ```
 
-This pseudo-hook harness does what Codex cannot do natively yet:
+This optional convenience command:
 
 - verifies the real 3CAN graph instead of trusting a responding `9700`
 - returns typed `UNAVAILABLE` when the machine-owned Runtime is offline; it
@@ -54,7 +56,7 @@ from wrapper state. The wrapper stores no ticket-selection state. Before
 compacting, pass files explicitly; compact never imports files from ticket or
 wrapper state.
 
-### Step 1. Agent checkin
+### Optional agent check-in
 
 The packaged helper derives one stable AgentId from the current execution. A
 direct API client must still carry its own explicit unique AgentId on every
@@ -72,7 +74,7 @@ curl -X POST http://localhost:9700/api/agents/checkin \
   }'
 ```
 
-### Step 2. Route INTF contracts (代码感知查询)
+### Direct route (minimum)
 
 Codex 特别适合通过 INTF-* 节点写前端对接后端. Claude Code 建 INTF-* 描述 API 契约, Codex 查 INTF 写代码.
 
@@ -89,7 +91,7 @@ curl -X POST http://localhost:9700/api/route \
 
 `mode=full` 对 Codex 更合适 — 生成代码需要完整契约, slim 模式的 120 字符截断会丢字段定义.
 
-### Step 3. Check-in on task update
+### Optional task-update check-in
 
 每次完成一个任务:
 
@@ -127,10 +129,9 @@ export THREECAN_TICKET_ID=$TICKET
 # Step D: 后续 PostToolUse hook (如果装了) 自动 POST /api/activity/log
 ```
 
-注意: Codex CLI 目前没 PreToolUse hook 原生机制 (像 Claude Code 那样). 要么:
-1. **Codex 用户自律**: 写入前手动 curl /api/route/ticket 拿 ticket + 手动 curl /api/activity/log 回写
-2. **Shell wrapper**: 包一层脚本 `codex-wrapper.sh`, 在 Codex 执行 file-write 前后自动 curl
-3. **部分 CLI 支持**: 某些 fork 可能有 hook, 参考各 fork 文档
+Hook 能力取决于客户端和配置。Codex 项目可以使用 `.codex/hooks.json`；
+没有 hook 的直接 HTTP 客户端仍可使用显式 wrapper，或在确有 guarded-write
+要求时手动调用 ticket/activity 端点。不要为此另建 3CAN Session 或第二份状态。
 
 ## Codex 独有优势 (vs Claude Code)
 
@@ -157,8 +158,8 @@ Codex 作 **前端 / schema 对接** 场景:
 - 每次 route 都应带本 session/workorder 的唯一 AgentId，例如
   `agent_id: codex-cli-frontend-W1`
 
-**多 Codex session 冲突**
-- 每个 session/workorder 使用唯一 agent_id，例如
+**多 Codex client execution 冲突**
+- 每个 agent execution/workorder 使用唯一 agent_id，例如
   `codex-cli-backend-W1`, `codex-cli-frontend-W2`, `codex-cli-test-W3`；通用
   `codex-main` 会被 wrapper 拒绝
 - `GET /api/agents` 返回 heartbeat TTL 投影后的登记状态，不是进程清单；

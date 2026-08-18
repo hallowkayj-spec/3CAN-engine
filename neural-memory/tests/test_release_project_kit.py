@@ -789,12 +789,54 @@ def test_project_kit_writeback_overrides_file_identity_with_current_execution(
     assert captured["agent_id"] != "stale-agent"
 
 
-def test_project_kit_session_correlation_is_derived_without_local_state():
+def test_project_kit_session_correlation_is_derived_without_local_state(monkeypatch):
+    for name in ("THREECAN_SESSION_ID", "CODEX_SESSION_ID", "SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
     helper = load_project_kit_helper()
     session_id = helper._session_id_for_agent("codex-thread-one")
     assert helper._session_id_for_agent("codex-thread-one") == session_id
     assert helper._session_id_for_agent("codex-thread-two") != session_id
     assert not hasattr(helper, "LOCAL_RUNTIME_DIR")
+
+
+def test_project_kit_requires_no_dedicated_3can_session():
+    helper = load_project_kit_helper()
+    contracts = (
+        (
+            RELEASE_ROOT / "docs" / "PROJECT_KIT.md",
+            "No separate ChatGPT/Codex task or dedicated 3CAN session is required",
+        ),
+        (
+            RELEASE_ROOT
+            / "examples"
+            / "codex-cli-project-kit"
+            / "AGENTS.template.md",
+            "Do not open a dedicated 3CAN ChatGPT/Codex task",
+        ),
+        (
+            RELEASE_ROOT
+            / "docs"
+            / "specs"
+            / "3CAN_ENGINE"
+            / "AGENT_BINDING.md",
+            "无需另开 3CAN ChatGPT/Codex Session",
+        ),
+    )
+    for path, expected in contracts:
+        assert expected in path.read_text(encoding="utf-8")
+    help_result = subprocess.run(
+        [sys.executable, str(PROJECT_KIT_HELPER), "session-start", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    route_args = helper.build_parser().parse_args(
+        ["route", "--task", "current task"]
+    )
+
+    assert "does not create a chat/task or start 3CAN" in help_result.stdout
+    assert route_args.command == "route"
+    assert route_args.workorder_id == ""
 
 
 def test_project_kit_wrapper_has_no_local_ticket_truth():

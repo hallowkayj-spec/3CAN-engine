@@ -90,12 +90,18 @@ The kit includes optional adapters:
 - the 3CAN deep-research skill
 - `.codex/` hook config
 
-Read-only routing does not require a ticket, check-in, hook, or wrapper. Use the
-prepare/done lifecycle only when a project has a concrete guarded-write or
-evidence requirement. The wrapper never starts or terminates backend/proxy
-processes. Explicit `-StartServer`/`--start-server` is an operator setup
-action. A managed Windows installation may use one machine-owned Supervisor
-Scheduled Task; wrappers only observe Runtime readiness.
+No separate ChatGPT/Codex task or dedicated 3CAN session is required. Every
+agent task may route as a scoped client and may write back when the operation's
+identity and provenance gates are satisfied. Read-only routing does not require
+a ticket, check-in, hook, wrapper, or prior bootstrap call. The optional
+`bootstrap` / `session-start` commands only combine readiness, check-in,
+briefing, and route inside the current task; they store no local session truth.
+
+Use the prepare/done lifecycle only when a project has a concrete guarded-write
+or evidence requirement. The wrapper never starts or terminates backend/proxy
+processes. Explicit `-StartServer`/`--start-server` is an operator setup action.
+A managed Windows installation may use one machine-owned Supervisor Scheduled
+Task; wrappers only observe Runtime readiness.
 
 ## Optional GitHub PR Fallback
 
