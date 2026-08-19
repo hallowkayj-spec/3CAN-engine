@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -26,10 +27,13 @@ from urllib.request import Request, urlopen
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-DEFAULT_STATE_FILE = PROJECT_ROOT / "test-results" / "3can" / "research_hook_state.json"
-DEFAULT_LEDGER_DIR = PROJECT_ROOT / "test-results" / "3can" / "research_ledgers"
-DEFAULT_FAILURE_STATE = PROJECT_ROOT / "test-results" / "3can" / "research_failure_signals.json"
-DEFAULT_SOURCE_ARTIFACT_DIR = PROJECT_ROOT / "test-results" / "3can" / "research_sources"
+ACTIVE_PROJECT_ROOT = Path(
+    os.environ.get("THREECAN_PROJECT_ROOT") or Path.cwd()
+).resolve()
+DEFAULT_STATE_FILE = ACTIVE_PROJECT_ROOT / "test-results" / "3can" / "research_hook_state.json"
+DEFAULT_LEDGER_DIR = ACTIVE_PROJECT_ROOT / "test-results" / "3can" / "research_ledgers"
+DEFAULT_FAILURE_STATE = ACTIVE_PROJECT_ROOT / "test-results" / "3can" / "research_failure_signals.json"
+DEFAULT_SOURCE_ARTIFACT_DIR = ACTIVE_PROJECT_ROOT / "test-results" / "3can" / "research_sources"
 DEFAULT_MIN_SOURCES = 3
 MAX_COLLECT_BYTES = 1_000_000
 
@@ -752,7 +756,7 @@ def create_rpa_probe_artifacts(
 def run_rpa_probe(
     *,
     mode: str,
-    output_dir: Path,
+    output_dir: Path | None = None,
     approval_id: str = "",
     task_id: str = "R5",
     merchant_id: str = "research-probe",
@@ -776,19 +780,21 @@ def run_rpa_probe(
             "adapter": "rpa_probe",
             "error": "project_rpa_adapter_unavailable",
         }
-    selected_root_text = str(selected_root)
-    added_to_path = selected_root_text not in sys.path
-    if added_to_path:
-        sys.path.insert(0, selected_root_text)
-    importlib.invalidate_caches()
     probe_dir = selected_root / "test-results" / "3can" / "rpa_probe"
+    selected_output_dir = (
+        output_dir.resolve()
+        if output_dir is not None
+        else selected_root / "test-results" / "3can" / "research_sources"
+    )
 
     if mode == "control-plane":
         try:
-            from tools.rpa.control_plane import build_control_plane_summary
+            with _project_rpa_import_scope(selected_root):
+                control_plane = importlib.import_module("tools.rpa.control_plane")
+                summary = control_plane.build_control_plane_summary(
+                    db_path or probe_dir / "rpa_probe.db"
+                )
         except ModuleNotFoundError:
-            if added_to_path:
-                sys.path.remove(selected_root_text)
             return {
                 "ok": False,
                 "status": "unavailable",
@@ -796,35 +802,26 @@ def run_rpa_probe(
                 "error": "project_rpa_adapter_unavailable",
             }
 
-        try:
-            return {
-                "ok": True,
-                "status": "control_plane",
-                "adapter": "rpa_probe",
-                "project_root_source": (
-                    "argument"
-                    if project_root
-                    else "environment"
-                    if os.environ.get("THREECAN_PROJECT_ROOT")
-                    else "cwd"
-                ),
-                "control_plane": build_control_plane_summary(
-                    db_path or probe_dir / "rpa_probe.db"
-                ),
-            }
-        finally:
-            if added_to_path:
-                sys.path.remove(selected_root_text)
+        return {
+            "ok": True,
+            "status": "control_plane",
+            "adapter": "rpa_probe",
+            "project_root_source": (
+                "argument"
+                if project_root
+                else "environment"
+                if os.environ.get("THREECAN_PROJECT_ROOT")
+                else "cwd"
+            ),
+            "control_plane": summary,
+            "output_dir": str(selected_output_dir),
+        }
     if mode != "adapter-review":
-        if added_to_path:
-            sys.path.remove(selected_root_text)
         return {"ok": False, "status": "block", "adapter": "rpa_probe", "error": f"unsupported rpa probe mode: {mode}"}
 
     probe_params = dict(params or {})
     risk_flags = _rpa_probe_risk_flags(platform=platform, adapter_task_id=adapter_task_id or task_id, params=probe_params)
     if risk_flags and not approval_id:
-        if added_to_path:
-            sys.path.remove(selected_root_text)
         return {
             "ok": False,
             "status": "block",
@@ -833,37 +830,31 @@ def run_rpa_probe(
             "error": "Approval id is required before running this RPA probe.",
         }
 
+    selected_db_path = db_path or probe_dir / "rpa_probe.db"
+    selected_artifact_root = artifact_root or probe_dir / "artifacts"
+    selected_cards_output = cards_output or probe_dir / "cards.json"
     try:
-        from tools.rpa.adapter_review_pipeline import run_adapter_review_pipeline
+        with _project_rpa_import_scope(selected_root):
+            adapter_review = importlib.import_module("tools.rpa.adapter_review_pipeline")
+            result = adapter_review.run_adapter_review_pipeline(
+                task_id=task_id,
+                merchant_id=merchant_id,
+                platform=platform,
+                adapter_task_id=adapter_task_id,
+                params=probe_params,
+                db_path=selected_db_path,
+                artifact_root=selected_artifact_root,
+                cards_output=selected_cards_output,
+                cards_limit=cards_limit,
+                cross_validate=cross_validate,
+            )
     except ModuleNotFoundError:
-        if added_to_path:
-            sys.path.remove(selected_root_text)
         return {
             "ok": False,
             "status": "unavailable",
             "adapter": "rpa_probe",
             "error": "project_rpa_adapter_unavailable",
         }
-
-    selected_db_path = db_path or probe_dir / "rpa_probe.db"
-    selected_artifact_root = artifact_root or probe_dir / "artifacts"
-    selected_cards_output = cards_output or probe_dir / "cards.json"
-    try:
-        result = run_adapter_review_pipeline(
-            task_id=task_id,
-            merchant_id=merchant_id,
-            platform=platform,
-            adapter_task_id=adapter_task_id,
-            params=probe_params,
-            db_path=selected_db_path,
-            artifact_root=selected_artifact_root,
-            cards_output=selected_cards_output,
-            cards_limit=cards_limit,
-            cross_validate=cross_validate,
-        )
-    finally:
-        if added_to_path:
-            sys.path.remove(selected_root_text)
     if not result.get("ok"):
         return {
             "ok": False,
@@ -875,7 +866,7 @@ def run_rpa_probe(
     cards_payload = _safe_load_json(selected_cards_output, {})
     artifacts, invalid = create_rpa_probe_artifacts(
         cards_payload=cards_payload,
-        output_dir=output_dir,
+        output_dir=selected_output_dir,
         task_id=task_id,
         approval_id=approval_id,
     )
@@ -897,8 +888,33 @@ def run_rpa_probe(
         "invalid_cards": invalid,
         "db_path": str(selected_db_path),
         "cards_output": str(selected_cards_output),
-        "output_dir": str(output_dir),
+        "output_dir": str(selected_output_dir),
     }
+
+
+@contextmanager
+def _project_rpa_import_scope(project_root: Path):
+    """Load one project's tools.rpa namespace without leaking it to another project."""
+
+    saved_path = list(sys.path)
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "tools" or name.startswith("tools.")
+    }
+    for name in saved_modules:
+        sys.modules.pop(name, None)
+    sys.path.insert(0, str(project_root))
+    importlib.invalidate_caches()
+    try:
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name == "tools" or name.startswith("tools."):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)
+        sys.path[:] = saved_path
+        importlib.invalidate_caches()
 
 
 def load_source_artifacts(paths: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -916,11 +932,13 @@ def load_source_artifacts(paths: list[str]) -> tuple[list[dict[str, Any]], list[
         artifacts.append(
             {
                 "artifact_path": str(path),
+                "status": str(data.get("status") or ""),
                 "adapter": str(data.get("adapter") or ""),
                 "url": str(data.get("url") or ""),
                 "source_type": str(data.get("source_type") or "targeted_web"),
                 "title": str(data.get("title") or ""),
                 "meta_description": str(data.get("meta_description") or ""),
+                "text_excerpt": str(data.get("text_excerpt") or ""),
                 "content_hash": str(data.get("content_hash") or ""),
                 "http_status": data.get("http_status"),
                 "content_type": str(data.get("content_type") or ""),
@@ -931,9 +949,36 @@ def load_source_artifacts(paths: list[str]) -> tuple[list[dict[str, Any]], list[
                 "collected_at": str(data.get("collected_at") or ""),
                 "stores_raw_html": bool(data.get("stores_raw_html")),
                 "stores_secrets": bool(data.get("stores_secrets")),
+                "opened_verified": _artifact_proves_opened_source(data),
             }
         )
     return artifacts, invalid
+
+
+def _artifact_proves_opened_source(artifact: dict[str, Any]) -> bool:
+    status = str(artifact.get("status") or "")
+    content_hash = str(artifact.get("content_hash") or "").strip()
+    if status == "collected":
+        http_status = artifact.get("http_status")
+        return (
+            isinstance(http_status, int)
+            and 200 <= http_status < 400
+            and bool(content_hash)
+        )
+    if status == "rpa_artifact":
+        metadata = (
+            artifact.get("rpa_metadata")
+            if isinstance(artifact.get("rpa_metadata"), dict)
+            else {}
+        )
+        upstream_hash = str(metadata.get("content_hash") or "").strip()
+        observed_content = bool(
+            str(artifact.get("text_excerpt") or "").strip()
+            or metadata.get("captured_at")
+            or metadata.get("engagement")
+        )
+        return bool(content_hash and upstream_hash and observed_content)
+    return False
 
 
 def _classify_research_tier(hit_rules: set[str]) -> str:
@@ -1590,11 +1635,17 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     tier = _normalize_research_tier(str(ledger.get("research_tier") or "standard"))
     budget = TIME_BUDGETS[tier]
     source_count = int(ledger.get("source_count") or 0)
+    verified_external_source_count = int(
+        ledger.get("verified_external_source_count") or 0
+    )
     min_sources = max(int(ledger.get("min_sources") or 0), int(budget["min_sources"]))
     source_type_list = [
         item.get("source_type")
         for item in ledger.get("source_records", [])
-        if isinstance(item, dict) and item.get("source_type")
+        if isinstance(item, dict)
+        and item.get("source_type")
+        and item.get("opened_verified") is True
+        and item.get("source_type") != "known_3can_context"
     ]
     source_types = set(source_type_list)
     context = ledger.get("internal_context", {}) if isinstance(ledger.get("internal_context"), dict) else {}
@@ -1617,8 +1668,8 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         risks.append("missing_elapsed_time")
     elif float(elapsed_minutes) > float(budget["hard_cap_minutes"]):
         risks.append("research_timebox_exceeded")
-    if source_count < min_sources:
-        risks.append("insufficient_source_count")
+    if verified_external_source_count < min_sources:
+        risks.append("insufficient_verified_external_source_count")
     if source_family_count < int(budget["min_source_families"]):
         risks.append("insufficient_source_family_coverage")
     if not source_types.intersection({"official_primary", "academic_or_standard"}):
@@ -1657,7 +1708,10 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
 
     if not risks:
         decision = "ready_for_decision"
-    elif "ledger_status_not_pass" in risks or "insufficient_source_count" in risks:
+    elif (
+        "ledger_status_not_pass" in risks
+        or "insufficient_verified_external_source_count" in risks
+    ):
         decision = "continue_research"
     elif any(item.startswith("missing_") for item in risks) or "low_evidence_score" in risks:
         decision = "continue_research"
@@ -1669,6 +1723,7 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         "decision": decision,
         "research_tier": tier,
         "source_count": source_count,
+        "verified_external_source_count": verified_external_source_count,
         "elapsed_minutes": elapsed_minutes,
         "hard_cap_minutes": int(budget["hard_cap_minutes"]),
         "min_sources": min_sources,
@@ -1721,15 +1776,13 @@ def record_done(
     unique_urls = list(dict.fromkeys(urls))
     selected_tier = _normalize_research_tier(research_tier)
     required_min_sources = max(int(min_sources), int(TIME_BUDGETS[selected_tier]["min_sources"]))
-    structural_status = (
-        "pass"
-        if len(unique_urls) >= required_min_sources and not invalid and not invalid_artifacts
-        else "block"
-    )
     source_records = _build_source_records(unique_urls, [*artifact_source_types, *(source_types or [])])
     artifact_by_url = {item["url"]: item for item in source_artifacts if item.get("url")}
     for record in source_records:
         artifact = artifact_by_url.get(record["url"])
+        record["opened_verified"] = bool(
+            artifact and artifact.get("opened_verified") is True
+        )
         if artifact:
             record.update(
                 {
@@ -1739,9 +1792,25 @@ def record_done(
                     "content_hash": str(artifact.get("content_hash") or ""),
                     "http_status": artifact.get("http_status"),
                     "collected_at": str(artifact.get("collected_at") or ""),
+                    "artifact_status": str(artifact.get("status") or ""),
                     "rpa_metadata": artifact.get("rpa_metadata") if isinstance(artifact.get("rpa_metadata"), dict) else {},
                 }
             )
+    verified_external_source_count = len(
+        {
+            record["url"]
+            for record in source_records
+            if record.get("opened_verified") is True
+            and record.get("source_type") != "known_3can_context"
+        }
+    )
+    structural_status = (
+        "pass"
+        if verified_external_source_count >= required_min_sources
+        and not invalid
+        and not invalid_artifacts
+        else "block"
+    )
     evidence = evidence_scores or {}
     score = score_evidence(evidence)
 
@@ -1760,6 +1829,7 @@ def record_done(
         "invalid_source_artifacts": invalid_artifacts,
         "invalid_source_urls": invalid,
         "source_count": len(unique_urls),
+        "verified_external_source_count": verified_external_source_count,
         "min_sources": required_min_sources,
         "query_plan": {
             "seed_terms": _dedupe(query_terms or []),
@@ -1864,7 +1934,7 @@ def build_parser() -> argparse.ArgumentParser:
     rpa_probe.add_argument("--cards-output", type=Path)
     rpa_probe.add_argument("--cards-limit", type=int, default=20)
     rpa_probe.add_argument("--no-cross-validate", action="store_true")
-    rpa_probe.add_argument("--output-dir", default=str(DEFAULT_SOURCE_ARTIFACT_DIR))
+    rpa_probe.add_argument("--output-dir")
     rpa_probe.add_argument("--approval-id", default="")
     rpa_probe.add_argument(
         "--project-root",
@@ -1943,7 +2013,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "collect-url":
         result = collect_public_url(
             args.url,
-            output_dir=Path(args.output_dir),
+            output_dir=Path(args.output_dir) if args.output_dir else None,
             source_type=args.source_type,
             timeout=args.timeout,
             max_chars=args.max_chars,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -36,16 +38,41 @@ def _source_types(count: int, *types: str) -> list[str]:
 
 def _record(tmp_path: Path, *, tier: str, source_types: list[str], **overrides):
     count = len(source_types)
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_files: list[str] = []
+    for index, (url, source_type) in enumerate(zip(_urls(count), source_types)):
+        path = artifact_dir / f"source-{index}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "status": "collected",
+                    "adapter": "test_public_url_extract",
+                    "url": url,
+                    "source_type": source_type,
+                    "http_status": 200,
+                    "content_hash": hashlib.sha256(url.encode()).hexdigest(),
+                    "title": f"Source {index}",
+                    "text_excerpt": f"Relevant source evidence {index}",
+                    "stores_raw_html": False,
+                    "stores_secrets": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        artifact_files.append(str(path))
     values = {
         "question": "How should the existing 3CAN research skill investigate difficult engineering work?",
-        "source_urls": _urls(count),
+        "source_urls": [],
+        "source_artifact_files": artifact_files,
         "session_id": "session-research-test",
         "turn_id": f"turn-{tier}-{count}",
         "state_file": tmp_path / "state.json",
         "ledger_dir": tmp_path / "ledgers",
         "research_tier": tier,
         "elapsed_minutes": 8 if tier in {"standard", "quick"} else 25,
-        "source_types": source_types,
+        "source_types": [],
         "query_terms": ["3CAN research"],
         "query_variants": [
             f"query {index}"
@@ -143,6 +170,96 @@ def test_source_count_alone_cannot_complete(tmp_path: Path) -> None:
     assert not (tmp_path / "state.json").exists()
 
 
+def test_unopened_urls_and_search_results_do_not_satisfy_source_gate(
+    tmp_path: Path,
+) -> None:
+    source_types = _source_types(
+        30,
+        "official_primary",
+        "academic_or_standard",
+        "github_or_issue",
+        "community_forum",
+        "targeted_web",
+    )
+    common = {
+        "question": "Can discovery-only URLs complete research?",
+        "session_id": "session-unopened",
+        "state_file": tmp_path / "state.json",
+        "research_tier": "standard",
+        "elapsed_minutes": 8,
+        "query_variants": [f"query {index}" for index in range(6)],
+        "evidence_scores": GOOD_SCORES,
+        "sidecar_evidence_sufficiency": "pass",
+        "sidecar_task_fit": "pass",
+        "context_status": "unavailable",
+        "contradiction_status": "resolved",
+    }
+    bare = HARNESS.record_done(
+        **common,
+        turn_id="turn-bare",
+        ledger_dir=tmp_path / "bare-ledgers",
+        source_urls=_urls(30),
+        source_types=source_types,
+    )
+
+    artifact_dir = tmp_path / "search-results"
+    artifact_dir.mkdir()
+    search_result_files: list[str] = []
+    for index, (url, source_type) in enumerate(zip(_urls(30), source_types)):
+        path = artifact_dir / f"search-{index}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "status": "search_result",
+                    "adapter": "search_result_import",
+                    "url": url,
+                    "source_type": source_type,
+                    "content_hash": hashlib.sha256(url.encode()).hexdigest(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        search_result_files.append(str(path))
+    discovery_only = HARNESS.record_done(
+        **common,
+        turn_id="turn-search-results",
+        ledger_dir=tmp_path / "search-ledgers",
+        source_urls=[],
+        source_artifact_files=search_result_files,
+    )
+
+    for result in (bare, discovery_only):
+        assert result["ok"] is False
+        assert result["verified_external_source_count"] == 0
+        assert (
+            "insufficient_verified_external_source_count"
+            in result["sidecar_decision"]["risks"]
+        )
+
+
+def test_rpa_artifact_requires_observed_content_proof(tmp_path: Path) -> None:
+    path = tmp_path / "empty-rpa.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "status": "rpa_artifact",
+                "url": "https://example.com/platform-source",
+                "source_type": "rpa_pipeline_artifact",
+                "content_hash": "derived-only",
+                "rpa_metadata": {"content_hash": ""},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts, invalid = HARNESS.load_source_artifacts([str(path)])
+
+    assert invalid == []
+    assert artifacts[0]["opened_verified"] is False
+
+
 def test_deep_requires_community_and_platform_evidence(tmp_path: Path) -> None:
     result = _record(
         tmp_path,
@@ -234,28 +351,36 @@ def test_missing_project_rpa_adapter_is_typed_unavailable(
 def test_rpa_probe_loads_adapter_from_explicit_physical_project(
     tmp_path: Path,
 ) -> None:
-    package = tmp_path / "tools" / "rpa"
-    package.mkdir(parents=True)
-    (tmp_path / "tools" / "__init__.py").write_text("", encoding="utf-8")
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "control_plane.py").write_text(
-        "def build_control_plane_summary(db_path):\n"
-        "    return {'adapter': 'task-project-rpa', 'db_path': str(db_path)}\n",
-        encoding="utf-8",
-    )
+    projects: list[Path] = []
+    for adapter in ("project-a-rpa", "project-b-rpa"):
+        project = tmp_path / adapter
+        package = project / "tools" / "rpa"
+        package.mkdir(parents=True)
+        (project / "tools" / "__init__.py").write_text("", encoding="utf-8")
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "control_plane.py").write_text(
+            "def build_control_plane_summary(db_path):\n"
+            f"    return {{'adapter': '{adapter}', 'db_path': str(db_path)}}\n",
+            encoding="utf-8",
+        )
+        projects.append(project)
 
-    result = HARNESS.run_rpa_probe(
+    first = HARNESS.run_rpa_probe(
         mode="control-plane",
-        output_dir=tmp_path / "output",
-        project_root=tmp_path,
+        project_root=projects[0],
     )
+    second = HARNESS.run_rpa_probe(mode="control-plane", project_root=projects[1])
 
-    assert result["ok"] is True
-    assert result["project_root_source"] == "argument"
-    assert result["control_plane"]["adapter"] == "task-project-rpa"
-    assert str(tmp_path / "test-results" / "3can" / "rpa_probe") in result[
+    assert first["control_plane"]["adapter"] == "project-a-rpa"
+    assert second["ok"] is True
+    assert second["project_root_source"] == "argument"
+    assert second["control_plane"]["adapter"] == "project-b-rpa"
+    assert str(projects[1] / "test-results" / "3can" / "rpa_probe") in second[
         "control_plane"
     ]["db_path"]
+    assert second["output_dir"] == str(
+        projects[1] / "test-results" / "3can" / "research_sources"
+    )
 
 
 def test_skill_distribution_files_are_present() -> None:
