@@ -30,6 +30,10 @@ def _urls(count: int) -> list[str]:
     return [f"https://example.com/source-{index}" for index in range(count)]
 
 
+def _source_types(count: int, *types: str) -> list[str]:
+    return [types[index % len(types)] for index in range(count)]
+
+
 def _record(tmp_path: Path, *, tier: str, source_types: list[str], **overrides):
     count = len(source_types)
     values = {
@@ -45,7 +49,7 @@ def _record(tmp_path: Path, *, tier: str, source_types: list[str], **overrides):
         "query_terms": ["3CAN research"],
         "query_variants": [
             f"query {index}"
-            for index in range(5 if tier in {"deep", "rpa_deep"} else 2)
+            for index in range(18 if tier in {"deep", "rpa_deep"} else 6)
         ],
         "evidence_scores": GOOD_SCORES,
         "sidecar_evidence_sufficiency": "pass",
@@ -65,10 +69,14 @@ def test_two_tier_classifier_and_timeboxes() -> None:
 
     assert standard["research_tier"] == "standard"
     assert standard["time_budget"]["hard_cap_minutes"] == 10
-    assert standard["time_budget"]["min_sources"] == 6
+    assert standard["time_budget"]["min_sources"] == 30
+    assert standard["time_budget"]["min_source_families"] == 5
+    assert "targeted_web" in standard["source_strategy"]
     assert deep["research_tier"] == "deep"
     assert deep["time_budget"]["hard_cap_minutes"] == 30
-    assert deep["time_budget"]["min_sources"] == 12
+    assert deep["time_budget"]["min_sources"] == 90
+    assert deep["time_budget"]["min_source_families"] == 6
+    assert "targeted_web" in deep["source_strategy"]
 
 
 def test_query_plan_covers_required_evidence_axes() -> None:
@@ -98,14 +106,14 @@ def test_standard_passes_only_with_complete_evidence(tmp_path: Path) -> None:
     result = _record(
         tmp_path,
         tier="standard",
-        source_types=[
+        source_types=_source_types(
+            30,
             "official_primary",
             "academic_or_standard",
             "github_or_issue",
-            "model_hub_or_dataset",
             "community_forum",
             "targeted_web",
-        ],
+        ),
         platform_relevant=False,
     )
 
@@ -120,7 +128,7 @@ def test_source_count_alone_cannot_complete(tmp_path: Path) -> None:
     result = _record(
         tmp_path,
         tier="standard",
-        source_types=["targeted_web"] * 6,
+        source_types=["targeted_web"] * 30,
         context_status="",
         context_refs=[],
         contradiction_status="",
@@ -139,20 +147,14 @@ def test_deep_requires_community_and_platform_evidence(tmp_path: Path) -> None:
     result = _record(
         tmp_path,
         tier="deep",
-        source_types=[
-            "official_primary",
+        source_types=_source_types(
+            90,
             "official_primary",
             "academic_or_standard",
-            "academic_or_standard",
-            "github_or_issue",
             "github_or_issue",
             "model_hub_or_dataset",
-            "model_hub_or_dataset",
             "targeted_web",
-            "targeted_web",
-            "targeted_web",
-            "targeted_web",
-        ],
+        ),
     )
 
     assert result["ok"] is False
@@ -164,35 +166,31 @@ def test_deep_complete_evidence_passes(tmp_path: Path) -> None:
     result = _record(
         tmp_path,
         tier="deep",
-        source_types=[
-            "official_primary",
+        source_types=_source_types(
+            90,
             "official_primary",
             "academic_or_standard",
-            "academic_or_standard",
             "github_or_issue",
-            "github_or_issue",
-            "model_hub_or_dataset",
             "model_hub_or_dataset",
             "community_forum",
-            "community_practice",
             "public_platform_signal",
-            "rpa_video_comment_asr_ocr",
-        ],
+            "targeted_web",
+        ),
     )
 
     assert result["ok"] is True
-    assert result["sidecar_decision"]["source_family_count"] >= 5
+    assert result["sidecar_decision"]["source_family_count"] >= 6
 
 
 def test_missing_or_excess_elapsed_time_blocks_completion(tmp_path: Path) -> None:
-    types = [
+    types = _source_types(
+        30,
         "official_primary",
         "academic_or_standard",
         "github_or_issue",
-        "model_hub_or_dataset",
         "community_forum",
         "targeted_web",
-    ]
+    )
     missing = _record(
         tmp_path / "missing", tier="standard", source_types=types, elapsed_minutes=0
     )
@@ -231,6 +229,33 @@ def test_missing_project_rpa_adapter_is_typed_unavailable(
         "adapter": "rpa_probe",
         "error": "project_rpa_adapter_unavailable",
     }
+
+
+def test_rpa_probe_loads_adapter_from_explicit_physical_project(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "tools" / "rpa"
+    package.mkdir(parents=True)
+    (tmp_path / "tools" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "control_plane.py").write_text(
+        "def build_control_plane_summary(db_path):\n"
+        "    return {'adapter': 'task-project-rpa', 'db_path': str(db_path)}\n",
+        encoding="utf-8",
+    )
+
+    result = HARNESS.run_rpa_probe(
+        mode="control-plane",
+        output_dir=tmp_path / "output",
+        project_root=tmp_path,
+    )
+
+    assert result["ok"] is True
+    assert result["project_root_source"] == "argument"
+    assert result["control_plane"]["adapter"] == "task-project-rpa"
+    assert str(tmp_path / "test-results" / "3can" / "rpa_probe") in result[
+        "control_plane"
+    ]["db_path"]
 
 
 def test_skill_distribution_files_are_present() -> None:

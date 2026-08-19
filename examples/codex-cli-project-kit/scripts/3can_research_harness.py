@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
+import os
 import re
 import sys
 import time
@@ -28,7 +30,6 @@ DEFAULT_STATE_FILE = PROJECT_ROOT / "test-results" / "3can" / "research_hook_sta
 DEFAULT_LEDGER_DIR = PROJECT_ROOT / "test-results" / "3can" / "research_ledgers"
 DEFAULT_FAILURE_STATE = PROJECT_ROOT / "test-results" / "3can" / "research_failure_signals.json"
 DEFAULT_SOURCE_ARTIFACT_DIR = PROJECT_ROOT / "test-results" / "3can" / "research_sources"
-DEFAULT_RPA_PROBE_DIR = PROJECT_ROOT / "test-results" / "3can" / "rpa_probe"
 DEFAULT_MIN_SOURCES = 3
 MAX_COLLECT_BYTES = 1_000_000
 
@@ -139,6 +140,7 @@ SOURCE_STRATEGIES: dict[str, list[str]] = {
         "academic_or_standard",
         "github_or_issue",
         "community_forum",
+        "targeted_web",
         "known_3can_context",
     ],
     "deep": [
@@ -149,6 +151,7 @@ SOURCE_STRATEGIES: dict[str, list[str]] = {
         "community_forum",
         "benchmark_or_user_report",
         "public_platform_signal",
+        "targeted_web",
         "known_3can_context",
     ],
 }
@@ -197,9 +200,9 @@ TIME_BUDGETS: dict[str, dict[str, Any]] = {
         "decision_check_minutes": 6,
         "target_minutes": 8,
         "hard_cap_minutes": 10,
-        "min_sources": 6,
-        "min_source_families": 3,
-        "min_query_variants": 2,
+        "min_sources": 30,
+        "min_source_families": 5,
+        "min_query_variants": 6,
         "max_query_variants": 14,
         "sidecar_required": True,
     },
@@ -207,9 +210,9 @@ TIME_BUDGETS: dict[str, dict[str, Any]] = {
         "decision_check_minutes": 15,
         "target_minutes": 25,
         "hard_cap_minutes": 30,
-        "min_sources": 12,
-        "min_source_families": 5,
-        "min_query_variants": 5,
+        "min_sources": 90,
+        "min_source_families": 6,
+        "min_query_variants": 18,
         "max_query_variants": 30,
         "sidecar_required": True,
         "approval_note": "Real platform login, paid API, bulk scraping, or private data requires approval.",
@@ -761,11 +764,31 @@ def run_rpa_probe(
     cards_output: Path | None = None,
     cards_limit: int = 20,
     cross_validate: bool = True,
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
+    selected_root = Path(
+        project_root or os.environ.get("THREECAN_PROJECT_ROOT") or Path.cwd()
+    ).resolve()
+    if not (selected_root / "tools" / "rpa").is_dir():
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "adapter": "rpa_probe",
+            "error": "project_rpa_adapter_unavailable",
+        }
+    selected_root_text = str(selected_root)
+    added_to_path = selected_root_text not in sys.path
+    if added_to_path:
+        sys.path.insert(0, selected_root_text)
+    importlib.invalidate_caches()
+    probe_dir = selected_root / "test-results" / "3can" / "rpa_probe"
+
     if mode == "control-plane":
         try:
             from tools.rpa.control_plane import build_control_plane_summary
         except ModuleNotFoundError:
+            if added_to_path:
+                sys.path.remove(selected_root_text)
             return {
                 "ok": False,
                 "status": "unavailable",
@@ -773,18 +796,35 @@ def run_rpa_probe(
                 "error": "project_rpa_adapter_unavailable",
             }
 
-        return {
-            "ok": True,
-            "status": "control_plane",
-            "adapter": "rpa_probe",
-            "control_plane": build_control_plane_summary(db_path or DEFAULT_RPA_PROBE_DIR / "rpa_probe.db"),
-        }
+        try:
+            return {
+                "ok": True,
+                "status": "control_plane",
+                "adapter": "rpa_probe",
+                "project_root_source": (
+                    "argument"
+                    if project_root
+                    else "environment"
+                    if os.environ.get("THREECAN_PROJECT_ROOT")
+                    else "cwd"
+                ),
+                "control_plane": build_control_plane_summary(
+                    db_path or probe_dir / "rpa_probe.db"
+                ),
+            }
+        finally:
+            if added_to_path:
+                sys.path.remove(selected_root_text)
     if mode != "adapter-review":
+        if added_to_path:
+            sys.path.remove(selected_root_text)
         return {"ok": False, "status": "block", "adapter": "rpa_probe", "error": f"unsupported rpa probe mode: {mode}"}
 
     probe_params = dict(params or {})
     risk_flags = _rpa_probe_risk_flags(platform=platform, adapter_task_id=adapter_task_id or task_id, params=probe_params)
     if risk_flags and not approval_id:
+        if added_to_path:
+            sys.path.remove(selected_root_text)
         return {
             "ok": False,
             "status": "block",
@@ -796,6 +836,8 @@ def run_rpa_probe(
     try:
         from tools.rpa.adapter_review_pipeline import run_adapter_review_pipeline
     except ModuleNotFoundError:
+        if added_to_path:
+            sys.path.remove(selected_root_text)
         return {
             "ok": False,
             "status": "unavailable",
@@ -803,22 +845,25 @@ def run_rpa_probe(
             "error": "project_rpa_adapter_unavailable",
         }
 
-    probe_dir = DEFAULT_RPA_PROBE_DIR
     selected_db_path = db_path or probe_dir / "rpa_probe.db"
     selected_artifact_root = artifact_root or probe_dir / "artifacts"
     selected_cards_output = cards_output or probe_dir / "cards.json"
-    result = run_adapter_review_pipeline(
-        task_id=task_id,
-        merchant_id=merchant_id,
-        platform=platform,
-        adapter_task_id=adapter_task_id,
-        params=probe_params,
-        db_path=selected_db_path,
-        artifact_root=selected_artifact_root,
-        cards_output=selected_cards_output,
-        cards_limit=cards_limit,
-        cross_validate=cross_validate,
-    )
+    try:
+        result = run_adapter_review_pipeline(
+            task_id=task_id,
+            merchant_id=merchant_id,
+            platform=platform,
+            adapter_task_id=adapter_task_id,
+            params=probe_params,
+            db_path=selected_db_path,
+            artifact_root=selected_artifact_root,
+            cards_output=selected_cards_output,
+            cards_limit=cards_limit,
+            cross_validate=cross_validate,
+        )
+    finally:
+        if added_to_path:
+            sys.path.remove(selected_root_text)
     if not result.get("ok"):
         return {
             "ok": False,
@@ -1555,7 +1600,9 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     context = ledger.get("internal_context", {}) if isinstance(ledger.get("internal_context"), dict) else {}
     context_status = str(context.get("status") or "")
     source_family_counts = _source_family_counts(source_type_list, context_status)
-    source_family_count = len(source_family_counts)
+    source_family_count = len(
+        [family for family in source_family_counts if family != "internal"]
+    )
     query_plan = ledger.get("query_plan", {}) if isinstance(ledger.get("query_plan"), dict) else {}
     query_variants = query_plan.get("query_variants", []) if isinstance(query_plan.get("query_variants"), list) else []
     contradiction_status = str(ledger.get("contradiction_status") or "")
@@ -1819,6 +1866,11 @@ def build_parser() -> argparse.ArgumentParser:
     rpa_probe.add_argument("--no-cross-validate", action="store_true")
     rpa_probe.add_argument("--output-dir", default=str(DEFAULT_SOURCE_ARTIFACT_DIR))
     rpa_probe.add_argument("--approval-id", default="")
+    rpa_probe.add_argument(
+        "--project-root",
+        type=Path,
+        help="Physical project/worktree containing tools/rpa; defaults to THREECAN_PROJECT_ROOT, then cwd.",
+    )
 
     failure = sub.add_parser("failure-signal", help="Record repeated failures and escalate to research at threshold.")
     failure.add_argument("--command", dest="failed_command", required=True)
@@ -1940,6 +1992,7 @@ def main(argv: list[str] | None = None) -> int:
             cards_output=args.cards_output,
             cards_limit=args.cards_limit,
             cross_validate=not args.no_cross_validate,
+            project_root=args.project_root,
         )
         _print_json(result)
         return 0 if result["ok"] else 2

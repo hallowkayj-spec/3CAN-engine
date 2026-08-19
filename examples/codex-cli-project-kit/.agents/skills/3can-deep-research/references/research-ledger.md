@@ -25,9 +25,9 @@ Use this reference only when recording or auditing a 3CAN research run.
 
 ## Tier gates
 
-`standard` has a 10-minute hard cap and requires at least six sources, three source families, two query variants, a primary/boundary source, implementation or practice evidence, context status, contradiction review, evidence scores, and sidecar pass.
+`standard` has a 10-minute hard cap and requires at least 30 opened, relevant, unique sources, five source families, six query variants, a primary/boundary source, implementation or practice evidence, context status, contradiction review, evidence scores, and sidecar pass.
 
-`deep` has a 30-minute hard cap and requires at least twelve sources, five source families, five query variants, primary/boundary evidence, paper/standard or benchmark evidence, GitHub or Hugging Face implementation evidence, community evidence, context status, contradiction review, evidence scores, and sidecar pass. Platform/RPA topics additionally require a public platform signal or approved RPA artifact.
+`deep` has a 30-minute hard cap and requires at least 90 opened, relevant, unique sources, all six external source families, 18 query variants, primary/boundary evidence, paper/standard or benchmark evidence, GitHub or Hugging Face implementation evidence, community evidence, context status, contradiction review, evidence scores, and sidecar pass. Platform/RPA topics additionally require a public platform signal or approved RPA artifact.
 
 Source families are:
 
@@ -45,7 +45,7 @@ Source count alone never completes a run. The harness also checks family coverag
 
 `collect-url` accepts only public `http`/`https` pages and stores a bounded text excerpt plus metadata and content hash, never raw HTML or credentials. Dynamic/login pages, paid APIs, private content, bulk scraping, account/store writes, and publishing stay behind their existing approval boundaries.
 
-`import-search-result` normalizes already available provider JSON and makes no provider call. `import-rpa-artifact` imports bounded output from an existing project-owned lane. `rpa-probe` may call already installed local adapters, but absence returns typed `unavailable`; this Skill never creates a second RPA runtime.
+`import-search-result` normalizes already available provider JSON and makes no provider call. `import-rpa-artifact` imports bounded output from an existing project-owned lane. `rpa-probe` may call adapters from the explicit `--project-root`, `THREECAN_PROJECT_ROOT`, or current working directory, in that order; absence returns typed `unavailable`. A global Skill is discoverable, while project hooks are the enforcement boundary. This Skill never creates a second RPA runtime.
 
 Do not store prompts, completions, secrets, cookies, recovery codes, private messages, raw runtime logs, or copyrighted long-form source copies.
 

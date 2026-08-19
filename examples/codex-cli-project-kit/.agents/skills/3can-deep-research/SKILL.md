@@ -27,9 +27,9 @@ scripts/3can_research_harness.py plan \
 
 ## Completion gates
 
-`standard` requires at least six opened sources across at least three source families, two materially different queries, a primary/boundary source, implementation or practice evidence, a contradiction check, evidence scores, recorded 3CAN-context status, and sidecar evidence/task-fit judgement.
+`standard` requires at least 30 opened, relevant, unique sources across at least five source families, six materially different queries, a primary/boundary source, implementation or practice evidence, a contradiction check, evidence scores, recorded 3CAN-context status, and sidecar evidence/task-fit judgement.
 
-`deep` requires at least twelve opened sources across at least five source families and five materially different queries. It must include primary/boundary evidence, a paper/standard or benchmark, GitHub or Hugging Face implementation evidence, community evidence such as Reddit or a professional forum, contradiction/counterexample evidence, recorded 3CAN-context status, and sidecar judgement. RPA, creator, video, or platform questions also require public platform or approved RPA evidence.
+`deep` requires at least 90 opened, relevant, unique sources across all six external source families and 18 materially different queries. It must include primary/boundary evidence, a paper/standard or benchmark, GitHub or Hugging Face implementation evidence, community evidence such as Reddit or a professional forum, contradiction/counterexample evidence, recorded 3CAN-context status, and sidecar judgement. RPA, creator, video, or platform questions also require public platform or approved RPA evidence.
 
 Do not stop merely because the clock elapsed or a source count was reached. Stop early only when all gates pass and further searching has low decision value. At the hard cap, return `PARTIAL` or `UNAVAILABLE` with precise missing evidence; do not fake completion.
 
@@ -52,7 +52,9 @@ scripts/3can_research_harness.py collect-url \
   --source-type official_primary
 ```
 
-Use `import-search-result` for existing provider-neutral result JSON. Use `import-rpa-artifact` for bounded output produced by an existing project-owned RPA lane. `rpa-probe` is only an optional bridge to already installed project RPA adapters; if none are present it must return typed `unavailable`. Do not build a second browser/RPA subsystem here. Login, private data, paid APIs, bulk collection, account/store writes, and publishing still require their existing approvals.
+Use `import-search-result` for existing provider-neutral result JSON. Use `import-rpa-artifact` for bounded output produced by an existing project-owned RPA lane. `rpa-probe` is only an optional bridge to already installed project RPA adapters; pass the current physical worktree with `--project-root`, or set `THREECAN_PROJECT_ROOT`; otherwise it uses the current working directory. If that project has no `tools/rpa`, return typed `unavailable`. Do not build a second browser/RPA subsystem here. Login, private data, paid APIs, bulk collection, account/store writes, and publishing still require their existing approvals.
+
+A global Skill installation makes the workflow discoverable to supported Sessions and Agents. Project hooks make its gates automatic for that project. Other clients must invoke the Skill or the harness explicitly; a Skill alone cannot force an arbitrary Agent runtime to use RPA.
 
 Record the evidence ledger:
 
