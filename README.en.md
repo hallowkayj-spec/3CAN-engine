@@ -63,6 +63,44 @@ A local HTTP service (`localhost:9700`) that agents query to:
 
 Not a chat-memory tool, not an autonomous agent runtime, not an IDE replacement.
 
+## Grown from delivery, not invented as a memory product
+
+3CAN was not started as a standalone memory-product roadmap. It grew while a
+nontechnical OPC owner and coding agents were delivering real products,
+platforms, automations, and content workflows. Early projects relied on
+PreToolUse hooks, repeated prompts, handoff documents, and manual session
+briefings. Those techniques worked at small scale, then became brittle across
+long projects, multiple worktrees, and concurrent agents.
+
+The graph, route/retrieve split, activity hash chain, project identity, Owner
+Intent, tickets, bounded writeback, ErrorKnowledge, and concurrency contracts
+were added one real failure at a time. The priority remains delivery and Owner
+control, not agent autonomy for its own sake.
+
+At the conceptual level, 3CAN was influenced by graph representations and Yann
+LeCun's position paper [*A Path Towards Autonomous Machine
+Intelligence*](https://openreview.net/pdf?id=BZ5a1r-kVsf): a world model,
+memory, objectives, and hierarchical planning should form a coherent system.
+3CAN does not implement JEPA and is not endorsed by the paper's author. A
+separate SAT-like engineering analogy treats project, agent, worktree, ticket,
+version, and evidence as explicit constraints that fail closed when they do not
+match; 3CAN is not a SAT solver.
+
+## Public candidate evidence
+
+On the public 16-node synthetic seed graph, the content-addressed candidate
+receipt records 46 route queries with MRR `0.9783`, Recall@1 `0.8261`, and
+Recall@3 / Hit@3 `1.0`; the 10-case substrate fixture records Top-1 `1.0` and
+mean Top-3 recall `0.8167`. The current release candidate also passed 450 local
+tests plus hosted Ubuntu and Windows clean-clone acceptance.
+
+These are official self-built fixture results, not an independent ranking.
+They do not prove private production-graph quality, long-term OPC outcomes, or
+cross-machine latency and are not comparable to products evaluated on different
+tasks. See
+[`SEED_GRAPH_BENCHMARK_20260809.json`](./docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json)
+for the exact receipt and limitations.
+
 ## One project steering file
 
 Each project may keep one root `3CAN.md`. Its small flat front matter describes

@@ -4,6 +4,11 @@
 
 [English](./README.en.md) · [中文用户指南](./docs/USER_GUIDE.md) · [项目接入手册](./docs/PROJECT_KIT.md) · [API 规范](./docs/specs/3CAN_ENGINE/PROTOCOL.yaml)
 
+[![CI](https://github.com/hallowkayj-spec/3CAN-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/hallowkayj-spec/3CAN-engine/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)
+![Local first](https://img.shields.io/badge/runtime-local--first-18a999)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-f59e0b)
+
 ![3CAN 图谱界面](./3CAN-engine-frontend.png)
 
 ## 一句话说明
@@ -18,6 +23,18 @@
 - 全量注入项目上下文太贵，普通搜索又缺少语义、适用范围和当前状态；
 - 多 Worktree 并行时，需要共享项目事实，但不能共享某个 Session 的私有执行状态。
 
+## 🌱 它不是“立项研发”出来的，而是从真实交付里长出来的
+
+3CAN 一开始并不是一个准备商业化的“AI 记忆产品”。维护者是非专业技术背景的 OPC，真正目标一直是把自己的产品、平台、自动化和内容项目交付出来。早期与 Codex、Claude Code 协作时，项目主要依靠 PreToolUse hook、固定提示词、handoff 文档和人工 Session 交接维持轨道；这些办法在单任务里有效，但项目变多、周期变长、多个 Agent/Worktree 并行后，会出现重复解释、上下文漂移、历史错误复发和证据散落。
+
+3CAN 因此在真实开发过程中逐步形成：先把会话经验变成节点，再增加语义路由、精确读取、活动哈希链、项目身份、Owner Intent、ticket/writeback、ErrorKnowledge、并发一致性和公开发布边界。它的功能不是从一张预设路线图里一次设计完，而是每次遇到真实阻碍后，寻找能长期复用且不会增加第二套真相源的最小结构。
+
+概念层面上，3CAN 受到图结构、神经网络的分层表征，以及 Yann LeCun 的立场论文 [*A Path Towards Autonomous Machine Intelligence*](https://openreview.net/pdf?id=BZ5a1r-kVsf) 中“世界模型、记忆、目标与分层规划应形成一致整体”的启发。3CAN 没有复现 JEPA，也不是该论文的实现；它只是把“Agent 需要一个可查询的项目世界模型”转译为工程系统。
+
+另一条独立思路来自约束满足（SAT）式的工程纪律：项目、Agent、Worktree、ticket、版本和证据都是显式约束；缺失或矛盾时返回 typed gate，而不是猜测后继续。这里的“SAT 式”是设计类比，3CAN 本身不是 SAT solver。
+
+这段经历也决定了 3CAN 的定位：**先帮助 Owner 和 Agents 更顺畅地交付，再谈更宏大的自治。**
+
 ## 当前状态与许可证
 
 - 版本线：**v0.2.0 release candidate**；GitHub Release 以仓库的 [Releases](https://github.com/hallowkayj-spec/3CAN-engine/releases) 页面为准。
@@ -27,29 +44,29 @@
 
 完整条款见 [LICENSE](./LICENSE)、[中文授权说明](./LICENSING.md) 和 [English licensing note](./LICENSING.en.md)。
 
-## 3CAN 能做什么
+## 🧠 3CAN 能做什么
 
-### 1. 项目现实与语义路由
+### 🧭 项目现实与语义路由
 
 `POST /api/route` 根据当前任务、项目身份和工作区，返回一小组相关节点，而不是把整张图塞进提示词。节点可表达项目、接口、流程、环境、决策、文档、Session、反馈、ErrorKnowledge 等语义。
 
-### 2. 跨 Session 的耐久知识
+### 🧩 跨 Session 的耐久知识
 
 Agent 可以读取精确节点、查看项目 briefing，并把完成的里程碑、决策、错误根因和验证证据做有边界的 writeback。3CAN 保存的是项目级意义，不是某个聊天窗口的临时思考或私有执行状态。
 
-### 3. ErrorKnowledge
+### 🧯 ErrorKnowledge
 
 错误先以 occurrence 记录；只有兼容、确定性的重复错误才提升为 ErrorCase。修复完成后可以关联解决方案、验证证据、适用项目和 superseded lineage，避免把每次普通拒绝都变成永久噪声。
 
-### 4. 多 Agent / 多 Worktree 协作
+### 🧑‍🤝‍🧑 多 Agent / 多 Worktree 协作
 
 每次有状态操作都可以绑定 `AgentId`、项目/命名空间、物理 Worktree/Workspace，以及需要时的 `WorkorderId`、`TicketId` 和 target/scope digest。这样多个客户端可以并行使用同一图谱，同时把冲突限制在真正相撞的节点或治理对象上。
 
-### 5. Owner Intent
+### 🎯 Owner Intent
 
 项目根目录可放一个人类可编辑的 `3CAN.md`，描述谨慎程度、上下文大小、外部变更确认、Review 和 writeback 偏好。它帮助非技术 Owner 稳定表达工作方式，但不会绕过凭据、项目隔离、Git、CI、生产发布或删除保护。
 
-### 6. 本地优先与可视化
+### 🔒 本地优先与可视化
 
 默认只绑定 `127.0.0.1`。图谱、嵌入缓存、活动与票据状态保留在本机指定目录；Web 界面提供图谱检索、子图激活和状态查看。除非你自己配置外部模型或代理，核心 HTTP 服务不要求把项目资料上传到 3CAN 维护者。
 
@@ -172,7 +189,22 @@ scripts/                     初始化、验证、隐私扫描与发布包构建
 docs/                        用户指南、项目 Kit、协议、边界与证据说明
 ```
 
-## 证据与限制
+## 🧪 公开测试与自评
+
+3CAN 不使用一个“综合总分”掩盖不同能力层。当前仓库可复现的公开证据如下：
+
+| 验证面 | 公开候选结果 | 能证明什么 |
+| --- | ---: | --- |
+| Route benchmark | 46 queries；MRR `0.9783`；Recall@1 `0.8261`；Recall@3 / Hit@3 `1.0` | 在 16 节点公开合成 seed graph 上，任务路由能稳定找到预设相关节点 |
+| Substrate benchmark | 10 cases；Top-1 `1.0`；Top-3 mean recall `0.8167`；ERR proactive@3 `1.0` | 公开 fixture 中的项目结构、接口和错误提示能按预设答案出现 |
+| 本地发布验收 | `450 passed`；Ruff、严格隐私扫描、ZIP 解包扫描通过 | 当前候选的合同、并发、隔离、发布与安全回归在该测试环境通过 |
+| GitHub clean clone | Ubuntu + Windows 独立 `9701` 冷启动、route/writeback、停止回收通过 | 一个不依赖维护者图谱的全新 checkout 能安装并运行 |
+
+完整内容寻址回执见 [SEED_GRAPH_BENCHMARK_20260809.json](./docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json)。这些数字是**官方自建 fixture 的能力证明，不是第三方排名**：它们不证明私有生产图质量、真实 OPC 长期收益、跨机器延迟，也不能直接与 Mem0、Graphiti、Letta 等不同赛道产品比较。仓库保留的历史 LongMemEval 试跑受 judge、runner 与 fixture 版本影响，不作为本候选的发布分数。
+
+我们更关心后续 dogfood 是否减少重复解释、缩短恢复时间、避免重复错误，并让并行 Agent 真正完成交付；这些长期指标会继续按独立证据更新，而不会通过预估填满。
+
+## 📐 证据与限制
 
 - CI 运行 Ruff、Python 语法检查、完整测试、严格发布扫描，以及 Ubuntu/Windows 的隔离 9701 clean-clone 验收。
 - 仓库包含合成 seed graph 的可复现候选评测；它不等于私有生产图、真实业务或跨机器性能保证。
