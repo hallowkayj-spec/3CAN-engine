@@ -1,323 +1,205 @@
 # 3CAN Engine
 
-**3CAN is a source-available, graph-backed project substrate for coding-agent
-workflows.** It gives Codex, Claude Code, OpenCode, Gemini CLI, and other
-HTTP-capable agents a shared project reality: what to read, what to avoid, what
-changed, what failed before, and where durable work should be written back.
+> 给 Codex、Claude Code、OpenCode、Gemini CLI、Kimi、DeepSeek 等 Coding Agent 使用的本地项目知识图谱与协作引擎。
 
-Status: **v0.2 release candidate (unreleased)**. This package is suitable for
-controlled project-team use and cross-project testing. It is not a polished
-enterprise memory platform and should not be described as OSI open source.
+[English](./README.en.md) · [中文用户指南](./docs/USER_GUIDE.md) · [项目接入手册](./docs/PROJECT_KIT.md) · [API 规范](./docs/specs/3CAN_ENGINE/PROTOCOL.yaml)
 
-License: **PolyForm Noncommercial 1.0.0**. This is source-available, not
-OSI-approved open source. Commercial use requires separate written permission.
-See `LICENSE`, `NOTICE`, `LICENSING.md`, and `SECURITY.md`.
+![3CAN 图谱界面](./3CAN-engine-frontend.png)
 
-## What It Does
+## 一句话说明
 
-3CAN runs as a local HTTP sidecar, usually on `127.0.0.1`.
+3CAN 把项目里真正需要跨 Session 保留的内容——架构、决策、接口、流程、错误经验、证据和交接——组织成可检索、可追溯的图谱。Agent 开始任务时按需读取相关上下文，完成后把有长期价值的结论写回；Git 仍负责精确代码历史，CI、运行时和外部平台回执仍负责证明行为。
 
-Core capabilities:
+它主要解决这样的实际问题：
 
-- **Project graph memory**: decisions, sessions, errors, interfaces, processes,
-  feedback, and skills are stored as typed graph nodes and edges.
-- **Context routing**: agents call `/api/route` to get a compact task-specific
-  briefing instead of injecting all project history into every session.
-- **Writeback discipline**: durable results can be recorded as activity,
-  session notes, decision nodes, error lessons, or handoff nodes.
-- **Optional governance adapters**: project kits include route/prepare/done,
-  task-ledger, hook, and compact-handoff examples for projects that need them.
-  They are not required for ordinary read-only routing.
-- **Optional GitHub PR fallback**: the Codex project kit includes an
-  approval-gated local REST adapter for environments where `gh` is absent or
-  a connector cannot create a PR.
-- **Token operations**: local token usage telemetry can be grouped by date,
-  session, model, source, task, and agent; cache and fresh-input pressure are
-  reported separately.
-- **Multi-project isolation**: every project can run its own graph directory,
-  port, token ledger, and bootstrap profile.
-- **Project kits**: `examples/codex-cli-project-kit/` provides optional Codex
-  wrappers, hooks, and a minimal template `AGENTS.md` for new projects.
-- **Owner intent**: one project-root `3CAN.md` provides small, human-editable
-  working defaults. Its compact project-bound projection augments route and
-  briefing; it never replaces Git, CI, Runtime, Evidence, or hard gates.
-- **Release hygiene**: `scripts/prerelease_scan.py --strict` blocks secrets,
-  maintainer-local paths, and runtime graph artifacts before publishing.
+- 同一项目开了多个 Agent/Session，反复解释背景，仍会丢失关键约束；
+- 非技术背景的 Owner 能说清产品、结构、设计哲学，却难以把这些意图稳定传递给每个 Agent；
+- 历史错误、临时修复和取舍散落在聊天与文档里，下一次又重踩；
+- 全量注入项目上下文太贵，普通搜索又缺少语义、适用范围和当前状态；
+- 多 Worktree 并行时，需要共享项目事实，但不能共享某个 Session 的私有执行状态。
 
-3CAN is **not** an autonomous agent runtime, chat application, SaaS backend,
-RPA crawler, IDE, or general-purpose long-term user-memory product. In the
-operations-coach system, it acts as the substrate for task timing, evidence,
-memory routing, agent coordination, and writeback. RPA adapters and business
-logic live above it.
+## 当前状态与许可证
 
-## Unreleased v0.2 Candidate
+- 版本线：**v0.2.0 release candidate**；GitHub Release 以仓库的 [Releases](https://github.com/hallowkayj-spec/3CAN-engine/releases) 页面为准。
+- 许可证：**PolyForm Noncommercial License 1.0.0**。
+- 这是源代码公开、可学习和非商业使用的 **source-available** 项目，不是 OSI 定义的开源许可证。
+- 个人非商业学习、研究、修改与分享按许可证允许；公司内部、客户项目、SaaS、付费产品等商业用途需要另行取得书面许可。
 
-The v0.2 candidate turns error history into bounded, reusable knowledge:
+完整条款见 [LICENSE](./LICENSE)、[中文授权说明](./LICENSING.md) 和 [English licensing note](./LICENSING.en.md)。
 
-- a first failure remains an occurrence; only a repeated deterministic
-  fingerprint promotes an ErrorCase;
-- ordinary routes exclude legacy and canonical `ERR-*` error knowledge, while
-  explicit error routes return at most three applicable records;
-- verified `done` writeback creates a solution and evidence chain and marks the
-  case resolved;
-- route-ticket evidence uses a process-safe SQLite/WAL ledger, scoped
-  digests, append-only events, and a replay-safe completion journal;
-- a reversible maintenance tool archives legacy one-off error nodes and removes
-  their global mandatory-route edges.
+## 3CAN 能做什么
 
-See [`docs/ERROR_KNOWLEDGE_LIFECYCLE.md`](./docs/ERROR_KNOWLEDGE_LIFECYCLE.md)
-and the `[Unreleased]` section in [`CHANGELOG.md`](./CHANGELOG.md).
+### 1. 项目现实与语义路由
 
-## Secure Target and Evidence Configuration
+`POST /api/route` 根据当前任务、项目身份和工作区，返回一小组相关节点，而不是把整张图塞进提示词。节点可表达项目、接口、流程、环境、决策、文档、Session、反馈、ErrorKnowledge 等语义。
 
-Ticket target snapshots are restricted to `THREECAN_PROJECT_DIR` plus optional
-absolute roots in `THREECAN_TARGET_ROOTS`. Multiple roots use the operating
-system path separator (`;` on Windows, `:` on POSIX). Do not add broad roots
-such as a whole user profile.
+### 2. 跨 Session 的耐久知识
 
-Automatic ErrorCase resolution is fail-closed:
+Agent 可以读取精确节点、查看项目 briefing，并把完成的里程碑、决策、错误根因和验证证据做有边界的 writeback。3CAN 保存的是项目级意义，不是某个聊天窗口的临时思考或私有执行状态。
 
-- `THREECAN_EVIDENCE_ROOTS` must list the absolute directories from which
-  evidence artifacts may be read. It has no implicit default.
-- `THREECAN_EVIDENCE_HMAC_KEY` must be injected at runtime from a secret store
-  and contain at least 32 random bytes. A 64-character hexadecimal encoding is
-  one safe representation. The runtime rejects configured values shorter than
-  32 characters. Never commit the real key; `.env.example` intentionally leaves
-  it blank.
-- `THREECAN_EVIDENCE_MAX_BYTES` defaults to `4194304` (4 MiB) per artifact.
+### 3. ErrorKnowledge
 
-A verification artifact is JSON with
-`schema_version: "3can.verification-attestation/v1"` and these signed fields:
-`kind`, `verifier`, `ticket_id`, `target_digest`, `scope_digest`, `command`,
-integer `exit_code`, and `outcome`. A passing attestation requires
-`exit_code: 0` and `outcome` equal to `pass`, `passed`, or `success`.
-Canonicalize every field except `signature` as UTF-8 JSON with keys sorted,
-Unicode preserved, and separators `,` and `:` with no extra whitespace. Sign
-those bytes with HMAC-SHA256 and write
-`signature: "hmac-sha256:<64 lowercase hex characters>"`.
+错误先以 occurrence 记录；只有兼容、确定性的重复错误才提升为 ErrorCase。修复完成后可以关联解决方案、验证证据、适用项目和 superseded lineage，避免把每次普通拒绝都变成永久噪声。
 
-The evidence receipt must also contain the SHA-256 digest of the complete
-attestation file, and its `kind`/`verifier` must match the signed values. A
-client-provided `verified: true`, an activity self-hash, a file outside the
-allowed roots, a missing/short key, a digest mismatch, or an invalid signature
-cannot resolve an ErrorCase. The completion remains `review_required`.
+### 4. 多 Agent / 多 Worktree 协作
 
-## Current Update, 2026-08-09
+每次有状态操作都可以绑定 `AgentId`、项目/命名空间、物理 Worktree/Workspace，以及需要时的 `WorkorderId`、`TicketId` 和 target/scope digest。这样多个客户端可以并行使用同一图谱，同时把冲突限制在真正相撞的节点或治理对象上。
 
-- `/api/stats` now derives `healthy` from the canonical readiness contract.
-  A verified deep result can be reused while the graph/embedding fingerprint is
-  unchanged; the response says whether evidence is `verified`,
-  `cached_verified`, `stale_verified`, or `deep_required`.
-- Agent wrappers only observe runtime readiness; they never spawn, terminate,
-  or request recovery of the shared production runtime. Offline route, ticket,
-  and writeback become typed `UNAVAILABLE`, while local Git, coding, builds,
-  and offline tests continue. Lifecycle remains an explicit machine
-  operator/service-manager action.
-- Route responses publish `3can.route-response/v1`, retain mandatory and
-  temporal metadata during budget compaction, and expose both
-  `response_tokens` and the compatibility alias `post_budget_tokens`.
-- Public route/substrate benchmarks declare their required seed-graph node IDs
-  and fail as `INVALID_GRAPH_BINDING` before scoring the wrong graph.
-- A reproducible public seed-graph receipt records route MRR `0.9783`, exact
-  top-1 `0.8261`, query-level Hit@3 `1.0`, substrate top-1 `1.0`, and mean
-  top-3 recall `0.8167`. It is candidate evidence for the synthetic hashing
-  profile, not a production-profile claim; see
-  `docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json`.
-- Release CI runs Ruff across all shipped Python paths, the full test suite, strict
-  isolation scanning, and a typed development-readiness smoke check.
+### 5. Owner Intent
 
-## Previous Update, 2026-05-08
+项目根目录可放一个人类可编辑的 `3CAN.md`，描述谨慎程度、上下文大小、外部变更确认、Review 和 writeback 偏好。它帮助非技术 Owner 稳定表达工作方式，但不会绕过凭据、项目隔离、Git、CI、生产发布或删除保护。
 
-This release staging package now includes the lessons from real multi-project
-dogfood testing:
+### 6. 本地优先与可视化
 
-- The release graph is intentionally empty. Runtime graph files are generated
-  per project and are not committed.
-- `seed_nodes.py` creates a generic 16-node base graph and is idempotent.
-- `init-project.ps1` and `init-project.sh` initialize isolated project graphs
-  and bind `THREECAN_*` environment variables.
-- Token monitoring imports Codex runtime status when available and exposes
-  importer state in `/api/token-usage/health` and the dashboard.
-- The GitHub PR harness is packaged as an ERR-backed hook so repeated `gh` or
-  connector PR failures route to the local REST fallback path.
-- Release scanning blocks graph databases, embeddings, activity logs, node
-  JSON, secrets, and maintainer-local path leaks.
-- CI smoke now uses a temporary graph and checks both `/api/stats` and
-  `/api/route`.
+默认只绑定 `127.0.0.1`。图谱、嵌入缓存、活动与票据状态保留在本机指定目录；Web 界面提供图谱检索、子图激活和状态查看。除非你自己配置外部模型或代理，核心 HTTP 服务不要求把项目资料上传到 3CAN 维护者。
 
-See:
+## 3CAN 不是什么
 
-- `docs/CAPABILITY_MATRIX_20260508.md`
-- `docs/RELEASE_READINESS_SCORECARD_20260508.md`
-- `docs/GITHUB_PR_HARNESS.md`
-- `docs/PROJECT_KIT.md`
+- 不是聊天机器人，也不是 ChatGPT/Codex/Claude 的替代品；
+- 不是自动写代码、自动发布或自动花费 API 额度的 Agent Runtime；
+- 不是 Git、CI、Issue Tracker、数据库或凭据系统的替代品；
+- 不是把所有日志永久收集起来的监控平台；
+- 不是面向公网裸露的多租户 SaaS。本版本没有内建公网认证层。
 
-## Quick Start
+## 非技术用户：10 分钟本地体验
 
-### Minimal Install
+你不需要单独开一个“3CAN 管理聊天 Session”。3CAN 是一个本机服务；任意支持 HTTP 或 MCP 的 Agent 都可以连接它。一个项目可以使用独立端口和独立图谱，多个 Session 也可以共享同一个受管理实例。
 
-```bash
-bash install.sh
+### Windows 11 / PowerShell
+
+要求：Git、Python 3.11 或更高版本。
+
+```powershell
+git clone https://github.com/hallowkayj-spec/3CAN-engine.git
+Set-Location 3CAN-engine
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-min.txt
+.\scripts\init-project.ps1 -ProjectDir . -Port 9711 -StartServer
+python .\scripts\verify_project.py --base-url http://127.0.0.1:9711 --min-nodes 10
 ```
 
-By default this installs the minimal dependency set and seeds a local project
-graph. Use the full profile when you want heavier semantic dependencies:
+### macOS / Linux
 
 ```bash
-THREECAN_INSTALL_PROFILE=full bash install.sh
-```
-
-### Start Backend
-
-```bash
-export THREECAN_READINESS_MODE=development
-python neural-memory/backend/app.py --port 9711 --host 127.0.0.1
-```
-
-Open:
-
-- Gateway: `http://127.0.0.1:9711`
-- Token dashboard: `http://127.0.0.1:9711/static/token_usage.html`
-
-### Verify
-
-```bash
+git clone https://github.com/hallowkayj-spec/3CAN-engine.git
+cd 3CAN-engine
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-min.txt
+./scripts/init-project.sh --project . --port 9711 --start-server
 python scripts/verify_project.py --base-url http://127.0.0.1:9711 --min-nodes 10
 ```
 
-Expected result: liveness passes, the deep stats snapshot is internally
-consistent, the node count is above threshold, route returns at least one node,
-and readiness is typed as either `VERIFIED_PRODUCTION` or
-`DEVELOPMENT_ONLY`. Add `--require-production-ready` for a pinned production
-profile.
+验证通过后打开：
 
-## Project Sidecar Setup
+- 图谱首页：<http://127.0.0.1:9711>
+- Token 面板：<http://127.0.0.1:9711/static/token_usage.html>
+- API 文档：<http://127.0.0.1:9711/docs>
 
-For Windows PowerShell from a target project:
+`9711` 只是项目本地示例端口，不是硬编码要求。若你已经有一个机器级共享实例，可以使用另一个端口，但同一个端口只能有一个明确的运行时 Owner。
 
-```powershell
-..\3CAN-engine\scripts\init-project.ps1 -ProjectDir . -Port 9711 -StartServer
-python ..\3CAN-engine\scripts\verify_project.py --base-url http://127.0.0.1:9711 --min-nodes 10
+## 给现有项目接入 Agent
+
+最简单的接入顺序：
+
+1. 先按上面的命令启动并验证一个项目本地实例；
+2. 把 `examples/codex-cli-project-kit/` 复制到目标项目；
+3. 将 `.agents/project.template.json` 改名为 `.agents/project.json`，填写项目 ID、命名空间、名称和 Git 仓库；
+4. 将 `AGENTS.template.md` 改名为 `AGENTS.md`，并合并项目已有规则；
+5. 复制根目录 `3CAN.md` 到目标项目，编辑支持的工作偏好；
+6. 通过环境变量设置 `THREECAN_BASE_URL`，再运行项目 Kit 的 `doctor` 与只读 `route`；
+7. 只有需要治理写入时才使用 ticket/prepare/done，不要把每次普通读操作都变成仪式。
+
+`doctor` 必须报告 `project_identity.status=pass`，才能申请 mutation ticket。
+
+详见 [docs/PROJECT_KIT.md](./docs/PROJECT_KIT.md)。Claude Code 示例见 [CLAUDE_CODE_INTEGRATION.md](./docs/specs/3CAN_ENGINE/recipes/CLAUDE_CODE_INTEGRATION.md)。任何 HTTP 客户端也可以直接使用：
+
+```text
+GET  /api/stats
+POST /api/route
+GET  /api/nodes/{node_id}
+POST /api/activity/log
+GET  /api/token-usage/overview
 ```
 
-For Linux/macOS/Git Bash:
+## 新项目会得到什么
+
+发布包不携带任何维护者图谱。初始化时会生成一个通用、可重复运行的基础图谱，用于表达项目身份、环境、文档、接口、流程、决策、Session 和错误知识等基础类型。真实业务节点只来自你的项目扫描、明确导入或后续 writeback。
+
+每个项目应至少隔离：
+
+- `THREECAN_GRAPH_DIR`：图谱与运行时状态目录；
+- `THREECAN_PROJECT_DIR`：目标项目根目录；
+- `THREECAN_BASE_URL` / 端口；
+- `.agents/project.json`：不含本机路径和端口的耐久项目身份。
+
+不要把某个项目的 graph、SQLite、embedding cache、activity log 或本机日志复制成另一个用户的“默认数据”。
+
+## 隐私与发布包边界
+
+官方发布包由 Git 的精确提交构建，只包含已跟踪的公开仓库文件，不包含 `.git`、未跟踪文件或本机运行时数据。构建后会解包并再次执行严格扫描，拒绝：
+
+- `.env`、API Key、Token、Cookie、密码、恢复码和凭据文件；
+- 用户目录、维护者绝对路径、机器标识和私有项目重绑定信息；
+- 真实 graph 节点、embedding、SQLite/WAL、activity、Agent 状态和日志；
+- 私有 RPA、账号、业务数据、个人偏好和本机部署回执。
+
+维护者构建命令：
 
 ```bash
-../3CAN-engine/scripts/init-project.sh --project . --port 9711 --start-server
-python ../3CAN-engine/scripts/verify_project.py --base-url http://127.0.0.1:9711 --min-nodes 10
+python scripts/prerelease_scan.py --strict
+python scripts/build_release.py --version v0.2.0-rc.1 --output-dir dist
 ```
 
-The setup binds:
-
-- `THREECAN_ENGINE_ROOT`
-- `THREECAN_GRAPH_DIR`
-- `THREECAN_PROJECT_DIR`
-- `THREECAN_BASE_URL`
-- `THREECAN_MIN_NODES`
-
-New projects should usually start with `THREECAN_MIN_NODES=10`; a full dogfood
-graph may contain thousands of nodes, but a fresh graph should not be judged by
-that threshold.
-
-## Agent Integration
-
-Codex CLI:
-
-1. Copy `examples/codex-cli-project-kit/` into your project.
-2. Merge `.gitignore.template` into the target project's `.gitignore`; it
-   excludes local test and research receipts.
-3. Rename `AGENTS.template.md` to `AGENTS.md`.
-4. Copy this repository's root `3CAN.md` to the target project root and edit
-   only its supported flat front matter. It is the single Owner steering file;
-   do not create a policy directory or separate preferences file.
-5. Before any mutation, rename
-   `.agents/project.template.json` to `.agents/project.json`, fill the project
-   ID/namespace/name, and set `git_repository` to the normalized origin
-   (`github.com/owner/repository`). Do not put ports or runtime paths in this
-   durable project capsule. This is especially important for a shared 3CAN
-   authority or cross-worktree mutation.
-6. Run `python scripts/3can_codex.py doctor` and require
-   `project_identity.status=pass` before requesting a mutation ticket.
-7. Adjust the runtime port and graph path through environment configuration.
-8. If you use the wrapper workflow, bootstrap the session with
-   `scripts/codex-3can.cmd bootstrap ...`.
-
-The capsule is optional only for read-only routing. Mutation commands require it
-so the authority can bind the write to a repository and physical Git worktree,
-including when the runtime is a project-owned sidecar.
-
-`3CAN.md` is bound to the same `project_id` and `project_namespace`. The helper
-parses it once and reuses a stat-keyed in-process cache until the file changes.
-Normal requests carry only the seven effective defaults plus a digest—never the
-Markdown body or an absolute path. Explicit current Owner instructions may
-override a governable default for that task; evidence truth and hard safety do
-not become configurable. A shared-authority request is reported as
-`client_asserted`; only a file read by that server is `server_local_file`.
-Neither label is authentication or objective evidence.
-
-Route tickets are scoped evidence envelopes, and prepare/done wrappers are
-optional transport adapters. Project hooks, when explicitly enabled, remain a
-separate project policy surface. None is a universal concurrency mechanism, and
-the wrapper never directly launches or stops the engine.
-
-Claude Code:
-
-- See `examples/claude-code-hooks/`.
-- Hooks are examples, not mandatory runtime dependencies.
-- Treat any tool that can delete files, alter schemas, publish content, spend
-  API credits, or write real store data as an approval-gated action.
-
-Any HTTP-capable agent:
-
-- `GET /api/stats`
-- `POST /api/route`
-- `GET /api/nodes/{node_id}`
-- `POST /api/activity/log`
-- `GET /api/token-usage/overview`
-
-## Release Boundary
-
-The release package must not contain:
-
-- `.env` files or raw API keys
-- cookies, passwords, recovery codes, or secret JSON files
-- maintainer-local absolute paths
-- dogfood graph nodes, activity logs, token databases, embeddings, or agent
-  runtime state
-- project-specific RPA data or private business logs
-
-Run before publishing or copying to another project:
+输出包括 ZIP、SHA-256 文件和 JSON 构建回执。用户可校验：
 
 ```bash
 python scripts/prerelease_scan.py --strict
 ```
 
-## Honest Limitations
+注意：扫描只能证明已定义的公开包边界和高置信规则通过，不能数学上证明任何软件绝对没有隐私风险。发布前仍应人工审查变更与 Git 历史。
 
-- No auth layer. Keep it on `127.0.0.1` unless you add your own protection.
-- Not a replacement for careful engineering review.
-- Semantic route quality depends on graph quality, seed quality, and query
-  expansion quality.
-- Token dashboards combine actual runtime telemetry and local estimates; the
-  UI labels sources explicitly.
-- External third-party validation is still limited. Dogfood evidence is useful
-  but not a public benchmark.
+## 项目结构
 
-## Documentation Map
+```text
+neural-memory/backend/       FastAPI 服务、图引擎、路由、票据与 ErrorKnowledge
+neural-memory/frontend/      本地图谱与 Token 面板
+neural-memory/expansions/    中文与领域词扩展
+neural-memory/tests/         回归、并发、隔离、发布与安全测试
+examples/                    Codex / Claude Code 接入示例
+scripts/                     初始化、验证、隐私扫描与发布包构建
+docs/                        用户指南、项目 Kit、协议、边界与证据说明
+```
 
-- `docs/PROJECT_KIT.md`: project-sidecar setup and Codex kit usage
-- `docs/GITHUB_PR_HARNESS.md`: local GitHub PR fallback guard and hook behavior
-- `docs/CAPABILITY_MATRIX_20260508.md`: capability status and boundaries
-- `docs/RELEASE_READINESS_SCORECARD_20260508.md`: release readiness scoring
-- `docs/USER_GUIDE.md`: broader user guide
-- `docs/specs/3CAN_ENGINE/ARCHITECTURE.md`: architecture notes
-- `docs/specs/3CAN_ENGINE/SECURITY.md`: security posture
-- `docs/specs/3CAN_ENGINE/LIMITATIONS.md`: known limits
-- `docs/specs/3CAN_ENGINE/ATTRIBUTION.md`: attribution and inspirations
+## 证据与限制
 
-## Maintainer Note
+- CI 运行 Ruff、Python 语法检查、完整测试、严格发布扫描，以及 Ubuntu/Windows 的隔离 9701 clean-clone 验收。
+- 仓库包含合成 seed graph 的可复现候选评测；它不等于私有生产图、真实业务或跨机器性能保证。
+- 最小依赖使用 hashing embedding，适合安装验证；BGE-M3 / reranker 属于可选完整语义栈。
+- 当前主要面向单机 OPC、小团队和受控多 Agent 工作流；公网、多租户与企业级权限需要额外安全层。
+- 3CAN 能改善上下文检索与协作纪律，但图谱质量、节点适用性和 Agent 行为仍需要 Owner 与工程 Review。
 
-3CAN was built through heavy dogfood usage with AI coding agents. That is a
-strength for practical workflow discovery and a risk for consistency. The
-project welcomes hard review, failing tests, reproducible bug reports, and
-plain corrections to docs, contracts, and release hygiene.
+当前能力边界与证据状态见：
+
+- [CURRENT_3CAN_CAPABILITY_BASELINE.md](./docs/evidence/CURRENT_3CAN_CAPABILITY_BASELINE.md)
+- [RELEASE_VALIDATION_20260809.md](./docs/evidence/RELEASE_VALIDATION_20260809.md)
+- [STABILITY_TIERS.md](./docs/specs/3CAN_ENGINE/STABILITY_TIERS.md)
+- [ERROR_KNOWLEDGE_LIFECYCLE.md](./docs/ERROR_KNOWLEDGE_LIFECYCLE.md)
+
+## 文档导航
+
+| 你想做什么 | 从这里开始 |
+| --- | --- |
+| 第一次安装、理解术语 | [中文用户指南](./docs/USER_GUIDE.md) |
+| 给现有项目接入 Codex/Claude 等 Agent | [Project Kit](./docs/PROJECT_KIT.md) |
+| 查看 HTTP 请求示例 | [API Usage](./docs/specs/3CAN_ENGINE/API_USAGE.md) |
+| 理解项目隔离、并发和 writeback | [Contracts](./docs/specs/3CAN_ENGINE/CONTRACTS.md) |
+| 查看安全边界 | [SECURITY.md](./SECURITY.md) |
+| 卸载且保留数据 | [UNINSTALL.md](./UNINSTALL.md) |
+| 贡献代码 | [CONTRIBUTING.md](./CONTRIBUTING.md) |
+| 查看版本变化 | [CHANGELOG.md](./CHANGELOG.md) |
+
+## 维护者说明
+
+3CAN 来自长期、多项目、多 Agent 的真实 dogfood，也大量使用 AI Agent 协助开发。这带来了实际工作流经验，也意味着我们更需要可复现的 Bug、失败测试、边界质疑和独立 Review。欢迎提交 Issue 与 PR；请不要上传自己的图谱、凭据、账号数据或包含私有路径的回执。

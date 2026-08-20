@@ -843,7 +843,9 @@ def test_project_kit_writeback_overrides_file_identity_with_current_execution(
     assert captured["agent_id"] != "stale-agent"
 
 
-def test_project_kit_session_correlation_is_derived_without_local_state():
+def test_project_kit_session_correlation_is_derived_without_local_state(monkeypatch):
+    for name in ("THREECAN_SESSION_ID", "CODEX_SESSION_ID", "SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
     helper = load_project_kit_helper()
     session_id = helper._session_id_for_agent("codex-thread-one")
     assert helper._session_id_for_agent("codex-thread-one") == session_id

@@ -155,3 +155,25 @@ private terms do not belong in this public scanner's source.
 Strict mode also fails if runtime graph artifacts such as node JSON, SQLite
 ledgers, embeddings, activity logs, or agent state are present inside the
 release package.
+
+## Build the Public Release Archive
+
+Maintainers build from one clean, exact Git commit. The builder uses
+`git archive`, so `.git`, untracked files, local graph state, logs, credentials,
+and task-owned artifacts cannot enter through a broad filesystem copy. It then
+extracts the ZIP and runs the strict scanner again:
+
+```powershell
+python scripts\prerelease_scan.py --strict
+python scripts\build_release.py --version v0.2.0-rc.1 --output-dir dist
+```
+
+The output directory receives three files: the versioned ZIP, its SHA-256
+checksum, and a JSON receipt binding the source commit/tree, archive digest,
+file count, license, and extracted-package scan result. The command refuses a
+dirty worktree and refuses to overwrite an existing output.
+
+`RELEASE_PACKAGE_MANIFEST.json` is the minimum completeness contract, not a
+filesystem include glob. The archive contains all files tracked by the exact
+public commit; every new required entry point or user-facing document should
+also be added to the manifest so accidental omission fails CI.

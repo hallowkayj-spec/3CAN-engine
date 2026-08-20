@@ -6,7 +6,7 @@ Designed for OPC (One-Person Company) and small teams working on medium-sized pr
 
 ## Status
 
-**v0.2 release candidate — unreleased.** Built with heavy AI-agent assistance
+**v0.2.0 release candidate.** Built with heavy AI-agent assistance
 during authorship. The candidate adds deterministic ErrorCase promotion,
 bounded error retrieval, evidence-backed solution writeback, durable ticket
 receipts, ordinary-route suppression of legacy and canonical `ERR-*` records,
@@ -15,7 +15,9 @@ fields, and graph-bound benchmarks. Agent wrappers no longer launch or
 terminate runtime processes. Hard criticism, corrections, and PRs are warmly
 welcome.
 
-It is not deployed, tagged, or publicly released yet. See
+Published versions and checksums are listed on the GitHub
+[Releases](https://github.com/hallowkayj-spec/3CAN-engine/releases) page; do not
+infer a release from a branch or pull request alone. See
 [ERROR_KNOWLEDGE_LIFECYCLE.md](./docs/ERROR_KNOWLEDGE_LIFECYCLE.md) and the
 [changelog](./CHANGELOG.md) for the implemented and remaining gates.
 
@@ -81,6 +83,11 @@ hard boundaries. `3CAN.md` is not a policy engine or a second state database.
 
 ## Quickstart
 
+3CAN is a local service, not a dedicated management chat. Users do not need to
+keep one special Codex, Claude, or ChatGPT session open. Any HTTP- or
+MCP-capable client can connect to the same explicitly managed instance, while
+separate projects may use separate ports and graph directories.
+
 ```bash
 git clone https://github.com/hallowkayj-spec/3CAN-engine.git
 cd 3CAN-engine
@@ -98,6 +105,21 @@ python scripts/verify_project.py \
 
 Port 9711 is an explicit project-local development sidecar. Ordinary project
 clients do not start, stop, or recover a machine-owned production 9700.
+
+## Reproducible public package
+
+The official archive is built from one exact, clean Git commit. It contains
+tracked public files only, then gets extracted and scanned again without
+depending on `.git`:
+
+```bash
+python scripts/prerelease_scan.py --strict
+python scripts/build_release.py --version v0.2.0-rc.1 --output-dir dist
+```
+
+The command produces a ZIP, SHA-256 checksum, and JSON receipt. Runtime graphs,
+embedding caches, SQLite/WAL files, activity logs, credentials, maintainer-local
+paths, accounts, and personal preferences are excluded from the public package.
 
 The verifier performs liveness, deep stats/readiness, route, and token-health
 checks. Development readiness is accepted for a fresh local graph; use
