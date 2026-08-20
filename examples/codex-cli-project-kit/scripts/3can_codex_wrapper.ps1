@@ -4,6 +4,7 @@ param(
     [string]$Command,
 
     [string]$AgentId,
+    [string]$WorkorderId,
     [string]$Role = 'frontend',
     [string]$Task = 'codex session',
     [string]$TaskDescription,
@@ -40,6 +41,10 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8NoBom
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
+
+if (-not [string]::IsNullOrWhiteSpace($WorkorderId)) {
+    $env:THREECAN_WORKORDER_ID = $WorkorderId.Trim()
+}
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Helper = Join-Path $ProjectRoot 'scripts\3can_codex.py'

@@ -18,6 +18,7 @@ param(
     [string]$Action,
 
     [string]$AgentId,
+    [string]$WorkorderId,
     [string]$Role = 'frontend',
     [string]$Task = 'codex session',
     [string]$TaskDescription,
@@ -51,6 +52,10 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = $Utf8NoBom
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
+
+if (-not [string]::IsNullOrWhiteSpace($WorkorderId)) {
+    $env:THREECAN_WORKORDER_ID = $WorkorderId.Trim()
+}
 
 if (-not [string]::IsNullOrWhiteSpace($AgentId)) {
     $AgentId = $AgentId.Trim()
@@ -178,6 +183,7 @@ function Select-Codex3CanPrepareSummary {
     return [ordered]@{
         ticket_id = $PrepareResult.ticket.ticket_id
         ticket_state = $PrepareResult.ticket.state
+        workorder_id = $PrepareResult.ticket.workorder_id
         ttl_sec = $PrepareResult.ticket.ttl_sec
         consume_ok = $PrepareResult.consume.ok
         consume_count = $PrepareResult.consume.consume_count
