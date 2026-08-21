@@ -44,6 +44,20 @@
 
 完整条款见 [LICENSE](./LICENSE)、[中文授权说明](./LICENSING.md) 和 [English licensing note](./LICENSING.en.md)。
 
+## 📦 下载与分享
+
+- 项目主页：[github.com/hallowkayj-spec/3CAN-engine](https://github.com/hallowkayj-spec/3CAN-engine)
+- 最新体验版：[3CAN Engine v0.2.0-rc.1](https://github.com/hallowkayj-spec/3CAN-engine/releases/tag/v0.2.0-rc.1)
+- 直接下载：[3CAN-engine-v0.2.0-rc.1.zip](https://github.com/hallowkayj-spec/3CAN-engine/releases/download/v0.2.0-rc.1/3CAN-engine-v0.2.0-rc.1.zip)
+- 完整性校验：[SHA-256 文件](https://github.com/hallowkayj-spec/3CAN-engine/releases/download/v0.2.0-rc.1/3CAN-engine-v0.2.0-rc.1.zip.sha256)
+- 构建与隐私扫描证据：[发布回执](https://github.com/hallowkayj-spec/3CAN-engine/releases/download/v0.2.0-rc.1/3CAN-engine-v0.2.0-rc.1.receipt.json)
+
+可以直接把下面这段话发给朋友或粉丝：
+
+> 3CAN 是在真实产品交付中逐步生长出来的 Agent 项目现实与协作引擎。它帮助非技术 Owner 让 Codex、Claude 等 Coding Agents 更准确地理解项目、共享耐久知识、保存证据、复用错误经验并安全并行协作。项目介绍与下载：https://github.com/hallowkayj-spec/3CAN-engine 。当前为 RC 体验版，欢迎提交真实反馈。
+
+RC 代表候选体验版本，不等同于稳定版。分享、学习或二次修改前请同时阅读许可证；本项目采用 PolyForm Noncommercial License 1.0.0，商业使用需要另行取得许可。
+
 ## 🧠 3CAN 能做什么
 
 ### 🧭 项目现实与语义路由
