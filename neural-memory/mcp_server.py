@@ -2,16 +2,22 @@
 """3CAN MCP Server — 本地stdio传输, 零网络成本.
 
 让任何MCP客户端(Claude Code, Cursor, VS Code等)直接访问3CAN记忆引擎.
-通过HTTP proxy (localhost:9700) 转发, 不直连backend.
+通过配置的 3CAN HTTP endpoint 转发, 不直连backend.
 
 启动: python mcp_server.py
 Claude Code配置: settings.json → mcpServers → "3can": {"command":"python","args":["path/to/mcp_server.py"]}
 """
 
+import os
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-BASE = "http://localhost:9700"
+BASE = (
+    os.environ.get("THREECAN_URL")
+    or os.environ.get("THREECAN_BASE_URL")
+    or "http://127.0.0.1:9700"
+).rstrip("/")
 client = httpx.Client(timeout=15.0)
 
 mcp = FastMCP(

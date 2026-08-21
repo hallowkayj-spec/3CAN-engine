@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3CAN v0.1 developer-preview installer.
+# 3CAN v0.2 release-candidate installer.
 # Defaults to a minimal local sidecar install. It does not expose the service
 # beyond 127.0.0.1 and does not commit runtime graph files.
 
