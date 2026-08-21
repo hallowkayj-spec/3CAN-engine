@@ -42,10 +42,15 @@ TRIGGER_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "explicit_research_or_web",
         re.compile(
-            r"(联网|调研|研究|搜索|检索|查一下|看一下有没有|资料来源|source|citation|"
-            r"research|web\s*search|browse|look\s*up|verify)",
+            r"(联网(?:调研|搜索|查询|查找)?|网上(?:查|搜索)|外部(?:调研|证据)|"
+            r"调研|资料来源|引用来源|citation|research|web\s*search|"
+            r"browse(?:\s+the\s+web)?|look\s*up(?:\s+online)?)",
             re.I,
         ),
+    ),
+    (
+        "explicit_deep_research",
+        re.compile(r"(深度(?:调研|研究)|深入(?:调研|研究)|deep\s+research)", re.I),
     ),
     (
         "complex_or_multi_constraint",
@@ -58,8 +63,9 @@ TRIGGER_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "failure_escalation",
         re.compile(
-            r"(反复|连续|多次|第[三四五六七八九十0-9]+次|失败|卡住|试错|还是不行|"
-            r"10来次|loop|retry|again|stuck|flaky)",
+            r"(反复|连续|多次|第[三四五六七八九十0-9]+次|屡次|重复失败|"
+            r"还是不行|10来次|repeated(?:ly)?|again\s+and\s+again|"
+            r"still\s+fail(?:ing|s)?|flaky)",
             re.I,
         ),
     ),
@@ -67,13 +73,16 @@ TRIGGER_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         "rpa_or_platform_intel",
         re.compile(
             r"(RPA|短视频|博主|直播|评论区|转评赞|点赞|转发|收藏|抖音|小红书|B站|TikTok|"
-            r"YouTube|切帧|关键帧|语音转录|字幕|ASR|OCR|爬取|抓取)",
+            r"YouTube|爬取|抓取)",
             re.I,
         ),
     ),
     (
         "keyword_planning",
-        re.compile(r"(关键词|搜索词|query|语义变体|演化|权重|同义词|黑话|术语|运营)", re.I),
+        re.compile(
+            r"(关键词(?:规划|研究|扩展)?|搜索词|语义变体|同义词扩展|术语规划|黑话研究)",
+            re.I,
+        ),
     ),
     (
         "current_or_time_sensitive",
@@ -99,6 +108,12 @@ TRIGGER_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.I,
         ),
     ),
+)
+
+MATERIAL_CURRENT_RESEARCH = re.compile(
+    r"(最新|最近|today|yesterday|tomorrow|latest|recent|价格|定价|政策|法规|合规|"
+    r"schedule|changelog|pricing|law|regulation)",
+    re.I,
 )
 
 EVIDENCE_DIMENSIONS = (
@@ -204,36 +219,50 @@ TIME_BUDGETS: dict[str, dict[str, Any]] = {
         "decision_check_minutes": 6,
         "target_minutes": 8,
         "hard_cap_minutes": 10,
-        "min_sources": 30,
-        "min_source_families": 5,
-        "min_query_variants": 6,
-        "max_query_variants": 14,
+        "min_sources": 5,
+        "min_source_families": 3,
+        "min_query_variants": 3,
+        "max_query_variants": 8,
         "sidecar_required": True,
     },
     "deep": {
         "decision_check_minutes": 15,
         "target_minutes": 25,
         "hard_cap_minutes": 30,
-        "min_sources": 90,
-        "min_source_families": 6,
-        "min_query_variants": 18,
-        "max_query_variants": 30,
+        "min_sources": 12,
+        "min_source_families": 4,
+        "min_query_variants": 6,
+        "max_query_variants": 16,
         "sidecar_required": True,
         "approval_note": "Real platform login, paid API, bulk scraping, or private data requires approval.",
     },
 }
 
 MUTATING_COMMAND = re.compile(
-    r"(\bapply_patch\b|\bgit\s+(commit|push|tag)\b|\bnpm\s+install\b|\bpip\s+install\b|"
+    r"(\bapply_patch\b|\bgit\s+(add|branch|checkout|cherry-pick|clean|commit|merge|push|rebase|"
+    r"reset|restore|revert|switch|tag)\b|\bnpm\s+install\b|\bpip\s+install\b|"
     r"\buv\s+add\b|\bpoetry\s+add\b|\bsed\s+-i\b|\btee\b.*>|>\s*[\w./-]+|"
-    r"\bmkdir\b|\btouch\b|\bmv\b|\bcp\b|\brm\b|\bchmod\b)",
+    r"\bmkdir\b|\btouch\b|\bmv\b|\bcp\b|\brm\b|\bchmod\b|\bdel\b|\berase\b|"
+    r"\brd\b|\brmdir\b|\bmd\b|\bren\b|"
+    r"\b(?:Set|Add|Clear)-Content\b|\bOut-File\b|\b(?:Remove|Move|Copy|New|Rename)-Item\b)",
     re.I,
 )
 
-READ_ONLY_COMMAND = re.compile(
-    r"^\s*(sed\s+-n|rg\b|cat\b|head\b|tail\b|nl\b|wc\b|python3?\s+-m\s+py_compile|"
-    r"python3?\s+-m\s+pytest|pytest\b|git\s+(status|diff|show|log)\b)",
+READ_ONLY_MCP_TOOL = re.compile(
+    r"^(?:mcp__)?(?:[a-z0-9_]+__)*(?:get|list|read|search|find|query|open|view|status|health|stats|screenshot)"
+    r"(?:_[a-z0-9]+)*$",
     re.I,
+)
+
+MUTATING_MCP_TOOL = re.compile(
+    r"(?:^|_)(?:create|write|update|delete|remove|purge|set|send|submit|post|publish|merge|apply|"
+    r"edit|modify|patch|execute|run|trigger|dispatch|start|stop|restart|install|upload|move|copy|"
+    r"rename|archive|unarchive)(?:_|$)",
+    re.I,
+)
+
+TERMINAL_RESEARCH_STATUSES = frozenset(
+    {"research_done", "research_partial", "research_unavailable"}
 )
 
 
@@ -982,7 +1011,11 @@ def _artifact_proves_opened_source(artifact: dict[str, Any]) -> bool:
 
 
 def _classify_research_tier(hit_rules: set[str]) -> str:
-    if hit_rules & {"rpa_or_platform_intel", "failure_escalation"}:
+    if hit_rules & {
+        "explicit_deep_research",
+        "rpa_or_platform_intel",
+        "failure_escalation",
+    }:
         return "deep"
     if "technical_selection" in hit_rules and hit_rules & {
         "complex_or_multi_constraint",
@@ -1109,7 +1142,7 @@ def build_query_plan(question: str, *, tier: str = "", focus_terms: list[str] | 
 
 
 def detect_research_requirement(prompt: str) -> dict[str, Any]:
-    """Detect whether a prompt needs a mandatory deep-research pass."""
+    """Detect whether external research is material to the requested decision."""
     text = prompt or ""
     hits: list[dict[str, str]] = []
     for name, pattern in TRIGGER_RULES:
@@ -1117,18 +1150,31 @@ def detect_research_requirement(prompt: str) -> dict[str, Any]:
             hits.append({"rule": name})
 
     hit_rules = {hit["rule"] for hit in hits}
+    explicit_hit = bool(
+        hit_rules & {"explicit_research_or_web", "explicit_deep_research"}
+    )
     provider_hit = "provider_api_model_change" in hit_rules
+    technical_hit = "technical_selection" in hit_rules
+    current_hit = "current_or_time_sensitive" in hit_rules
+    failure_hit = "failure_escalation" in hit_rules
+    rpa_hit = "rpa_or_platform_intel" in hit_rules
+    keyword_hit = "keyword_planning" in hit_rules
+    rpa_research = rpa_hit and bool(
+        explicit_hit or technical_hit or current_hit or failure_hit
+    )
+    current_research = bool(
+        current_hit
+        and MATERIAL_CURRENT_RESEARCH.search(text)
+        and (provider_hit or technical_hit)
+    )
     requires = bool(
-        hit_rules
-        & {
-            "explicit_research_or_web",
-            "current_or_time_sensitive",
-            "technical_selection",
-            "failure_escalation",
-            "rpa_or_platform_intel",
-            "keyword_planning",
-        }
-    ) or (provider_hit and len(hits) >= 2)
+        explicit_hit
+        or technical_hit
+        or failure_hit
+        or keyword_hit
+        or rpa_research
+        or current_research
+    )
     tier = _classify_research_tier(hit_rules) if requires else "none"
     time_budget = TIME_BUDGETS.get(tier, {})
     min_sources = int(time_budget.get("min_sources") or 0)
@@ -1147,8 +1193,8 @@ def detect_research_requirement(prompt: str) -> dict[str, Any]:
         "evidence_dimensions": list(EVIDENCE_DIMENSIONS) if requires else [],
         "sidecar_judges": ["evidence_sufficiency", "task_fit"] if time_budget.get("sidecar_required") else [],
         "reason": (
-            "Task is time-sensitive, research-oriented, or provider/API/model related; "
-            "use the repo skill and record a source ledger before mutating work or final conclusions."
+            "External evidence is explicit or material to a current decision; use the repo skill "
+            "and record a source ledger before research-dependent mutation or final conclusions."
             if requires
             else "No mandatory research trigger detected."
         ),
@@ -1171,12 +1217,25 @@ def _save_requirement(
     prompt: str,
     requirement: dict[str, Any],
 ) -> dict[str, Any]:
+    if not session_id or not turn_id:
+        raise ValueError("research_turn_identity_required")
     state = _load_state(state_file)
     key = _state_key(session_id, turn_id)
+    requirement_id = _hash_text(prompt)
+    existing = state["turns"].get(key)
+    if isinstance(existing, dict):
+        if str(existing.get("requirement_id") or existing.get("prompt_hash") or "") != requirement_id:
+            raise ValueError("research_turn_identity_conflict")
+        if str(existing.get("research_tier") or "") != str(
+            requirement.get("research_tier") or ""
+        ):
+            raise ValueError("research_turn_tier_conflict")
+        return existing
     state["turns"][key] = {
         "session_id": session_id,
         "turn_id": turn_id,
-        "prompt_hash": _hash_text(prompt),
+        "prompt_hash": requirement_id,
+        "requirement_id": requirement_id,
         "requires_research": bool(requirement.get("requires_research")),
         "status": "needs_research" if requirement.get("requires_research") else "pass",
         "trigger_rules": requirement.get("trigger_rules", []),
@@ -1193,21 +1252,47 @@ def _save_requirement(
     return state["turns"][key]
 
 
-def _mark_done(
+def _validate_completion_binding(
+    *,
+    state_file: Path,
+    session_id: str,
+    turn_id: str,
+    requirement_id: str,
+    research_tier: str,
+) -> dict[str, Any] | None:
+    if not session_id or not turn_id:
+        return None
+    state = _load_state(state_file)
+    item = state.get("turns", {}).get(_state_key(session_id, turn_id))
+    if not isinstance(item, dict):
+        return None
+    if not requirement_id or requirement_id != str(item.get("requirement_id") or ""):
+        raise ValueError("research_requirement_binding_mismatch")
+    if research_tier != str(item.get("research_tier") or ""):
+        raise ValueError("research_tier_binding_mismatch")
+    return item
+
+
+def _mark_terminal(
     *,
     state_file: Path,
     session_id: str,
     turn_id: str,
     ledger_path: Path,
-) -> None:
+    status: str,
+) -> bool:
+    if status not in TERMINAL_RESEARCH_STATUSES:
+        raise ValueError("research_terminal_status_invalid")
     state = _load_state(state_file)
     key = _state_key(session_id, turn_id)
-    item = state["turns"].setdefault(key, {"session_id": session_id, "turn_id": turn_id})
-    item["requires_research"] = True
-    item["status"] = "research_done"
+    item = state.get("turns", {}).get(key)
+    if not isinstance(item, dict):
+        return False
+    item["status"] = status
     item["ledger_path"] = str(ledger_path)
     item["updated_at"] = _now()
     _safe_write_json(state_file, state)
+    return True
 
 
 def _count_by(items: list[dict[str, Any]], key: str) -> dict[str, int]:
@@ -1238,7 +1323,17 @@ def _load_json_files(directory: Path, *, max_recent: int = 5) -> tuple[list[dict
 def _summarize_hook_state(state_file: Path, *, max_recent: int = 5) -> dict[str, Any]:
     state = _load_state(state_file)
     turns = [item for item in state.get("turns", {}).values() if isinstance(item, dict)]
-    unresolved = [item for item in turns if item.get("requires_research") and item.get("status") != "research_done"]
+    unresolved = [
+        item
+        for item in turns
+        if item.get("requires_research")
+        and item.get("status") not in TERMINAL_RESEARCH_STATUSES
+    ]
+    incomplete_terminal = [
+        item
+        for item in turns
+        if item.get("status") in {"research_partial", "research_unavailable"}
+    ]
     recent = sorted(turns, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)[
         :max_recent
     ]
@@ -1247,6 +1342,7 @@ def _summarize_hook_state(state_file: Path, *, max_recent: int = 5) -> dict[str,
         "exists": state_file.exists(),
         "turn_count": len(turns),
         "unresolved_count": len(unresolved),
+        "incomplete_terminal_count": len(incomplete_terminal),
         "status_counts": _count_by(turns, "status"),
         "recent_turns": [
             {
@@ -1363,6 +1459,8 @@ def build_status_report(
     warnings = [*hook_config["warnings"]]
     if hook_state["unresolved_count"]:
         warnings.append("unresolved_research_turns")
+    if hook_state["incomplete_terminal_count"]:
+        warnings.append("incomplete_terminal_research_turns")
     return {
         "ok": True,
         "status": "warn" if warnings else "ready",
@@ -1405,11 +1503,26 @@ def build_status_report(
     }
 
 
-def _turn_requires_unresolved(state_file: Path, session_id: str, turn_id: str) -> dict[str, Any]:
+def _turn_research_gate(state_file: Path, session_id: str, turn_id: str) -> dict[str, Any]:
+    if not session_id or not turn_id:
+        return {
+            "turn": {},
+            "status": "",
+            "mutation_blocked": False,
+            "stop_blocked": False,
+            "terminal_incomplete": False,
+        }
     state = _load_state(state_file)
     item = state.get("turns", {}).get(_state_key(session_id, turn_id), {})
-    unresolved = bool(item.get("requires_research")) and item.get("status") != "research_done"
-    return {"unresolved": unresolved, "turn": item}
+    required = bool(item.get("requires_research"))
+    status = str(item.get("status") or "")
+    return {
+        "turn": item,
+        "status": status,
+        "mutation_blocked": required and status != "research_done",
+        "stop_blocked": required and status not in TERMINAL_RESEARCH_STATUSES,
+        "terminal_incomplete": status in {"research_partial", "research_unavailable"},
+    }
 
 
 def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, Any]]:
@@ -1422,18 +1535,41 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
         requirement = detect_research_requirement(prompt)
         if not requirement["requires_research"]:
             return 0, {"continue": True}
-        _save_requirement(
-            state_file=state_file,
-            session_id=session_id,
-            turn_id=turn_id,
-            prompt=prompt,
-            requirement=requirement,
-        )
+        if not session_id or not turn_id:
+            return 0, {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": (
+                        "External research is required, but the hook did not receive a stable session_id and "
+                        "turn_id. Automatic mutation/Stop gating is unavailable for this turn. Invoke "
+                        "$3can-deep-research explicitly and report completion as PASS, PARTIAL, or UNAVAILABLE."
+                    ),
+                }
+            }
+        try:
+            saved = _save_requirement(
+                state_file=state_file,
+                session_id=session_id,
+                turn_id=turn_id,
+                prompt=prompt,
+                requirement=requirement,
+            )
+        except ValueError as exc:
+            return 2, {"decision": "block", "reason": str(exc)}
+        saved_status = str(saved.get("status") or "")
+        if saved_status in TERMINAL_RESEARCH_STATUSES:
+            return 0, {
+                "systemMessage": (
+                    f"Research for this bound turn is already terminal: {saved_status}. "
+                    "The same prompt does not reopen or overwrite it."
+                )
+            }
         tier = requirement.get("research_tier", "standard")
         command = (
             "scripts/3can_research_harness.py done "
-            f"--session-id {session_id or 'unknown-session'} "
-            f"--turn-id {turn_id or 'unknown-turn'} "
+            f"--session-id {session_id} "
+            f"--turn-id {turn_id} "
+            f"--requirement-id {saved['requirement_id']} "
             f"--research-tier {tier} "
             "--elapsed-minutes <active-research-minutes> "
             "--question \"<research question>\" "
@@ -1461,8 +1597,8 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
         }
 
     if event == "PreToolUse":
-        unresolved = _turn_requires_unresolved(state_file, session_id, turn_id)
-        if not unresolved["unresolved"]:
+        gate = _turn_research_gate(state_file, session_id, turn_id)
+        if not gate["mutation_blocked"]:
             return 0, {"continue": True}
         tool_name = str(data.get("tool_name") or "")
         tool_input = data.get("tool_input") or {}
@@ -1471,29 +1607,50 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
             command = str(tool_input.get("command") or tool_input)
         else:
             command = str(tool_input)
-        mutating = tool_name in {"apply_patch", "Edit", "Write"} or (
-            tool_name == "Bash" and MUTATING_COMMAND.search(command) and not READ_ONLY_COMMAND.search(command)
-        )
+        mutating = tool_name in {"apply_patch", "Edit", "Write"}
+        if tool_name in {"Bash", "PowerShell", "exec_command"}:
+            mutating = bool(MUTATING_COMMAND.search(command))
+        elif tool_name.startswith("mcp__"):
+            mutating = bool(
+                MUTATING_MCP_TOOL.search(tool_name)
+                or not READ_ONLY_MCP_TOOL.fullmatch(tool_name)
+            )
         if not mutating:
             return 0, {
-                "systemMessage": "3CAN deep research is pending; read-only exploration is allowed."
+                "systemMessage": "3CAN research has not passed; read-only exploration is allowed."
+            }
+        if gate["terminal_incomplete"]:
+            return 2, {
+                "decision": "block",
+                "reason": (
+                    f"Research ended as {gate['status']} at the hard cap. Report the typed incomplete "
+                    "result or obtain direction before research-dependent mutation."
+                ),
             }
         return 2, {
             "decision": "block",
             "reason": (
                 "3CAN deep research ledger is required before mutating tools for this turn. "
-                f"Tier={unresolved['turn'].get('research_tier', 'unknown')}. "
+                f"Tier={gate['turn'].get('research_tier', 'unknown')}. "
                 "Use $3can-deep-research and run scripts/3can_research_harness.py done with sources."
             ),
         }
 
     if event == "Stop":
-        unresolved = _turn_requires_unresolved(state_file, session_id, turn_id)
-        if unresolved["unresolved"]:
+        gate = _turn_research_gate(state_file, session_id, turn_id)
+        if gate["stop_blocked"]:
             return 2, {
                 "decision": "block",
                 "reason": (
                     "Complete the mandatory 3CAN deep research source ledger and cite sources before final answer."
+                ),
+            }
+        if gate["terminal_incomplete"]:
+            return 0, {
+                "continue": True,
+                "systemMessage": (
+                    f"Research is terminal as {gate['status']}. Finalize with the matching typed "
+                    "PARTIAL or UNAVAILABLE status and list the missing evidence; do not claim PASS."
                 ),
             }
         return 0, {"continue": True}
@@ -1634,6 +1791,11 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     risks: list[str] = []
     tier = _normalize_research_tier(str(ledger.get("research_tier") or "standard"))
     budget = TIME_BUDGETS[tier]
+    ledger_status = str(ledger.get("status") or "").strip().casefold()
+    typed_terminal_status = {
+        "partial": "PARTIAL",
+        "unavailable": "UNAVAILABLE",
+    }.get(ledger_status)
     source_count = int(ledger.get("source_count") or 0)
     verified_external_source_count = int(
         ledger.get("verified_external_source_count") or 0
@@ -1659,11 +1821,16 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     contradiction_status = str(ledger.get("contradiction_status") or "")
     platform_relevant = bool(ledger.get("platform_relevant"))
     elapsed_minutes = ledger.get("elapsed_minutes")
+    hard_cap_reached = isinstance(elapsed_minutes, (int, float)) and float(
+        elapsed_minutes
+    ) >= float(budget["hard_cap_minutes"])
     score = score_evidence(ledger.get("evidence_scores", {}) if isinstance(ledger.get("evidence_scores"), dict) else {})
     sidecar = ledger.get("sidecar_judgement", {}) if isinstance(ledger.get("sidecar_judgement"), dict) else {}
 
-    if ledger.get("status") != "pass":
+    if ledger_status not in {"pass", "partial", "unavailable"}:
         risks.append("ledger_status_not_pass")
+    if typed_terminal_status and not hard_cap_reached:
+        risks.append("terminal_status_before_hard_cap")
     if not isinstance(elapsed_minutes, (int, float)) or float(elapsed_minutes) <= 0:
         risks.append("missing_elapsed_time")
     elif float(elapsed_minutes) > float(budget["hard_cap_minutes"]):
@@ -1706,7 +1873,9 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         if sidecar.get("task_fit") not in {"pass", "fit"}:
             risks.append("sidecar_task_fit_not_pass")
 
-    if not risks:
+    if typed_terminal_status and hard_cap_reached:
+        decision = typed_terminal_status
+    elif not risks:
         decision = "ready_for_decision"
     elif (
         "ledger_status_not_pass" in risks
@@ -1720,6 +1889,7 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "ok": decision == "ready_for_decision",
+        "terminal": decision in {"PARTIAL", "UNAVAILABLE"},
         "decision": decision,
         "research_tier": tier,
         "source_count": source_count,
@@ -1735,10 +1905,13 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         },
         "evidence_score": score,
         "risks": risks,
-        "next_action": (
-            "Proceed to engineering decision/writeback."
-            if decision == "ready_for_decision"
-            else "Continue targeted research or record sidecar judgement before mutating work."
+        "next_action": {
+            "ready_for_decision": "Proceed to engineering decision/writeback.",
+            "PARTIAL": "Return a typed PARTIAL result with the missing evidence and keep mutation blocked.",
+            "UNAVAILABLE": "Return a typed UNAVAILABLE result with the missing evidence and keep mutation blocked.",
+        }.get(
+            decision,
+            "Continue targeted research or record sidecar judgement before mutating work.",
         ),
     }
 
@@ -1751,6 +1924,7 @@ def record_done(
     turn_id: str,
     state_file: Path,
     ledger_dir: Path,
+    requirement_id: str = "",
     notes: str = "",
     min_sources: int = DEFAULT_MIN_SOURCES,
     research_tier: str = "standard",
@@ -1775,6 +1949,28 @@ def record_done(
     invalid = [url for url in urls if not re.match(r"^https?://", url, re.I)]
     unique_urls = list(dict.fromkeys(urls))
     selected_tier = _normalize_research_tier(research_tier)
+    bound_turn = _validate_completion_binding(
+        state_file=state_file,
+        session_id=session_id,
+        turn_id=turn_id,
+        requirement_id=requirement_id,
+        research_tier=selected_tier,
+    )
+    if bound_turn and bound_turn.get("status") in TERMINAL_RESEARCH_STATUSES:
+        existing_ledger_path = Path(str(bound_turn.get("ledger_path") or ""))
+        existing_ledger = _safe_load_json(existing_ledger_path, {})
+        if not isinstance(existing_ledger, dict) or not existing_ledger:
+            raise ValueError("research_terminal_ledger_unavailable")
+        existing_ledger.update(
+            {
+                "ledger_path": str(existing_ledger_path),
+                "ok": bound_turn.get("status") == "research_done",
+                "recorded": True,
+                "terminal": True,
+                "idempotent_replay": True,
+            }
+        )
+        return existing_ledger
     required_min_sources = max(int(min_sources), int(TIME_BUDGETS[selected_tier]["min_sources"]))
     source_records = _build_source_records(unique_urls, [*artifact_source_types, *(source_types or [])])
     artifact_by_url = {item["url"]: item for item in source_artifacts if item.get("url")}
@@ -1823,6 +2019,7 @@ def record_done(
         "source_strategy": SOURCE_STRATEGIES[selected_tier],
         "session_id": session_id,
         "turn_id": turn_id,
+        "requirement_id": requirement_id,
         "source_urls": unique_urls,
         "source_records": source_records,
         "source_artifacts": source_artifacts,
@@ -1864,23 +2061,47 @@ def record_done(
         "created_at": _now(),
         "required_writeback": "DOC/DEC/ERR/INTF when the conclusion is durable or changes engineering direction.",
     }
-    ledger["sidecar_decision"] = judge_ledger(ledger)
-    status = "pass" if structural_status == "pass" and ledger["sidecar_decision"]["ok"] else "block"
+    initial_decision = judge_ledger(ledger)
+    hard_cap_reached = float(elapsed_minutes) >= float(
+        TIME_BUDGETS[selected_tier]["hard_cap_minutes"]
+    )
+    if structural_status == "pass" and initial_decision["ok"]:
+        status = "pass"
+    elif hard_cap_reached:
+        status = "PARTIAL" if verified_external_source_count else "UNAVAILABLE"
+    else:
+        status = "block"
     ledger["status"] = status
+    ledger["sidecar_decision"] = judge_ledger(ledger)
     name = f"{_now().replace(':', '').replace('-', '')}_{_hash_text(question + session_id + turn_id)}.json"
     ledger_dir.mkdir(parents=True, exist_ok=True)
     ledger_path = ledger_dir / name
     _safe_write_json(ledger_path, ledger)
     ledger["ledger_path"] = str(ledger_path)
 
-    if status == "pass":
-        _mark_done(
+    terminal_state = {
+        "pass": "research_done",
+        "PARTIAL": "research_partial",
+        "UNAVAILABLE": "research_unavailable",
+    }.get(status)
+    if terminal_state and bound_turn:
+        _mark_terminal(
             state_file=state_file,
             session_id=session_id,
             turn_id=turn_id,
             ledger_path=ledger_path,
+            status=terminal_state,
         )
+    ledger["recorded"] = True
+    ledger["terminal"] = terminal_state is not None
+    if status == "pass":
         ledger["ok"] = True
+    elif status in {"PARTIAL", "UNAVAILABLE"}:
+        ledger["ok"] = False
+        ledger["reason"] = (
+            f"Research reached the hard cap as {status}: "
+            f"{', '.join(ledger['sidecar_decision']['risks']) or 'evidence remains incomplete'}."
+        )
     else:
         ledger["ok"] = False
         ledger["reason"] = (
@@ -1965,6 +2186,11 @@ def build_parser() -> argparse.ArgumentParser:
     done.add_argument("--source-artifact", action="append", default=[], help="Path to collect-url source artifact JSON.")
     done.add_argument("--session-id", default="manual")
     done.add_argument("--turn-id", default="manual")
+    done.add_argument(
+        "--requirement-id",
+        default="",
+        help="Requirement hash emitted by UserPromptSubmit for a hook-bound turn.",
+    )
     done.add_argument("--ledger-dir", default=str(DEFAULT_LEDGER_DIR))
     done.add_argument("--notes", default="")
     done.add_argument("--min-sources", type=int, default=DEFAULT_MIN_SOURCES)
@@ -2101,32 +2327,37 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             _print_json({"ok": False, "status": "block", "error": str(exc)})
             return 2
-        result = record_done(
-            question=args.question,
-            source_urls=args.source_url,
-            session_id=args.session_id,
-            turn_id=args.turn_id,
-            state_file=state_file,
-            ledger_dir=Path(args.ledger_dir),
-            notes=args.notes,
-            min_sources=args.min_sources,
-            research_tier=args.research_tier,
-            source_types=args.source_type,
-            query_terms=args.query_term,
-            query_variants=args.query_variant,
-            evidence_scores=evidence_scores,
-            sidecar_evidence_sufficiency=args.sidecar_evidence_sufficiency,
-            sidecar_task_fit=args.sidecar_task_fit,
-            rpa_metadata=rpa_metadata,
-            source_artifact_files=args.source_artifact,
-            context_status=args.context_status,
-            context_refs=args.context_ref,
-            contradiction_status=args.contradiction_status,
-            platform_relevant=args.platform_relevant,
-            elapsed_minutes=args.elapsed_minutes,
-        )
+        try:
+            result = record_done(
+                question=args.question,
+                source_urls=args.source_url,
+                session_id=args.session_id,
+                turn_id=args.turn_id,
+                requirement_id=args.requirement_id,
+                state_file=state_file,
+                ledger_dir=Path(args.ledger_dir),
+                notes=args.notes,
+                min_sources=args.min_sources,
+                research_tier=args.research_tier,
+                source_types=args.source_type,
+                query_terms=args.query_term,
+                query_variants=args.query_variant,
+                evidence_scores=evidence_scores,
+                sidecar_evidence_sufficiency=args.sidecar_evidence_sufficiency,
+                sidecar_task_fit=args.sidecar_task_fit,
+                rpa_metadata=rpa_metadata,
+                source_artifact_files=args.source_artifact,
+                context_status=args.context_status,
+                context_refs=args.context_ref,
+                contradiction_status=args.contradiction_status,
+                platform_relevant=args.platform_relevant,
+                elapsed_minutes=args.elapsed_minutes,
+            )
+        except ValueError as exc:
+            _print_json({"ok": False, "status": "block", "error": str(exc)})
+            return 2
         _print_json(result)
-        return 0 if result["ok"] else 2
+        return 0 if result.get("terminal") else 2
 
     if args.command == "judge":
         ledger = _safe_load_json(Path(args.ledger_file), {})

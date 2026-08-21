@@ -13,7 +13,7 @@ Use this reference only when recording or auditing a 3CAN research run.
 
 - `question`: exact question and decision supported.
 - `research_tier`: `standard` or `deep`; legacy `quick` and `rpa_deep` normalize to these two values.
-- `elapsed_minutes`: active research time, greater than zero and no higher than the tier hard cap.
+- `elapsed_minutes`: active research time. A passing ledger is no higher than the tier hard cap; an incomplete run becomes typed terminal at or after the cap.
 - `source_urls` / `source_records`: opened sources and their types.
 - `source_count`: unique valid source count.
 - `query_plan.query_variants`: materially different queries used.
@@ -22,12 +22,13 @@ Use this reference only when recording or auditing a 3CAN research run.
 - `evidence_scores`: bounded `0..5` authority, recency, practice value, reproducibility, relevance, community signal, risk, and conflict evidence.
 - `sidecar_judgement`: evidence sufficiency and task fit.
 - `session_id` and `turn_id`: current correlation identifiers when available.
+- `requirement_id`: required for a hook-bound turn and must match the prompt hash emitted by `UserPromptSubmit`; standalone manual ledgers may omit it.
 
 ## Tier gates
 
-`standard` has a 10-minute hard cap and requires at least 30 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, five source families, six query variants, a primary/boundary source, implementation or practice evidence, context status, contradiction review, evidence scores, and sidecar pass.
+`standard` has a 10-minute hard cap and requires at least five opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, three source families, three query variants, a primary/boundary source, implementation or practice evidence, context status, contradiction review, evidence scores, and sidecar pass.
 
-`deep` has a 30-minute hard cap and requires at least 90 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, all six external source families, 18 query variants, primary/boundary evidence, paper/standard or benchmark evidence, GitHub or Hugging Face implementation evidence, community evidence, context status, contradiction review, evidence scores, and sidecar pass. Platform/RPA topics additionally require a public platform signal or approved RPA artifact.
+`deep` has a 30-minute hard cap and requires at least 12 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, four external source families, six query variants, primary/boundary evidence, paper/standard or benchmark evidence, GitHub or Hugging Face implementation evidence, community evidence, context status, contradiction review, evidence scores, and sidecar pass. Platform/RPA topics additionally require a public platform signal or approved RPA artifact.
 
 Source families are:
 
@@ -39,7 +40,7 @@ Source families are:
 - web: other targeted current sources;
 - internal: applicable 3CAN context, counted only when recorded as `used`.
 
-Source count alone never completes a run. The harness also checks family coverage, queries, contradictions, elapsed time, context status, evidence quality, and sidecar judgement. If any required gate is missing, status remains `block`; at the hard cap report `PARTIAL` or `UNAVAILABLE` with the missing gate.
+Source count alone never completes a run. The harness also checks family coverage, queries, contradictions, elapsed time, context status, evidence quality, and sidecar judgement. Before the hard cap, a missing gate remains `block`. At the hard cap, the harness records terminal `PARTIAL` when at least one external source was verified or `UNAVAILABLE` when none was verified. Stop may then return the matching typed result, but mutation stays blocked unless status is `pass`.
 
 ## Safe collection
 

@@ -14,6 +14,8 @@ Use this skill when current external evidence can materially improve an engineer
 
 Legacy `quick` maps to `standard`; legacy `rpa_deep` maps to `deep`. Do not create additional tiers.
 
+Invoke the skill explicitly when the user asks for web/external research. The automatic hook also requires it for material technical selection, keyword research, repeated failure, or platform/RPA intelligence with an external-evidence signal. Ordinary local development words such as API, SDK, model, query, release, current, optimization, or one failure do not trigger research by themselves. Use `failure-signal`; the third matching deterministic failure escalates to `deep`.
+
 Before searching, state the question, decision to be made, freshness requirement, known constraints, and—when debugging—the exact failure signature. If an applicable 3CAN runtime is available, route/retrieve current project context first and record the node or evidence references. If it is unavailable, record `unavailable` and continue safe web and local research; never invent context.
 
 Plan the search:
@@ -27,11 +29,11 @@ scripts/3can_research_harness.py plan \
 
 ## Completion gates
 
-`standard` requires at least 30 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, across at least five source families, six materially different queries, a primary/boundary source, implementation or practice evidence, a contradiction check, evidence scores, recorded 3CAN-context status, and sidecar evidence/task-fit judgement.
+`standard` requires at least five opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, across at least three source families and three materially different queries, a primary/boundary source, implementation or practice evidence, a contradiction check, evidence scores, recorded 3CAN-context status, and sidecar evidence/task-fit judgement.
 
-`deep` requires at least 90 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, across all six external source families and 18 materially different queries. It must include primary/boundary evidence, a paper/standard or benchmark, GitHub or Hugging Face implementation evidence, community evidence such as Reddit or a professional forum, contradiction/counterexample evidence, recorded 3CAN-context status, and sidecar judgement. RPA, creator, video, or platform questions also require public platform or approved RPA evidence.
+`deep` requires at least 12 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, across at least four external source families and six materially different queries. It must include primary/boundary evidence, a paper/standard or benchmark, GitHub or Hugging Face implementation evidence, community evidence such as Reddit or a professional forum, contradiction/counterexample evidence, recorded 3CAN-context status, and sidecar judgement. RPA, creator, video, or platform questions also require public platform or approved RPA evidence.
 
-Do not stop merely because the clock elapsed or a source count was reached. Stop early only when all gates pass and further searching has low decision value. At the hard cap, return `PARTIAL` or `UNAVAILABLE` with precise missing evidence; do not fake completion.
+Do not stop merely because a source count was reached. Stop early only when all gates pass and further searching has low decision value. At the hard cap, `done` records terminal `PARTIAL` when some external evidence was verified or `UNAVAILABLE` when none was verified. The Stop hook then permits an honest typed final result, while research-dependent mutation remains blocked unless the ledger passed. List the missing evidence; do not fake completion.
 
 ## Evidence workflow
 
@@ -52,7 +54,7 @@ scripts/3can_research_harness.py collect-url \
   --source-type official_primary
 ```
 
-Use `import-search-result` for provider-neutral discovery only; search-result artifacts do not count toward 30/90 until their URLs are opened and collected. Use `import-rpa-artifact` for bounded output produced by an existing project-owned RPA lane. `rpa-probe` is only an optional bridge to already installed project RPA adapters; pass the current physical worktree with `--project-root`, or set `THREECAN_PROJECT_ROOT`; otherwise it uses the current working directory. If that project has no `tools/rpa`, return typed `unavailable`. Default ledgers, state, and evidence artifacts stay under that selected/current physical project. Do not build a second browser/RPA subsystem here. Login, private data, paid APIs, bulk collection, account/store writes, and publishing still require their existing approvals.
+Use `import-search-result` for provider-neutral discovery only; search-result artifacts do not count toward the 5/12-source gates until their URLs are opened and collected. Use `import-rpa-artifact` for bounded output produced by an existing project-owned RPA lane. `rpa-probe` is only an optional bridge to already installed project RPA adapters; pass the current physical worktree with `--project-root`, or set `THREECAN_PROJECT_ROOT`; otherwise it uses the current working directory. If that project has no `tools/rpa`, return typed `unavailable`. Default ledgers, state, and evidence artifacts stay under that selected/current physical project. Do not build a second browser/RPA subsystem here. Login, private data, paid APIs, bulk collection, account/store writes, and publishing still require their existing approvals.
 
 A global Skill installation makes the workflow discoverable to supported Sessions and Agents. Project hooks make its gates automatic for that project. Other clients must invoke the Skill or the harness explicitly; a Skill alone cannot force an arbitrary Agent runtime to use RPA.
 
@@ -62,6 +64,7 @@ Record the evidence ledger:
 scripts/3can_research_harness.py done \
   --session-id <session_id> \
   --turn-id <turn_id> \
+  --requirement-id <hook_emitted_requirement_id> \
   --question "<research question>" \
   --research-tier deep \
   --elapsed-minutes <active-research-minutes> \
