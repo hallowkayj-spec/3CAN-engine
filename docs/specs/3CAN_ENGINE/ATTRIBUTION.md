@@ -51,6 +51,13 @@
 - **出处**: Malkov, Yashunin 2016
 - **状态**: **未用**, 3CAN 1385 节点用 numpy @ 矩阵够快。未来扩到 10K+ 节点时考虑迁 pgvector + HNSW (详见 [LIMITATIONS.md](./LIMITATIONS.md))
 
+### A8. Objective-driven AI / world-model architecture（概念启发）
+- **出处**: Yann LeCun 2022, [*A Path Towards Autonomous Machine Intelligence*](https://openreview.net/pdf?id=BZ5a1r-kVsf)
+- **借鉴了什么**: 世界模型、短期记忆、目标/成本与分层规划需要组成一致系统，而不是把“记忆”理解成无限追加的聊天文本。
+- **我们的应用**: 3CAN 把项目事实、适用范围、目标、活动、证据和 route/writeback 组织成可查询的工程世界模型，让 Agent 只取当前任务需要的抽象层级。
+- **没有借鉴**: 3CAN 不训练 JEPA、不是论文架构的实现、没有声称获得作者或 Meta 背书，也没有复制论文代码。
+- **独立工程思路**: 项目/Agent/Worktree/ticket/version/evidence 的门禁采用约束满足（SAT）式类比；这是 fail-closed 合同设计，不是 SAT solver，也不归因于该论文。
+
 ## B. 产品设计借鉴 (开源项目思路, 非代码抄袭)
 
 ### B1. Graphify (safishamsi/graphify)

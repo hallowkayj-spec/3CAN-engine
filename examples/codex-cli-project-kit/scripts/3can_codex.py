@@ -2191,6 +2191,11 @@ def ensure_online_command(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Codex-side 3CAN helper for route, checkin, ticket, and writeback.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="3CAN proxy base URL")
+    parser.add_argument(
+        "--workorder-id",
+        default="",
+        help="Explicit current Workorder identity; overrides inherited Workorder environment.",
+    )
     parser.add_argument("--engine-root", help="Optional explicit neural-memory root override")
     parser.add_argument("--min-nodes", type=int, default=DEFAULT_MIN_NODES, help="Minimum acceptable node count")
     parser.add_argument(
@@ -2359,6 +2364,18 @@ def _project_mismatch_bypass_is_read_only(args: argparse.Namespace) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.workorder_id:
+        workorder_id = str(args.workorder_id).strip()
+        if not _PROJECT_IDENTIFIER_PATTERN.fullmatch(workorder_id):
+            _print_json(
+                {
+                    "ok": False,
+                    "command": args.command,
+                    "error": {"kind": "workorder_id_invalid"},
+                }
+            )
+            return 1
+        os.environ["THREECAN_WORKORDER_ID"] = workorder_id
     if hasattr(args, "agent_id"):
         try:
             args.agent_id = _resolve_agent_id(args.agent_id)

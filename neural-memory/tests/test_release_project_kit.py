@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -35,6 +36,7 @@ PROJECT_KIT_CAPSULE_TEMPLATE = (
 ROUTE_BENCHMARK = ROOT / "benchmark" / "route_benchmark_v1.json"
 ROUTE_BENCHMARK_RUNNER = ROOT / "benchmark" / "run_benchmark.py"
 VERIFY_PROJECT = RELEASE_ROOT / "scripts" / "verify_project.py"
+INIT_PROJECT = RELEASE_ROOT / "scripts" / "init-project.ps1"
 CLAUDE_SUBAGENT_STOP_HOOK = (
     RELEASE_ROOT / "examples" / "claude-code-hooks" / "3can-subagent-stop.js"
 )
@@ -146,6 +148,49 @@ def test_prerelease_scan_is_project_root_relative(tmp_path):
     assert "high-confidence secret" not in result.stdout
 
 
+def test_prerelease_scan_accepts_complete_extracted_package(tmp_path):
+    package = tmp_path / "3can-engine"
+    shutil.copytree(
+        RELEASE_ROOT,
+        package,
+        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+    )
+    script = package / "scripts" / "prerelease_scan.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(package),
+            "--strict",
+            "--extracted-package",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "[pre-release scan] clean" in result.stdout
+
+
+def test_windows_sidecar_launcher_is_identity_bound_and_receipted():
+    source = INIT_PROJECT.read_text(encoding="utf-8")
+
+    for required in (
+        "Get-NetTCPConnection -State Listen -ErrorAction Stop",
+        "THREECAN_SIDECAR_START_BUSY",
+        "runtime_identity.engine_root_sha256",
+        "runtime_identity.graph_root_sha256",
+        "readiness.development_ready",
+        "-PassThru",
+        ".sidecar-owner.json",
+        "[System.IO.File]::Replace($temp, $Path, $backup)",
+    ):
+        assert required in source
+    assert "Replace($temp, $Path, $null)" not in source
+    assert 'Write-Host "[3CAN] started $BaseUrl"' not in source
+
+
 def test_prerelease_scan_blocks_runtime_graph_artifacts(tmp_path):
     root = tmp_path / "release"
     graph = root / "neural-memory" / "graph"
@@ -216,6 +261,15 @@ def test_mcp_route_returns_exact_correlation_and_read_node_forwards_it(monkeypat
             "session_instance_id": "session-public-1",
         },
     }
+
+
+def test_mcp_uses_configured_sidecar_endpoint(monkeypatch):
+    monkeypatch.setenv("THREECAN_BASE_URL", "http://127.0.0.1:9711/")
+    monkeypatch.delenv("THREECAN_URL", raising=False)
+
+    server = load_mcp_server()
+
+    assert server.BASE == "http://127.0.0.1:9711"
 
 
 def test_mcp_read_without_correlation_is_read_only(monkeypatch):
@@ -724,6 +778,34 @@ def test_project_kit_cli_reuses_derived_agent_across_independent_commands(
     assert resolved[0].startswith("codex-thread-shared-flow-")
 
 
+def test_project_kit_cli_explicit_workorder_overrides_missing_child_environment(
+    monkeypatch,
+):
+    helper = load_project_kit_helper()
+    monkeypatch.setenv("THREECAN_WORKORDER_ID", "")
+    monkeypatch.delenv("WORKORDER_ID", raising=False)
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-explicit-workorder")
+    captured: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        helper,
+        "route",
+        lambda _args: captured.append(helper._execution_context()) or 0,
+    )
+
+    result = helper.main(
+        [
+            "--workorder-id",
+            "workorder-explicit-child",
+            "route",
+            "--task",
+            "verify explicit Workorder propagation",
+        ]
+    )
+
+    assert result == 0
+    assert captured[0]["workorder_id"] == "workorder-explicit-child"
+
+
 def test_project_kit_writeback_overrides_file_identity_with_current_execution(
     monkeypatch,
     tmp_path,
@@ -761,7 +843,9 @@ def test_project_kit_writeback_overrides_file_identity_with_current_execution(
     assert captured["agent_id"] != "stale-agent"
 
 
-def test_project_kit_session_correlation_is_derived_without_local_state():
+def test_project_kit_session_correlation_is_derived_without_local_state(monkeypatch):
+    for name in ("THREECAN_SESSION_ID", "CODEX_SESSION_ID", "SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
     helper = load_project_kit_helper()
     session_id = helper._session_id_for_agent("codex-thread-one")
     assert helper._session_id_for_agent("codex-thread-one") == session_id

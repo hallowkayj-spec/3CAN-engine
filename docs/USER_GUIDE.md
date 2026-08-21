@@ -1,8 +1,8 @@
 # 3CAN-engine 用户指南 (正文详版)
 
-> 本文是 README 的**展开版**. 如果你只想 5 分钟上手, 先读 [README.md](../README.md) 的 7 步指引.
+> 本文是 README 的**展开版**。如果你只想快速上手，先读 [README.md](../README.md) 的“非技术用户：10 分钟本地体验”。
 > 本文讲**为什么用 / 怎么用 / 能力边界 / 实战案例 / 评分 / 界面 / 常见问题**.
-> 版本: v0.2 release candidate (未发布) · 语言: 中文为主, 技术术语保留英文原词
+> 版本：v0.2.0 release candidate · 语言：中文为主，技术术语保留英文原词
 
 ---
 
@@ -24,13 +24,19 @@
 
 ---
 
+第一次使用只需记住三件事：
+
+1. 3CAN 是本机服务，不是必须单独打开的“主管理聊天 Session”；
+2. 新用户优先使用独立项目目录、独立图谱和示例端口 `9711`；
+3. 3CAN 离线时，Agent 应明确报告 `UNAVAILABLE`，但安全的本地 Git、编码、构建和离线测试仍可继续，不能伪造 route、ticket 或 writeback 成功。
+
 ## 0. 引擎就位: liveness 硬前提 (§0)
 
-**2026-04-20 起, 本节是所有后续操作的硬前提**.
+**只有当任务要依赖 3CAN 的 route、ticket、retrieve 或 writeback 时，本节才是硬前提。**
 
 ### 0.1 为什么有这一节
 
-3CAN 引擎离线时, agent 的"记忆"不是空, 而是**回退到 training cutoff + 对话上下文的瞎编模式**. 这比没记忆还危险 — agent 会自信地说"我记得我们之前决定用方案 A", 实际那是训练集里某个类似项目的决定, 不是你的.
+3CAN 引擎离线时，Agent 仍可使用当前对话、项目文件和 Git，但不能把这些来源冒充为 3CAN 的项目记忆。正确行为是把 3CAN 相关能力标为 `UNAVAILABLE`，继续安全的本地工作，只延后真正依赖 live route、ticket 或 writeback 的步骤。
 
 典型风险: agent 仅凭当前 context 推断某组件状态，而项目图谱里已有相反
 的已验证决定。Error Knowledge 的用途是保存可复用的原因、修复和验证证据，
@@ -73,11 +79,7 @@ python scripts/verify_project.py \
 
 ### 0.4 可选 hook 配合
 
-如果你装了 `examples/claude-code-hooks/3can-behavioral-gate.js` 和 `3can-cold-start.js`:
-
-- **SessionStart**: 引擎离线时 `additionalContext` 提醒先核验项目绑定和 readiness
-- **PreToolUse**: 仅当项目主动启用该策略时，离线状态可 deny 配置范围内的 mutation；白名单只保留只读诊断、项目 verifier 和显式 operator-only Supervisor 请求，不允许 wrapper 直接启动或终止进程
-- **绕过机制**: 确实要改 hook/engine 本身时, `touch ~/.claude/logs/3can-gate-bootstrap` 作 sentinel, 完工立即 `rm`. 每次 bypass 都进 `~/.claude/logs/3can-gate.jsonl` 审计
+`examples/claude-code-hooks/3can-behavioral-gate.js` 是可选的项目策略示例，不是 3CAN 的必要组成。启用前应先读代码并按项目风险调整；普通客户端不能借 hook 启动、停止或替换一个机器级共享运行时。离线提醒也不能阻断与 3CAN 无关的安全本地开发。
 
 ### 0.5 空图不是就位
 
@@ -541,17 +543,17 @@ agent: 跑 project_bootstrapper 针对性扫 handoffs 目录 → 建 DEC-* / SES
 ### Q1. 我要装多少依赖?
 
 - Python ≥ 3.11 (必)
-- BGE-M3 + bge-reranker (自动下, 2-3 GB)
-- `leidenalg` + `python-igraph` (可选, 装不上会降级)
-- FastAPI + uvicorn (轻量)
+- `requirements-min.txt`：FastAPI、uvicorn、Pydantic 等最小本地运行依赖
+- `requirements-full.txt`：可选语义栈入口；模型缓存和额外依赖由你自己的环境管理
+- BGE-M3、reranker、`leidenalg` / `python-igraph` 等均不是第一次验证安装的硬要求
 
-**总磁盘占用**: 3-4 GB (主要是 embedding 模型). 内存占用运行时约 2 GB.
+最小 hashing 配置体积较小；完整模型的磁盘和内存占用取决于你选择的模型、缓存与图谱规模，发布包不承诺固定数值。
 
 ### Q2. 每次启动要多久?
 
-- 冷启动 (首次): 4-20 分钟 (下模型 + encode 已有节点)
-- 后续启动: 15-30 秒 (cache 复用)
-- 你图谱 1000+ 节点时, 启动可能 30-60 秒
+- 最小 hashing + fresh seed graph 通常适合快速安装验证；
+- 完整语义模型的首次下载、节点编码和深度校验可能明显更久；
+- 启动时间受 CPU、磁盘、模型缓存和节点数影响，应以本机 `/api/stats?deep=true` 与日志为准，不使用未经本机测量的固定承诺。
 
 ### Q3. 必须联网吗?
 
@@ -575,23 +577,17 @@ agent: 跑 project_bootstrapper 针对性扫 handoffs 目录 → 建 DEC-* / SES
 
 ### Q7. 能多人共享一个图谱吗?
 
-v0.1 是**单用户设计**. 多人共享理论上可以 (都连同一个 `localhost:9700`), 但:
-- 没权限控制, 所有人看到全部
-- 没冲突锁, 并发写可能互相覆盖
-- 没认证, 暴露到局域网需反代 + 认证
+v0.2 支持多个 Agent/Session 并发连接同一个明确管理的本地实例，并以 Agent、项目、命名空间、Worktree/Workspace 和需要时的 ticket/digest 绑定写入。图引擎对共享状态使用一致性边界，受保护节点支持版本冲突拒绝，而不是无条件覆盖。
 
-企业级多人协作**不推荐 v0.1 上**, 等 v0.2+.
+但本版本仍没有内建多租户认证和企业权限系统：不要把它直接暴露到局域网或公网。跨用户部署应增加认证、TLS、网络隔离与独立安全审计。
 
 ### Q8. 我不会写 Python 怎么办?
 
-用 Claude Code 配合. 本项目的作者就是非 IT 专业, 用 Claude Code 写完的. `install.sh` 已经帮你一键, 启动就 `python app.py`, 没什么要你自己写的 Python.
+不需要自己写 Python。按 README 的 PowerShell 或 Bash 命令安装、初始化和验证即可，也可以让 Codex、Claude Code 等 Agent 读取 `docs/PROJECT_KIT.md` 后协助接入。任何删除、联网公开、付费调用或生产变更仍应由你明确确认。
 
 ### Q9. Windows 能跑吗?
 
-能. 作者就是 Windows 11 + Python 3.14 + Git Bash. 注意:
-- 用 `bash install.sh` 在 Git Bash 里跑 (不要 PowerShell 里跑 bash)
-- `llama.cpp` 本地 LLM 需要自己编译或下 release, Windows 版本相对少
-- 冷启动 BGE-M3 encode 在 Windows CPU 上比 Linux 慢约 30%
+能。推荐 Windows 11 + Python 3.11 或更高版本，并直接使用 README 的 PowerShell 虚拟环境与 `scripts/init-project.ps1`。如果选择 Bash 路径，再使用 Git Bash 或 WSL；不要在 PowerShell 中假设系统一定装有 Bash。
 
 ### Q10. 可以不用你的 hooks 吗?
 
@@ -601,6 +597,10 @@ v0.1 是**单用户设计**. 多人共享理论上可以 (都连同一个 `local
 - Observer 不触发 (Ka 的纠错信号不自动沉淀为 PROPOSED 节点)
 
 hooks 是"硬化"层, 可选.
+
+### Q11. 是否必须单独开一个 3CAN 管理 Session?
+
+不需要。3CAN 是进程和 API，不是聊天角色。普通项目可以运行自己的 sidecar；机器级共享实例可以交给操作系统服务管理器或一个明确的 Supervisor。各 Coding Agent 只需配置同一个 `THREECAN_BASE_URL` 并携带自己的项目/工作区身份。
 
 ---
 
