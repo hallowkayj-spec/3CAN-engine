@@ -12,6 +12,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,10 +111,11 @@ class FakeEngine:
         self.edges = []
         self.activity_log = []
         self.fail_create_edge_once = False
+        self._state_lock = threading.RLock()
 
-    @staticmethod
-    def run_consistent(operation, /, *args, **kwargs):
-        return operation(*args, **kwargs)
+    def run_consistent(self, operation, /, *args, **kwargs):
+        with self._state_lock:
+            return operation(*args, **kwargs)
 
     def get_node(self, node_id):
         return self.nodes.get(node_id)
@@ -1268,6 +1270,13 @@ def test_server_automatically_records_and_promotes_ticket_identity_rejections(
     first_case = app._ticket_ledger().error_case(fingerprint=fingerprint)
     assert first_case["occurrence_count"] == 1
     assert first_case["case_id"] is None
+    observations = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]
+    assert len(observations) == 1
+    assert observations[0].affected_nodes == ["DOC-3can-issue-intake-v1"]
+    assert observations[0].meta["occurrence_status"] == "RECORDED"
 
     async def concurrent_replays():
         responses = await asyncio.gather(*[
@@ -1287,6 +1296,10 @@ def test_server_automatically_records_and_promotes_ticket_identity_rejections(
     assert app._ticket_ledger().error_case(
         fingerprint=fingerprint,
     )["occurrence_count"] == 1
+    assert len([
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]) == 1
 
     second_ticket = _issue(app, task="automatic observer second identity rejection")
     payload["target_digest"] = second_ticket["target_digest"]
@@ -1303,10 +1316,16 @@ def test_server_automatically_records_and_promotes_ticket_identity_rejections(
 
     assert promoted["case_id"] in fake.nodes
 
-    assert not any(
-        entry.action == "3can_issue_observed"
-        for entry in fake.activity_log
-    )
+    observations = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]
+    assert len(observations) == 2
+    assert observations[1].meta["occurrence_status"] == "PROMOTED"
+    assert observations[1].affected_nodes == [
+        "DOC-3can-issue-intake-v1",
+        promoted["case_id"],
+    ]
     with sqlite3.connect(app._TICKET_LEDGER_PATH) as connection:
         stored_payloads = [
             json.loads(row[0])
@@ -1333,6 +1352,7 @@ def test_server_automatically_records_and_promotes_ticket_identity_rejections(
         "operation": "POST consume_route_ticket",
         "status_code": 403,
         "error_code": "ticket_agent_mismatch",
+        "error_code_source": "server_owned",
         "evidence_ref": f"route-ticket:{first_ticket['ticket_id']}",
         "retryable": False,
         "workorder_id": "workorder",
@@ -1769,6 +1789,57 @@ def test_server_observer_records_unhandled_500_without_exposing_exception(
     assert app._ticket_ledger().error_case(
         fingerprint=fingerprint,
     )["occurrence_count"] == 5
+    observations = [
+        entry for entry in app.engine.activity_log
+        if entry.action == "3can_issue_observed"
+        and entry.meta.get("occurrence_fingerprint") == fingerprint
+    ]
+    assert len(observations) == 5
+
+
+def test_server_observer_generalizes_untrusted_error_codes(ticket_runtime):
+    app, fake, _error_node, _tmp_path = ticket_runtime
+    request = app.Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/test",
+        "headers": [],
+        "path_params": {},
+        "route": SimpleNamespace(path="/api/test", name="test_route"),
+    })
+
+    snapshot = app._automatic_failure_snapshot(
+        request,
+        status_code=400,
+        error_code="secret_token_value",
+    )
+    assert snapshot["error_code"] == "http_400_handled_error"
+    assert snapshot["error_code_source"] == "status_class"
+    assert "secret_token_value" not in json.dumps(snapshot, sort_keys=True)
+
+    asyncio.run(app._observe_automatic_server_failure(snapshot))
+    observed = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
+    ]
+    assert len(observed) == 1
+    assert observed[0].meta["error_code"] == "http_400_handled_error"
+    assert "secret_token_value" not in json.dumps(observed[0].meta, sort_keys=True)
+
+
+def test_server_observer_capabilities_define_single_reporting_owner(ticket_runtime):
+    app, _fake, _error_node, _tmp_path = ticket_runtime
+    capabilities = asyncio.run(app.ticketed_error_occurrence_capabilities())
+    observer = capabilities["server_failure_observer"]
+
+    assert observer["ownership"] == {
+        "server_returned_failures": "server",
+        "pre_request_or_transport_failures": "client",
+    }
+    assert observer["delivery_semantics"] == "fail_open_best_effort"
+    assert observer["activity_idempotency_scope"] == "stable_observation_id"
+    assert observer["pending_projection_recovery"] is True
+
 
 def test_server_observer_records_missing_agent_id_as_bounded_activity(
     ticket_runtime,
@@ -1798,6 +1869,7 @@ def test_server_observer_records_missing_agent_id_as_bounded_activity(
         "operation": "POST agent_checkin",
         "status_code": 400,
         "error_code": "agent_id_required",
+        "error_code_source": "server_owned",
         "evidence_ref": f"server-event:{entry.meta['observation_id']}",
         "retryable": False,
         "observation_id": entry.meta["observation_id"],
@@ -1846,11 +1918,14 @@ def test_server_observer_records_valid_ticket_consume_binding_failures(
     occurrence = app._ticket_ledger().error_case(fingerprint=fingerprint)
     assert occurrence["occurrence_count"] == 1
     assert occurrence["case_id"] is None
-    assert not any(
-        entry.action == "3can_issue_observed"
+    observed = [
+        entry for entry in fake.activity_log
+        if entry.action == "3can_issue_observed"
         and entry.meta.get("error_code") == error_code
-        for entry in fake.activity_log
-    )
+    ]
+    assert len(observed) == 1
+    assert observed[0].meta["occurrence_status"] == "RECORDED"
+    assert observed[0].affected_nodes == ["DOC-3can-issue-intake-v1"]
 
 
 def test_server_observer_promotes_second_independent_consume_agent_binding_failure(
@@ -2105,7 +2180,7 @@ def test_server_observer_keeps_incompatible_500_types_separate(
     assert os_case["fingerprint"] != value_case["fingerprint"]
 
 
-def test_server_observer_preserves_safe_structured_500_code(
+def test_server_observer_generalizes_structured_500_code(
     ticket_runtime,
     monkeypatch,
 ):
@@ -2133,7 +2208,7 @@ def test_server_observer_preserves_safe_structured_500_code(
         project_id="3can-runtime",
         operation="POST route_task",
         component="3can-http-api",
-        error_type="embedding_backend_unavailable",
+        error_type="http_503_handled_error",
     )
     case = app._ticket_ledger().error_case(fingerprint=fingerprint)
     assert case["occurrence_count"] == 1
@@ -2145,6 +2220,7 @@ def test_server_observer_preserves_safe_structured_500_code(
             )
         )
     assert "must-not-be-stored" not in stored
+    assert "embedding_backend_unavailable" not in stored
 
 
 def test_occurrence_ledger_promotes_only_second_and_uses_core_24_hex_id(
@@ -2229,6 +2305,7 @@ def test_projection_failure_is_partial_but_sqlite_occurrence_survives(
         "occurred_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     asyncio.run(app.record_error_occurrence({**payload, "occurrence_id": "p-1"}))
+    projector = app._project_error_case
     monkeypatch.setattr(
         app,
         "_project_error_case",
@@ -2242,6 +2319,13 @@ def test_projection_failure_is_partial_but_sqlite_occurrence_survives(
     assert second["case"]["occurrence_count"] == 2
     assert second["case"]["graph_projection_state"] == "partial"
     assert app._ticket_ledger().error_occurrence("p-2")["fingerprint"] == fingerprint
+
+    monkeypatch.setattr(app, "_project_error_case", projector)
+    recovered = asyncio.run(app._recover_pending_error_projections())
+    assert recovered == {"projected": [fingerprint], "failures": []}
+    case = app._ticket_ledger().error_case(fingerprint=fingerprint)
+    assert case["graph_projection_state"] == "projected"
+    assert case["case_id"] in app.engine.nodes
 
 
 def test_sqlite_ledger_handles_two_processes_and_more_than_500_active(tmp_path):

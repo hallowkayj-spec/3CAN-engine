@@ -367,6 +367,15 @@ async def lifespan(app: FastAPI):
         )
     except Exception as exc:
         print(f"[3CAN] Error ledger reconcile PARTIAL: {exc}")
+    try:
+        projection_recovery = await _recover_pending_error_projections()
+        print(
+            "[3CAN] Error projection recovery: "
+            f"projected={len(projection_recovery['projected'])} "
+            f"failures={len(projection_recovery['failures'])}"
+        )
+    except Exception as exc:
+        print(f"[3CAN] Error projection recovery PARTIAL: {exc}")
     token_status = _get_token_usage_store().integration_status(include_events=False)
     print(f"[3CAN] Token meter: {json.dumps(token_status['hook_status'], ensure_ascii=False)}")
     # Watch paths are configured explicitly or derived from the current project.
@@ -3412,6 +3421,40 @@ async def _record_error_occurrence_core(payload: dict):
     }
 
 
+async def _recover_pending_error_projections(
+    limit: int = 100,
+) -> dict[str, list[Any]]:
+    """Replay a bounded batch from the existing projection journal."""
+
+    report: dict[str, list[Any]] = {"projected": [], "failures": []}
+    cases = await asyncio.to_thread(
+        _ticket_ledger().pending_error_projections,
+        limit=limit,
+    )
+    for case in cases:
+        fingerprint = str(case.get("fingerprint") or "")
+        try:
+            await _engine_in_worker(
+                engine.run_consistent,
+                _project_error_case,
+                case,
+            )
+            report["projected"].append(fingerprint)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:500]
+            await asyncio.to_thread(
+                _ticket_ledger().mark_error_projection,
+                fingerprint,
+                state="partial",
+                error=error,
+            )
+            report["failures"].append({
+                "fingerprint": fingerprint,
+                "error": error,
+            })
+    return report
+
+
 _AUTO_ERROR_OBSERVER_ACTOR = "3can-server-error-observer"
 _AUTO_ERROR_OBSERVER_COMPONENT = "3can-http-api"
 _AUTO_ERROR_OBSERVER_SCHEMA = "3can.issue-observation/v1"
@@ -3425,6 +3468,7 @@ _AUTO_ERROR_ACTIVITY_LAST_SEEN: dict[str, float] = {}
 _AUTO_ERROR_OBSERVER_IGNORED_CODES = {
     "error_case_not_found",
     "error_occurrence_not_found",
+    "http_404_unstructured_error",
     "low_confidence_requires_confirmation",
     "unticketed_error_occurrence_disabled",
 }
@@ -3462,15 +3506,22 @@ def _automatic_failure_snapshot(
     status_code: int,
     error_code: str,
     ticket_id: str = "",
+    trusted_error_code: bool = False,
 ) -> dict[str, Any]:
     route = request.scope.get("route")
     route_path = str(getattr(route, "path", "") or "")
     route_name = str(getattr(route, "name", "") or "")
-    normalized_error = str(error_code or "").strip().casefold()
-    if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", normalized_error):
-        normalized_error = (
-            "http_500_internal_error" if status_code >= 500 else ""
-        )
+    candidate_error = str(error_code or "").strip().casefold()
+    if trusted_error_code and re.fullmatch(
+        r"[a-z][a-z0-9_]{0,79}",
+        candidate_error,
+    ):
+        normalized_error = candidate_error
+        error_code_source = "server_owned"
+    else:
+        shape = "handled" if candidate_error else "unstructured"
+        normalized_error = f"http_{int(status_code)}_{shape}_error"
+        error_code_source = "status_class"
     response_ticket_id = str(ticket_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", response_ticket_id):
         response_ticket_id = ""
@@ -3492,6 +3543,7 @@ def _automatic_failure_snapshot(
         "request_correlation_digest": correlation_digest,
         "status_code": int(status_code),
         "error_code": normalized_error,
+        "error_code_source": error_code_source,
     }
 
 
@@ -3532,6 +3584,36 @@ def _claim_automatic_activity(fingerprint: str) -> bool:
         _AUTO_ERROR_ACTIVITY_LAST_SEEN.clear()
     _AUTO_ERROR_ACTIVITY_LAST_SEEN[fingerprint] = now
     return True
+
+
+def _ensure_automatic_issue_activity(
+    *,
+    observation_id: str,
+    agent_id: str,
+    detail: str,
+    meta: Mapping[str, Any],
+    case_id: str = "",
+):
+    """Append one intake Activity per stable observation inside the graph lane."""
+
+    for entry in reversed(list(getattr(engine, "activity_log", []) or [])):
+        entry_meta = getattr(entry, "meta", {}) or {}
+        if (
+            str(getattr(entry, "action", "") or "")
+            == "3can_issue_observed"
+            and str(entry_meta.get("observation_id") or "") == observation_id
+        ):
+            return entry.model_copy(deep=True)
+    affected_nodes = [_AUTO_ISSUE_INTAKE_NODE_ID]
+    if case_id:
+        affected_nodes.append(case_id)
+    return engine.log_activity(
+        agent_id=agent_id,
+        action="3can_issue_observed",
+        detail=detail,
+        affected_nodes=affected_nodes,
+        meta={**dict(meta), "observation_id": observation_id},
+    )
 
 
 async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None:
@@ -3630,6 +3712,7 @@ async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None
         "operation": operation,
         "status_code": status_code,
         "error_code": error_code,
+        "error_code_source": str(snapshot.get("error_code_source") or "status_class"),
         "evidence_ref": evidence_ref,
         "retryable": status_code == 429 or status_code >= 500,
     }
@@ -3640,25 +3723,22 @@ async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None
         if not _claim_automatic_activity(fingerprint) or engine is None:
             return
         await _engine_in_worker(
-            engine.log_activity,
+            engine.run_consistent,
+            _ensure_automatic_issue_activity,
+            observation_id=str(snapshot["event_id"]),
             agent_id=observed_agent_id,
-            action="3can_issue_observed",
             detail=(
                 f"{snapshot['method']} {route_name} -> "
                 f"{snapshot['status_code']} {error_code}"
             ),
-            affected_nodes=[_AUTO_ISSUE_INTAKE_NODE_ID],
-            meta={
-                **issue_meta,
-                "observation_id": str(snapshot["event_id"]),
-            },
+            meta=issue_meta,
         )
         return
 
     occurrence_id = "auto-http-" + hashlib.sha256(
         f"{fingerprint}\n{correlation}".encode("utf-8")
     ).hexdigest()[:40]
-    await _record_error_occurrence_core({
+    occurrence_result = await _record_error_occurrence_core({
         "occurrence_id": occurrence_id,
         "fingerprint": fingerprint,
         "project_id": project_id,
@@ -3678,6 +3758,25 @@ async def _observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None
             "identity_source": identity_source,
         },
     })
+    if engine is not None:
+        case_id = str((occurrence_result.get("case") or {}).get("case_id") or "")
+        await _engine_in_worker(
+            engine.run_consistent,
+            _ensure_automatic_issue_activity,
+            observation_id=occurrence_id,
+            agent_id=observed_agent_id,
+            detail=(
+                f"{snapshot['method']} {route_name} -> "
+                f"{snapshot['status_code']} {error_code}"
+            ),
+            meta={
+                **issue_meta,
+                "occurrence_id": occurrence_id,
+                "occurrence_fingerprint": fingerprint,
+                "occurrence_status": occurrence_result["status"],
+            },
+            case_id=case_id,
+        )
 
 
 async def _try_observe_automatic_server_failure(snapshot: Mapping[str, Any]) -> None:
@@ -3718,6 +3817,7 @@ def _try_schedule_automatic_server_failure(
     status_code: int,
     error_code: str,
     ticket_id: str = "",
+    trusted_error_code: bool = False,
 ) -> None:
     try:
         _schedule_automatic_server_failure(_automatic_failure_snapshot(
@@ -3725,6 +3825,7 @@ def _try_schedule_automatic_server_failure(
             status_code=status_code,
             error_code=error_code,
             ticket_id=ticket_id,
+            trusted_error_code=trusted_error_code,
         ))
     except BaseException as exc:
         _automatic_observer_drop(exc)
@@ -3763,6 +3864,11 @@ async def _observe_http_exception(
         status_code=int(exc.status_code),
         error_code=error_code,
         ticket_id=ticket_id,
+        trusted_error_code=(
+            error_code in _AUTO_ERROR_OBSERVER_IGNORED_CODES
+            or error_code in _AUTO_ERROR_KNOWLEDGE_EXACT_CODES
+            or error_code in _AUTO_TICKET_CONSUME_BINDING_CODES
+        ),
     )
     return await http_exception_handler(request, exc)
 
@@ -3776,6 +3882,7 @@ async def _observe_request_validation_error(
         request,
         status_code=422,
         error_code="request_validation_error",
+        trusted_error_code=True,
     )
     return await request_validation_exception_handler(request, exc)
 
@@ -3789,6 +3896,7 @@ async def _observe_unhandled_server_error(request: Request, call_next):
             request,
             status_code=500,
             error_code=_automatic_exception_code(exc),
+            trusted_error_code=True,
         )
         raise
 
@@ -4126,6 +4234,13 @@ async def ticketed_error_occurrence_capabilities():
             "schema_version": _AUTO_ERROR_OBSERVER_SCHEMA,
             "enabled": True,
             "scope": "failures_returned_by_this_3can_runtime",
+            "ownership": {
+                "server_returned_failures": "server",
+                "pre_request_or_transport_failures": "client",
+            },
+            "delivery_semantics": "fail_open_best_effort",
+            "activity_idempotency_scope": "stable_observation_id",
+            "pending_projection_recovery": True,
             "original_response_preserved": True,
             "drop_count": _AUTO_ERROR_OBSERVER_DROPS,
             "suppressed_activity_count": _AUTO_ERROR_OBSERVER_SUPPRESSED,

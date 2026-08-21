@@ -244,7 +244,10 @@ paths:
         losing ledger truth. The canonical server also observes selected
         typed exception, validation, and unhandled failure paths from normal API
         operations and records them internally without enabling a public
-        ticketless write path or changing the original response. Health, stats,
+        ticketless write path or changing the original response. Each unique
+        automatic ledger occurrence receives a stable observation ID and a
+        bounded attempt to append one issue-intake Activity; pending graph
+        projections replay from the existing journal on startup. Health, stats,
         and direct error-shaped JSON responses are outside that observer boundary.
       requestBody:
         required: true

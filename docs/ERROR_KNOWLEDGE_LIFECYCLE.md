@@ -124,15 +124,24 @@ materially different.
 
 The canonical server observes typed exception, validation, and unhandled
 failure paths that it returns to clients.
-Expected gates become rate-bounded, sanitized `3can_issue_observed` Activity;
-only stable protocol, identity-binding, integrity, and server failures enter
-this occurrence ledger. The original HTTP response is unchanged, and observer
-failure never replaces or delays the original error. Replays bound to the same
-authoritative ticket or the same caller-supplied `X-Request-ID` are idempotent;
-without either
-correlation, separate failed requests remain separate occurrences, and a second
-occurrence is required before graph projection. The request-ID value is hashed
-for correlation and is never stored verbatim.
+Expected gates become rate-bounded, sanitized `3can_issue_observed` Activity.
+Only stable protocol, identity-binding, integrity, and server failures enter
+the occurrence ledger. Each unique ledger occurrence gets a stable observation
+ID, and the observer attempts one Activity linked to the issue-intake anchor.
+Replays bound to the same authoritative ticket or the same caller-supplied
+`X-Request-ID` reuse both records. Without
+either correlation, separate failed requests remain separate occurrences, and
+a second occurrence is required before graph projection. The request-ID value
+is hashed for correlation and is never stored verbatim.
+
+The observer is deliberately fail-open and outside the original response path:
+its failure never replaces or delays the error returned to the client. Activity
+delivery is bounded best-effort, not a claim of crash-proof global exactly-once
+delivery. Drop, suppression, and pending counts remain visible through the
+capabilities endpoint; a replay with the same stable correlation repairs a
+missing Activity without duplicating the ledger occurrence. Pending or partial
+ErrorCase projections are replayed from the existing SQLite projection journal
+on startup.
 Expected gates remain bounded Activity observations and do not become blocking
 ErrorCases. The observer never records request bodies, headers, raw exception
 text, unmatched URL paths, or failures from `/api/errors/*`, health, or stats
@@ -143,15 +152,18 @@ raising are outside this observer boundary.
 Each automatic observation uses the existing `3can.issue-observation/v1`
 contract and points to `DOC-3can-issue-intake-v1`. Its sanitized metadata binds
 category, severity, project/namespace/workspace, endpoint and operation,
-machine error code, evidence reference, and retryability. A verified route
+server-owned or status-class machine error code, evidence reference, and
+retryability. A verified route
 ticket supplies its Agent and project scope; otherwise the observer uses the
 explicit `3can-runtime` scope and never attributes the failure to a caller-
 asserted project. This intake anchor is not mutated when an incident is added.
 
 This boundary covers errors that reach 3CAN through MCP, the project kit,
-PowerShell, or direct HTTP. Local validation and transport failures that occur
-before a request reaches the server remain `UNAVAILABLE` until an authorized
-ticketed delivery can succeed; the server MUST NOT claim to have observed them.
+PowerShell, or direct HTTP. The server owns failures it returns; clients MUST
+NOT submit a second copy when the capabilities endpoint advertises this
+observer. Clients own local validation and transport failures that occur before
+a request reaches the server. Those remain `UNAVAILABLE` until an authorized
+ticketed delivery succeeds; the server MUST NOT claim to have observed them.
 
 ### 4.2 `ErrorCase`: canonical recurring problem
 
