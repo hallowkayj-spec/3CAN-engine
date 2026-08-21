@@ -1,0 +1,4 @@
+interface:
+  display_name: "3CAN Deep Research"
+  short_description: "Evidence-led 10- or 30-minute technical research"
+  default_prompt: "Use $3can-deep-research to investigate this engineering question with the appropriate evidence tier."

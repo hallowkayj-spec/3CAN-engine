@@ -1,35 +1,24 @@
 ---
 name: 3can-deep-research
-description: Use for mandatory deep web/RPA research, semantic research triggers, repeated-failure escalation, official documentation checks, latest/current information, community feedback, technical selection, model/provider/API comparisons, pricing/law/regulation checks, keyword/query planning, or whenever the 3CAN research hook says research is required. Produces cited conclusions plus a 3CAN source ledger/writeback plan.
+description: Use for current external engineering research, evidence gathering, technical selection, repeated-failure diagnosis, RPA/platform investigation, model or provider quality analysis, and any turn the 3CAN research hook marks as required. Selects a bounded standard tier of at most 10 minutes or a deep tier of at most 30 minutes, then records a cited evidence ledger and durable 3CAN conclusion when warranted.
 ---
 
 # 3CAN Deep Research
 
-Use this skill when a task needs current, external, contested, or practice-heavy information before a conclusion or code change. Treat the 3CAN hook as mandatory: if it marks a turn as research-required, do not mutate files or give final conclusions until a source ledger is recorded.
+Use this skill when current external evidence can materially improve an engineering decision or when repeated failure means further blind editing is wasteful. The goal is a decision-quality evidence packet, not elapsed time or a large link list.
 
-## Trigger Model
+## Choose one tier
 
-Research can trigger from two layers:
+- `standard` — at most 10 active research minutes. Use for medium development work that needs current facts, implementation examples, tool choices, API details, or a bounded evidence refresh.
+- `deep` — at most 30 active research minutes. Use for difficult or recurring failures, RPA/platform behavior, model-quality regressions, multi-system integration, personalized technical constraints, or conflicting evidence.
 
-1. User-prompt semantics: explicit web/research requests, latest/current facts, technical selection, model/API/provider comparisons, platform/RPA intelligence, keyword planning, or complex multi-constraint requests.
-2. Execution failure escalation: repeated failures, unstable provider/API behavior, repeated edits to the same area, or loop-detector output should stop blind edits and trigger research.
+Legacy `quick` maps to `standard`; legacy `rpa_deep` maps to `deep`. Do not create additional tiers.
 
-## Workflow
+Invoke the skill explicitly when the user asks for web/external research. The automatic hook also requires it for material technical selection, keyword research, repeated failure, or platform/RPA intelligence with an external-evidence signal. Ordinary local development words such as API, SDK, model, query, release, current, optimization, or one failure do not trigger research by themselves. Use `failure-signal`; the third matching deterministic failure escalates to `deep`.
 
-1. Define the research question, freshness requirement, and decision the result will support.
-2. Choose a timebox:
-   - quick: first sufficiency decision at about 5 minutes; target 5 minutes.
-   - standard: first sufficiency decision at about 5 minutes; target 10 minutes; hard cap around 20 minutes.
-   - deep: target 20 minutes; hard cap around 30 minutes unless the task value justifies continuing.
-   - RPA deep: target 30 minutes or more only when the RPA pipeline is mature and the task requires platform/video/comment evidence.
-3. When taking over an existing research turn or auditing the skill state, run the read-only status command:
+Before searching, state the question, decision to be made, freshness requirement, known constraints, and—when debugging—the exact failure signature. If an applicable 3CAN runtime is available, route/retrieve current project context first and record the node or evidence references. If it is unavailable, record `unavailable` and continue safe web and local research; never invent context.
 
-```bash
-scripts/3can_research_harness.py status
-```
-
-It summarizes skill files, hook configuration, unresolved hook state, source-ledger counts, source-artifact counts, and failure signatures. It does not print source excerpts, raw HTML, or secrets.
-4. Plan queries before searching when the task is broad. Expand the user's terms into official terms, community terms, platform slang, Chinese/English variants, and failure-oriented terms.
+Plan the search:
 
 ```bash
 scripts/3can_research_harness.py plan \
@@ -38,9 +27,26 @@ scripts/3can_research_harness.py plan \
   --focus-term "<important term>"
 ```
 
-5. Search primary sources first for contracts and boundaries: official docs, vendor changelogs, API references, GitHub repos, pricing pages, release notes, standards, or regulator pages.
-6. Add practice sources when they are directly useful: GitHub issues, user reports, benchmarks, creator videos, comments, engagement signals, subtitles, ASR/OCR, or public platform observations.
-7. For public http(s) pages, collect a source artifact before relying on the page:
+## Completion gates
+
+`standard` requires at least five opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, across at least three source families and three materially different queries, a primary/boundary source, implementation or practice evidence, a contradiction check, evidence scores, recorded 3CAN-context status, and sidecar evidence/task-fit judgement.
+
+`deep` requires at least 12 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, across at least four external source families and six materially different queries. It must include primary/boundary evidence, a paper/standard or benchmark, GitHub or Hugging Face implementation evidence, community evidence such as Reddit or a professional forum, contradiction/counterexample evidence, recorded 3CAN-context status, and sidecar judgement. RPA, creator, video, or platform questions also require public platform or approved RPA evidence.
+
+Do not stop merely because a source count was reached. Stop early only when all gates pass and further searching has low decision value. At the hard cap, `done` records terminal `PARTIAL` when some external evidence was verified or `UNAVAILABLE` when none was verified. The Stop hook then permits an honest typed final result, while research-dependent mutation remains blocked unless the ledger passed. List the missing evidence; do not fake completion.
+
+## Evidence workflow
+
+1. Open and verify every cited URL. Never cite a generated or search-result URL that was not opened.
+2. Use official docs, specifications, changelogs, release notes, or regulator material for contract boundaries.
+3. Use papers and reproducible benchmarks for mechanisms and comparative claims.
+4. Inspect GitHub source, issues, pull requests, and releases for implementation reality.
+5. Inspect Hugging Face model/dataset cards, revisions, licenses, evaluation data, and discussions for model or dataset claims.
+6. Use Reddit and relevant professional forums for failure patterns and field counterexamples; do not promote anecdotes to universal facts.
+7. For creator or short-video evidence, record the public URL, date, observable claim, and engagement/transcript/OCR evidence when available. Respect login, privacy, platform, copyright, and rate limits.
+8. Maintain a claim-to-source matrix and search deliberately for contradictions. Separate sourced facts, inference, and remaining uncertainty.
+
+For public pages, preserve a bounded source artifact when practical:
 
 ```bash
 scripts/3can_research_harness.py collect-url \
@@ -48,80 +54,39 @@ scripts/3can_research_harness.py collect-url \
   --source-type official_primary
 ```
 
-The adapter stores title, metadata, text excerpt, content hash, HTTP status, and content type. It does not store raw HTML or secrets.
+Use `import-search-result` for provider-neutral discovery only; search-result artifacts do not count toward the 5/12-source gates until their URLs are opened and collected. Use `import-rpa-artifact` for bounded output produced by an existing project-owned RPA lane. `rpa-probe` is only an optional bridge to already installed project RPA adapters; pass the current physical worktree with `--project-root`, or set `THREECAN_PROJECT_ROOT`; otherwise it uses the current working directory. If that project has no `tools/rpa`, return typed `unavailable`. Default ledgers, state, and evidence artifacts stay under that selected/current physical project. Do not build a second browser/RPA subsystem here. Login, private data, paid APIs, bulk collection, account/store writes, and publishing still require their existing approvals.
 
-For provider search output that is already available as JSON, normalize it without making a live provider call:
+A global Skill installation makes the workflow discoverable to supported Sessions and Agents. Project hooks make its gates automatic for that project. Other clients must invoke the Skill or the harness explicitly; a Skill alone cannot force an arbitrary Agent runtime to use RPA.
 
-```bash
-scripts/3can_research_harness.py import-search-result \
-  --input-file search-results.json \
-  --provider tavily \
-  --query "<query>" \
-  --source-type community_practice
-```
-
-For RPA evidence produced by an external/mainbrain pipeline, import only the offline artifact. Do not launch browser automation from this skill:
-
-```bash
-scripts/3can_research_harness.py import-rpa-artifact \
-  --input-file rpa-evidence.json \
-  --approval-id APR-optional-when-required
-```
-
-The input should contain public `source_url`, `platform`, `task_id`, `evidence_kind`, bounded text/transcript/OCR excerpt, engagement signals, capture time, and any approval risk flags. Login, private data, paid API, bulk scraping, store writes, account writes, or publishing must carry an approval id.
-
-For RPA-heavy research, use a safe local RPA probe when existing offline adapters can add practical evidence before the final judgement:
-
-```bash
-scripts/3can_research_harness.py rpa-probe \
-  --mode adapter-review \
-  --task-id R5 \
-  --platform creator-content \
-  --adapter-task-id KB_CREATOR_RPA \
-  --params-json '{"source_platform":"douyin"}'
-```
-
-This runs the local adapter review pipeline, emits `rpa_pipeline_artifact` source artifacts, and can be fed into `done --source-artifact`. It is allowed for offline/local adapters such as `creator-content` and mock/record-backed `taobao` paths. Login-state platform automation, live platform collection, paid APIs, bulk scraping, account writes, store writes, or publishing still require an approval id and should not be started from the skill unless explicitly approved.
-
-8. Score evidence by task fit, not a fixed A/B/C rank. Consider authority, recency, practice value, reproducibility, relevance, community signal, risk, and conflicts.
-9. Use sidecar judgement for standard/deep work: decide whether evidence is sufficient and whether it actually supports the task decision. Stop when marginal value is low.
-10. Separate sourced facts from inference. Use absolute dates for time-sensitive claims.
-11. Record the ledger in the repo:
+Record the evidence ledger:
 
 ```bash
 scripts/3can_research_harness.py done \
   --session-id <session_id> \
   --turn-id <turn_id> \
+  --requirement-id <hook_emitted_requirement_id> \
   --question "<research question>" \
-  --research-tier standard \
-  --source-artifact test-results/3can/research_sources/source.json \
+  --research-tier deep \
+  --elapsed-minutes <active-research-minutes> \
+  --source-artifact <collected-source.json> \
+  --source-url https://example.com/another-source \
   --source-type official_primary \
-  --source-url https://example.com/source-1 \
+  --query-variant "<query used>" \
+  --context-status used \
+  --context-ref <3CAN-node-or-evidence-ref> \
+  --contradiction-status resolved \
   --evidence-score authority=5 \
   --evidence-score task_relevance=5 \
-  --source-url https://example.com/source-2 \
-  --source-url https://example.com/source-3
+  --sidecar-evidence-sufficiency pass \
+  --sidecar-task-fit pass
 ```
 
-12. Run the sidecar judge when the tier is standard/deep/RPA or the decision is expensive:
+Then independently evaluate it:
 
 ```bash
 scripts/3can_research_harness.py judge --ledger-file <ledger.json>
 ```
 
-13. Write back durable results to 3CAN when the research changes architecture, interfaces, provider choice, risk policy, or reusable operations knowledge.
+The harness, not prose or source count alone, owns the completion result. Write back to 3CAN only when the research creates durable project meaning: an architecture/interface decision, reusable operating guidance, a verified incompatibility, or ErrorKnowledge. Do not write every query or source into the graph; Git and the source ledger remain the exact evidence owners.
 
-## Source Standards
-
-- Prefer official and primary sources for protocol truth, contracts, pricing, and compliance.
-- Use practice/community sources for real-world model quality, benchmark reproducibility, platform operations, failure patterns, and implementation direction.
-- For RPA/platform sources, record public URL, timestamp, engagement signals, transcript/OCR/frame evidence when available, and whether login/paid/automation approval was required.
-- Do not cite pages you did not open or inspect.
-- Do not quote long copyrighted passages; summarize and link.
-- If web/MCP access is unavailable, mark the result as not verified instead of filling gaps from memory.
-
-## Output
-
-Every final research answer must include source links, date-sensitive caveats, and a short statement of what remains unverified. For engineering work, include the concrete effect on files, contracts, tests, and 3CAN nodes.
-
-For ledger fields and 3CAN node mapping, read `references/research-ledger.md` only when you are recording or auditing a research result.
+Read `references/research-ledger.md` only when recording or auditing a run.
