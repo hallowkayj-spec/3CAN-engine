@@ -244,11 +244,15 @@ Agent 订阅后可实时感知其他 agent 动作 (基座#6)。订阅 filter 未
 
 Agent 接入 3CAN 最低要求:
 1. 唯一 agent_id (kebab-case, ≤30 字符)
-2. 启动时 POST /api/agents/checkin 注册
-3. 每次 route 传 agent_id (用于 activity_log 追溯)
-4. Writeback 时 primary_author=agent_id
-5. (推荐) 订阅 `WS /ws` 感知其他 agent 动作
-6. (推荐) 启动时调 GET /api/briefing 拉冷启动摘要
+2. 每次 route 传 agent_id (用于 activity_log 追溯)
+3. Writeback 时 primary_author=agent_id，并满足对应项目、工作树与来源门禁
+4. (可选) 需要 heartbeat/briefing 投影时 POST /api/agents/checkin
+5. (可选) 订阅 `WS /ws` 感知其他 agent 动作
+6. (可选) 需要全局概览时调 GET /api/briefing
+
+普通 route 与满足门禁的 writeback 不依赖预先 check-in、briefing、wrapper 或专用
+ChatGPT/Codex Session。check-in 只拥有 Agent heartbeat/briefing 投影，不是客户端
+执行状态、写权限或 Runtime lifecycle 的第二个 Owner。
 
 ## 8. 版本兼容性承诺
 

@@ -823,14 +823,12 @@ def test_project_kit_writeback_overrides_file_identity_with_current_execution(
         lambda payload: {**payload, "project_id": "public-demo"},
     )
     captured = {}
-    monkeypatch.setattr(
-        helper,
-        "_try_json_request",
-        lambda _base, _path, **kwargs: (
-            captured.update(kwargs["payload"]) is None,
-            {"ok": True},
-        ),
-    )
+    def request(_base, path, **kwargs):
+        captured["path"] = path
+        captured.update(kwargs["payload"])
+        return True, {"ok": True}
+
+    monkeypatch.setattr(helper, "_try_json_request", request)
     monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
     monkeypatch.setattr(helper, "_record_local_token_estimate", lambda *args, **kwargs: None)
     args = helper.build_parser().parse_args(
@@ -839,6 +837,7 @@ def test_project_kit_writeback_overrides_file_identity_with_current_execution(
     args.agent_id = helper._resolve_agent_id(args.agent_id)
 
     assert helper.writeback(args) == 0
+    assert captured["path"] == "/api/writeback"
     assert captured["agent_id"].startswith("codex-thread-current-writeback-")
     assert captured["agent_id"] != "stale-agent"
 
@@ -851,6 +850,80 @@ def test_project_kit_session_correlation_is_derived_without_local_state(monkeypa
     assert helper._session_id_for_agent("codex-thread-one") == session_id
     assert helper._session_id_for_agent("codex-thread-two") != session_id
     assert not hasattr(helper, "LOCAL_RUNTIME_DIR")
+
+
+def test_project_kit_works_without_dedicated_3can_session(monkeypatch):
+    helper = load_project_kit_helper()
+    contracts = (
+        (
+            RELEASE_ROOT / "docs" / "PROJECT_KIT.md",
+            "A separate ChatGPT/Codex task or dedicated 3CAN session is not required",
+        ),
+        (
+            RELEASE_ROOT
+            / "examples"
+            / "codex-cli-project-kit"
+            / "AGENTS.template.md",
+            "A dedicated 3CAN ChatGPT/Codex task is not required",
+        ),
+        (
+            RELEASE_ROOT
+            / "docs"
+            / "specs"
+            / "3CAN_ENGINE"
+            / "AGENT_BINDING.md",
+            "无需另开 3CAN ChatGPT/Codex Session",
+        ),
+        (
+            RELEASE_ROOT
+            / "docs"
+            / "specs"
+            / "3CAN_ENGINE"
+            / "CONTRACTS.md",
+            "普通 route 与满足门禁的 writeback 不依赖预先 check-in",
+        ),
+        (
+            RELEASE_ROOT / "README.en.md",
+            "does not create a chat session or start the Runtime",
+        ),
+    )
+    for path, expected in contracts:
+        normalized = " ".join(path.read_text(encoding="utf-8").split())
+        assert " ".join(expected.split()) in normalized
+    help_result = subprocess.run(
+        [sys.executable, str(PROJECT_KIT_HELPER), "session-start", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    route_args = helper.build_parser().parse_args(
+        ["route", "--task", "current task"]
+    )
+    requests = []
+    monkeypatch.setattr(
+        helper,
+        "_with_execution_context",
+        lambda payload, **_kwargs: payload,
+    )
+    monkeypatch.setattr(helper, "_with_owner_intent", lambda payload: payload)
+    monkeypatch.setattr(
+        helper,
+        "_try_json_request",
+        lambda _base, path, **_kwargs: (requests.append(path) is None, {"ok": True}),
+    )
+    monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
+    monkeypatch.setattr(
+        helper,
+        "_record_local_token_estimate",
+        lambda *args, **kwargs: None,
+    )
+
+    assert "does not create a chat/task or start 3CAN" in help_result.stdout
+    assert route_args.command == "route"
+    assert route_args.workorder_id == ""
+    route_args.agent_id = "codex-direct-client"
+    assert helper.route(route_args) == 0
+    assert requests == ["/api/route"]
 
 
 def test_project_kit_wrapper_has_no_local_ticket_truth():

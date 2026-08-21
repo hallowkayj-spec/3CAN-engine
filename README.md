@@ -128,6 +128,10 @@ python scripts/verify_project.py --base-url http://127.0.0.1:9711 --min-nodes 10
 6. 通过环境变量设置 `THREECAN_BASE_URL`，再运行项目 Kit 的 `doctor` 与只读 `route`；
 7. 只有需要治理写入时才使用 ticket/prepare/done，不要把每次普通读操作都变成仪式。
 
+`bootstrap` / `session-start` 只是当前 Agent 任务内的可选便捷流程，用来组合
+readiness、check-in、briefing 和 route；它不会新建 ChatGPT/Codex Session，也不会
+启动 3CAN Runtime。直接 route 和满足身份、来源门禁的 writeback 不依赖它。
+
 `doctor` 必须报告 `project_identity.status=pass`，才能申请 mutation ticket。
 
 详见 [docs/PROJECT_KIT.md](./docs/PROJECT_KIT.md)。Claude Code 示例见 [CLAUDE_CODE_INTEGRATION.md](./docs/specs/3CAN_ENGINE/recipes/CLAUDE_CODE_INTEGRATION.md)。任何 HTTP 客户端也可以直接使用：

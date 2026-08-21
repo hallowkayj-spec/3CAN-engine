@@ -507,7 +507,7 @@ agent: 跑 project_bootstrapper 针对性扫 handoffs 目录 → 建 DEC-* / SES
 
 ### 已有 `.claude/rules/*.md`
 
-完全正交. 那是你给 agent 的全局规则, 3CAN 只管知识图谱的存取. 在你的 rules 里加一段"新 session 先 briefing" 就够.
+完全正交. 那是你给 agent 的全局规则, 3CAN 只管知识图谱的存取。需要自动定向时，可让当前 agent execution 首次按需调用 briefing；无需另开 3CAN Session，直接 route 和满足身份、来源门禁的 writeback 都合法。
 
 ---
 

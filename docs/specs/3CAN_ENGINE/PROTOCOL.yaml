@@ -5,23 +5,26 @@ info:
   x-release-candidate-line: 0.2.0-rc.1
   description: |
     v0.2 release-candidate runtime harness contract:
-    - Session bootstrap: stats/liveness -> agents/checkin -> briefing -> route.
+    - Optional client orientation: stats/liveness -> agents/checkin -> briefing
+      -> route. Direct route/read and appropriately gated writeback require no
+      separate chat or prior orientation call.
     - Pre-mutation gate: durable route/ticket -> validate -> scoped consume.
     - Error lifecycle: occurrence -> repeated ErrorCase -> verified Resolution.
     - Post-mutation completion: replay-safe activity/done plus typed evidence.
     - Pre-compact continuation: create/update SES-* or writeback durable state.
-    Claude Code can enforce these through native hooks. Codex and other CLIs
-    must use an explicit wrapper/pseudo-hook harness until their runtimes expose
-    native hook surfaces.
+    Clients may call the HTTP API directly. Use a wrapper/pseudo-hook harness
+    only when the client wants lifecycle enforcement and lacks a native hook
+    surface.
 
     v0.2 候选运行时 harness 契约:
-    - Session bootstrap: 先做 stats/liveness, 再 agents/checkin, briefing, route.
+    - 可选客户端定向: stats/liveness -> agents/checkin -> briefing -> route。
+      直接 route/read 和满足门禁的 writeback 不要求另开聊天任务，也不要求先调用定向流程。
     - 动手前 gate: SQLite/WAL route/ticket -> 验证 -> scope digest consume.
     - 错误闭环: occurrence -> 重复 ErrorCase -> 经证据验证的 Resolution.
     - 动手后完成: activity/done 绑定请求 hash, 重放返回同一结果.
     - compact 前续接: 创建/更新 SES-* 或 writeback 阶段成果.
-    Claude Code 可以用原生 hooks 强制执行; Codex 和其他 CLI 目前必须用显式
-    wrapper / pseudo-hook harness, 直到运行时提供原生 hook surface.
+    客户端可直接调用 HTTP API；仅在需要生命周期门禁且客户端缺少原生 hook
+    surface 时，才使用 wrapper / pseudo-hook harness。
 
     Chinese route semantics / 中文路由语义:
     - Online stack: BAAI/bge-m3 dense embedding, BAAI/bge-reranker-v2-m3

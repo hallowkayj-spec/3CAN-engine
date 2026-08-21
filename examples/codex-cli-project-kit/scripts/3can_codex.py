@@ -2216,7 +2216,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     session_parser = subparsers.add_parser(
         "session-start",
-        help="Check 3CAN readiness, check in, then fetch briefing.",
+        help=(
+            "Optional current-client orientation: check readiness, check in, "
+            "and fetch briefing; does not create a chat/task or start 3CAN."
+        ),
+        description=(
+            "Optional current-client orientation: check readiness, check in, "
+            "and fetch briefing; does not create a chat/task or start 3CAN."
+        ),
     )
     session_parser.add_argument("--agent-id", nargs="?", default="", const="")
     session_parser.add_argument("--name", default="Codex CLI")
