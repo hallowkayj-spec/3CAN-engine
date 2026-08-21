@@ -11,6 +11,21 @@ The implementation and migration tooling below are staged and locally tested.
 They are not yet tagged or published as a release, and this changelog does not
 claim that any private production graph has been migrated.
 
+### 2026-08-20 portable public-release packaging
+
+- Reworked the repository landing page into a Chinese-first OPC guide while
+  retaining `README.en.md` for international users. The docs clarify that 3CAN
+  is a local service, not a mandatory dedicated management chat Session.
+- Added one cross-platform, standard-library release builder. It archives one
+  exact clean Git commit, extracts the result, runs the strict privacy scan,
+  and emits a ZIP, SHA-256 checksum, and source-bound JSON receipt.
+- Expanded the minimum release manifest to cover the visible UI image, user
+  guide, Windows/POSIX initializers, full dependency profile, uninstall guide,
+  and release-builder tests. CI now verifies the real extracted archive.
+- Kept runtime graphs, embeddings, ledgers, activity, local paths, accounts,
+  credentials, machine receipts, and personal preferences outside the public
+  package. No local graph migration or deletion is part of this change.
+
 ### 2026-08-11 pre-dogfood convergence
 
 - Renamed the unreleased durable-current source contract from misleading

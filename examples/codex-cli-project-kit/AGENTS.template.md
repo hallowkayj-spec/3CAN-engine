@@ -28,9 +28,9 @@ production 9700 lifecycle. One failed probe is evidence, not restart authority.
 
 ## Ordinary Agent Use
 
-Do not open a dedicated 3CAN ChatGPT/Codex task. Use 3CAN from the current
-project task: the Runtime is an independent service and each Agent is a scoped
-client.
+A dedicated 3CAN ChatGPT/Codex task is not required. Use 3CAN from the current
+project task by default: the Runtime is an independent service and each Agent
+is a scoped client.
 
 For read-only orientation, call route directly:
 

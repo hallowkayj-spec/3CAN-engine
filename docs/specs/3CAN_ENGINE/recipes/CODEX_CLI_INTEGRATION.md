@@ -131,7 +131,7 @@ export THREECAN_TICKET_ID=$TICKET
 
 Hook 能力取决于客户端和配置。Codex 项目可以使用 `.codex/hooks.json`；
 没有 hook 的直接 HTTP 客户端仍可使用显式 wrapper，或在确有 guarded-write
-要求时手动调用 ticket/activity 端点。不要为此另建 3CAN Session 或第二份状态。
+要求时手动调用 ticket/activity 端点。无需为此另建 3CAN Session 或第二份状态。
 
 ## Codex 独有优势 (vs Claude Code)
 

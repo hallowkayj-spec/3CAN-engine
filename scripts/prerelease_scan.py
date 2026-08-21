@@ -475,10 +475,18 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", nargs="?", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--strict", action="store_true", help="fail on portability/rebinding findings too")
+    parser.add_argument(
+        "--extracted-package",
+        action="store_true",
+        help="verify manifest completeness without requiring an extracted release to contain .git",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
-    manifest_hits = scan_package_manifest(root)
+    manifest_hits = scan_package_manifest(
+        root,
+        verify_git_tracking=not args.extracted_package,
+    )
     runtime_hits = scan_runtime_artifacts(root)
     license_hits = scan_license_policy(root)
     project_kit_ignore_hits = scan_project_kit_runtime_ignores(root)

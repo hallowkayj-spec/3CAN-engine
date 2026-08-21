@@ -10,11 +10,28 @@ own runtime graph after initialization.
 
 ## Windows Quick Start
 
+For a portable release, create the package from an exact reviewed Git commit
+with `git archive`. After extraction, verify its manifest and contents without
+copying `.git` into the package:
+
+```powershell
+python scripts\prerelease_scan.py . --strict --extracted-package
+```
+
+The same scan without `--extracted-package` remains fail-closed in a source
+checkout when required files are not tracked by Git. Record the source commit
+and archive SHA-256 alongside the extracted package.
+
 From the target project root:
 
 ```powershell
 ..\3CAN-engine\scripts\init-project.ps1 -ProjectDir . -Port 9711 -StartServer
 ```
+
+The Windows launcher is idempotent and fail-closed: it serializes concurrent
+start attempts, accepts only one loopback listener with the expected Python and
+engine/graph identities, waits for deep development readiness, and writes an
+atomic `neural-memory/logs/3can_<port>.sidecar-owner.json` receipt.
 
 The script sets:
 
@@ -90,18 +107,25 @@ The kit includes optional adapters:
 - the 3CAN deep-research skill
 - `.codex/` hook config
 
-No separate ChatGPT/Codex task or dedicated 3CAN session is required. Every
-agent task may route as a scoped client and may write back when the operation's
-identity and provenance gates are satisfied. Read-only routing does not require
-a ticket, check-in, hook, wrapper, or prior bootstrap call. The optional
-`bootstrap` / `session-start` commands only combine readiness, check-in,
-briefing, and route inside the current task; they store no local session truth.
+A separate ChatGPT/Codex task or dedicated 3CAN session is not required. Each
+agent execution is a scoped client and may route directly. Writeback remains
+subject to the operation's identity, project, provenance, and other applicable
+gates.
 
-Use the prepare/done lifecycle only when a project has a concrete guarded-write
-or evidence requirement. The wrapper never starts or terminates backend/proxy
-processes. Explicit `-StartServer`/`--start-server` is an operator setup action.
-A managed Windows installation may use one machine-owned Supervisor Scheduled
-Task; wrappers only observe Runtime readiness.
+`neural-memory/mcp_server.py` uses `THREECAN_URL`, then
+`THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint
+in each MCP client process when the project uses an isolated port such as
+`9711`; do not copy or patch a second MCP server for each sidecar.
+
+Read-only routing does not require a ticket, check-in, hook, wrapper, or prior
+bootstrap call. The optional `bootstrap` / `session-start` commands only
+combine readiness, check-in, briefing, and route inside the current agent
+execution; they store no local session truth. Use the prepare/done lifecycle
+only when a project has a concrete guarded-write or evidence requirement. The
+wrapper never starts or terminates backend/proxy processes. Explicit
+`-StartServer`/`--start-server` is an operator setup action. A managed Windows
+installation may use one machine-owned Supervisor Scheduled Task; wrappers
+only observe Runtime readiness.
 
 ## Optional GitHub PR Fallback
 
@@ -139,3 +163,25 @@ private terms do not belong in this public scanner's source.
 Strict mode also fails if runtime graph artifacts such as node JSON, SQLite
 ledgers, embeddings, activity logs, or agent state are present inside the
 release package.
+
+## Build the Public Release Archive
+
+Maintainers build from one clean, exact Git commit. The builder uses
+`git archive`, so `.git`, untracked files, local graph state, logs, credentials,
+and task-owned artifacts cannot enter through a broad filesystem copy. It then
+extracts the ZIP and runs the strict scanner again:
+
+```powershell
+python scripts\prerelease_scan.py --strict
+python scripts\build_release.py --version v0.2.0-rc.1 --output-dir dist
+```
+
+The output directory receives three files: the versioned ZIP, its SHA-256
+checksum, and a JSON receipt binding the source commit/tree, archive digest,
+file count, license, and extracted-package scan result. The command refuses a
+dirty worktree and refuses to overwrite an existing output.
+
+`RELEASE_PACKAGE_MANIFEST.json` is the minimum completeness contract, not a
+filesystem include glob. The archive contains all files tracked by the exact
+public commit; every new required entry point or user-facing document should
+also be added to the manifest so accidental omission fails CI.

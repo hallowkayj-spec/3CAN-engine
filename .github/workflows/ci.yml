@@ -46,6 +46,9 @@ jobs:
       - name: Pre-release isolation scan
         run: python scripts/prerelease_scan.py --strict
 
+      - name: Build and scan extracted release archive
+        run: python scripts/build_release.py --version v0.2.0-rc.1 --output-dir "$RUNNER_TEMP/3can-release"
+
       - name: Error lifecycle and release tests
         run: python -m pytest neural-memory/tests -q
 

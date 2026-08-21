@@ -6,8 +6,8 @@ info:
   description: |
     v0.2 release-candidate runtime harness contract:
     - Optional client orientation: stats/liveness -> agents/checkin -> briefing
-      -> route. Direct route/read/writeback requires no separate chat or prior
-      orientation call.
+      -> route. Direct route/read and appropriately gated writeback require no
+      separate chat or prior orientation call.
     - Pre-mutation gate: durable route/ticket -> validate -> scoped consume.
     - Error lifecycle: occurrence -> repeated ErrorCase -> verified Resolution.
     - Post-mutation completion: replay-safe activity/done plus typed evidence.
@@ -18,7 +18,7 @@ info:
 
     v0.2 候选运行时 harness 契约:
     - 可选客户端定向: stats/liveness -> agents/checkin -> briefing -> route。
-      直接 route/read/writeback 不要求另开聊天任务，也不要求先调用定向流程。
+      直接 route/read 和满足门禁的 writeback 不要求另开聊天任务，也不要求先调用定向流程。
     - 动手前 gate: SQLite/WAL route/ticket -> 验证 -> scope digest consume.
     - 错误闭环: occurrence -> 重复 ErrorCase -> 经证据验证的 Resolution.
     - 动手后完成: activity/done 绑定请求 hash, 重放返回同一结果.

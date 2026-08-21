@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -35,6 +36,7 @@ PROJECT_KIT_CAPSULE_TEMPLATE = (
 ROUTE_BENCHMARK = ROOT / "benchmark" / "route_benchmark_v1.json"
 ROUTE_BENCHMARK_RUNNER = ROOT / "benchmark" / "run_benchmark.py"
 VERIFY_PROJECT = RELEASE_ROOT / "scripts" / "verify_project.py"
+INIT_PROJECT = RELEASE_ROOT / "scripts" / "init-project.ps1"
 CLAUDE_SUBAGENT_STOP_HOOK = (
     RELEASE_ROOT / "examples" / "claude-code-hooks" / "3can-subagent-stop.js"
 )
@@ -146,6 +148,49 @@ def test_prerelease_scan_is_project_root_relative(tmp_path):
     assert "high-confidence secret" not in result.stdout
 
 
+def test_prerelease_scan_accepts_complete_extracted_package(tmp_path):
+    package = tmp_path / "3can-engine"
+    shutil.copytree(
+        RELEASE_ROOT,
+        package,
+        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+    )
+    script = package / "scripts" / "prerelease_scan.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(package),
+            "--strict",
+            "--extracted-package",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "[pre-release scan] clean" in result.stdout
+
+
+def test_windows_sidecar_launcher_is_identity_bound_and_receipted():
+    source = INIT_PROJECT.read_text(encoding="utf-8")
+
+    for required in (
+        "Get-NetTCPConnection -State Listen -ErrorAction Stop",
+        "THREECAN_SIDECAR_START_BUSY",
+        "runtime_identity.engine_root_sha256",
+        "runtime_identity.graph_root_sha256",
+        "readiness.development_ready",
+        "-PassThru",
+        ".sidecar-owner.json",
+        "[System.IO.File]::Replace($temp, $Path, $backup)",
+    ):
+        assert required in source
+    assert "Replace($temp, $Path, $null)" not in source
+    assert 'Write-Host "[3CAN] started $BaseUrl"' not in source
+
+
 def test_prerelease_scan_blocks_runtime_graph_artifacts(tmp_path):
     root = tmp_path / "release"
     graph = root / "neural-memory" / "graph"
@@ -216,6 +261,15 @@ def test_mcp_route_returns_exact_correlation_and_read_node_forwards_it(monkeypat
             "session_instance_id": "session-public-1",
         },
     }
+
+
+def test_mcp_uses_configured_sidecar_endpoint(monkeypatch):
+    monkeypatch.setenv("THREECAN_BASE_URL", "http://127.0.0.1:9711/")
+    monkeypatch.delenv("THREECAN_URL", raising=False)
+
+    server = load_mcp_server()
+
+    assert server.BASE == "http://127.0.0.1:9711"
 
 
 def test_mcp_read_without_correlation_is_read_only(monkeypatch):
@@ -769,14 +823,12 @@ def test_project_kit_writeback_overrides_file_identity_with_current_execution(
         lambda payload: {**payload, "project_id": "public-demo"},
     )
     captured = {}
-    monkeypatch.setattr(
-        helper,
-        "_try_json_request",
-        lambda _base, _path, **kwargs: (
-            captured.update(kwargs["payload"]) is None,
-            {"ok": True},
-        ),
-    )
+    def request(_base, path, **kwargs):
+        captured["path"] = path
+        captured.update(kwargs["payload"])
+        return True, {"ok": True}
+
+    monkeypatch.setattr(helper, "_try_json_request", request)
     monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
     monkeypatch.setattr(helper, "_record_local_token_estimate", lambda *args, **kwargs: None)
     args = helper.build_parser().parse_args(
@@ -785,6 +837,7 @@ def test_project_kit_writeback_overrides_file_identity_with_current_execution(
     args.agent_id = helper._resolve_agent_id(args.agent_id)
 
     assert helper.writeback(args) == 0
+    assert captured["path"] == "/api/writeback"
     assert captured["agent_id"].startswith("codex-thread-current-writeback-")
     assert captured["agent_id"] != "stale-agent"
 
@@ -799,19 +852,19 @@ def test_project_kit_session_correlation_is_derived_without_local_state(monkeypa
     assert not hasattr(helper, "LOCAL_RUNTIME_DIR")
 
 
-def test_project_kit_requires_no_dedicated_3can_session():
+def test_project_kit_works_without_dedicated_3can_session(monkeypatch):
     helper = load_project_kit_helper()
     contracts = (
         (
             RELEASE_ROOT / "docs" / "PROJECT_KIT.md",
-            "No separate ChatGPT/Codex task or dedicated 3CAN session is required",
+            "A separate ChatGPT/Codex task or dedicated 3CAN session is not required",
         ),
         (
             RELEASE_ROOT
             / "examples"
             / "codex-cli-project-kit"
             / "AGENTS.template.md",
-            "Do not open a dedicated 3CAN ChatGPT/Codex task",
+            "A dedicated 3CAN ChatGPT/Codex task is not required",
         ),
         (
             RELEASE_ROOT
@@ -821,9 +874,22 @@ def test_project_kit_requires_no_dedicated_3can_session():
             / "AGENT_BINDING.md",
             "无需另开 3CAN ChatGPT/Codex Session",
         ),
+        (
+            RELEASE_ROOT
+            / "docs"
+            / "specs"
+            / "3CAN_ENGINE"
+            / "CONTRACTS.md",
+            "普通 route 与满足门禁的 writeback 不依赖预先 check-in",
+        ),
+        (
+            RELEASE_ROOT / "README.en.md",
+            "does not create a chat session or start the Runtime",
+        ),
     )
     for path, expected in contracts:
-        assert expected in path.read_text(encoding="utf-8")
+        normalized = " ".join(path.read_text(encoding="utf-8").split())
+        assert " ".join(expected.split()) in normalized
     help_result = subprocess.run(
         [sys.executable, str(PROJECT_KIT_HELPER), "session-start", "--help"],
         check=True,
@@ -833,10 +899,31 @@ def test_project_kit_requires_no_dedicated_3can_session():
     route_args = helper.build_parser().parse_args(
         ["route", "--task", "current task"]
     )
+    requests = []
+    monkeypatch.setattr(
+        helper,
+        "_with_execution_context",
+        lambda payload, **_kwargs: payload,
+    )
+    monkeypatch.setattr(helper, "_with_owner_intent", lambda payload: payload)
+    monkeypatch.setattr(
+        helper,
+        "_try_json_request",
+        lambda _base, path, **_kwargs: (requests.append(path) is None, {"ok": True}),
+    )
+    monkeypatch.setattr(helper, "_print_json", lambda _payload: None)
+    monkeypatch.setattr(
+        helper,
+        "_record_local_token_estimate",
+        lambda *args, **kwargs: None,
+    )
 
     assert "does not create a chat/task or start 3CAN" in help_result.stdout
     assert route_args.command == "route"
     assert route_args.workorder_id == ""
+    route_args.agent_id = "codex-direct-client"
+    assert helper.route(route_args) == 0
+    assert requests == ["/api/route"]
 
 
 def test_project_kit_wrapper_has_no_local_ticket_truth():

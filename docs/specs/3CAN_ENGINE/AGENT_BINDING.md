@@ -11,7 +11,8 @@ Step 2: 有意义的阶段成果走 POST /api/writeback 或 /api/nodes
 
 调用时携带唯一 AgentId；写入再携带该操作要求的项目、工作树、来源与版本
 上下文即可。无需另开 3CAN ChatGPT/Codex Session，也不要求先 check-in 或
-briefing。`agents/checkin` 只是需要 Agent heartbeat/briefing 投影时的可选能力。
+briefing。若写操作要求 route/ticket，仍须先完成既有门禁；省略 check-in 不会
+省略写入门禁。`agents/checkin` 只是需要 Agent heartbeat/briefing 投影时的可选能力。
 
 ## 2. 完整接入 (8 个环节)
 
