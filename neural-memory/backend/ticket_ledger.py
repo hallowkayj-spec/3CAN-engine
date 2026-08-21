@@ -1689,6 +1689,23 @@ class TicketLedger:
                 (state, error, _iso(), fingerprint),
             )
 
+    def pending_error_projections(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(int(limit), 1_000))
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT desired_json FROM error_projection_journal
+                WHERE state IN ('pending', 'partial')
+                ORDER BY updated_at
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+            return [json.loads(row["desired_json"]) for row in rows]
+        finally:
+            connection.close()
+
     def error_case(
         self,
         *,
