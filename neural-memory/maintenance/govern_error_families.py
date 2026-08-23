@@ -53,6 +53,7 @@ from migrate_legacy_errors import (  # noqa: E402
 
 RECEIPT_SCHEMA = "3can.error-family-activation-receipt/v1"
 ROLLBACK_RECEIPT_SCHEMA = "3can.error-family-rollback-receipt/v1"
+ROLLBACK_JOURNAL_SCHEMA = "3can.error-family-rollback-journal/v1"
 ERROR_CLUSTER = "ErrorKnowledge"
 
 
@@ -284,6 +285,18 @@ def _publish_revision(path: Path, payload: bytes) -> None:
     _atomic_write_bytes(path, payload)
 
 
+def _publish_receipt(path: Path, payload: Mapping[str, Any]) -> None:
+    if path.exists():
+        if _read_json(path) != payload:
+            raise MigrationError(f"existing ErrorFamily receipt changed: {path}")
+        return
+    _atomic_write_json(path, payload)
+
+
+def _active_sha256(path: Path) -> str:
+    return _sha256_file(path) if path.is_file() else ""
+
+
 def activate(
     graph_dir: Path | str,
     candidate_payload: Any,
@@ -301,6 +314,9 @@ def activate(
     ).encode("utf-8")
     active_sha256 = _sha256_bytes(active_bytes)
     paths = _family_paths(graph)
+    run_id = active["manifest_id"]
+    journal_path = paths["journals"] / f"{run_id}.json"
+    receipt_path = paths["receipts"] / f"{run_id}.json"
     quiescence = _require_engine_quiescence(
         graph_dir=graph,
         confirm_engine_stopped=confirm_engine_stopped,
@@ -318,41 +334,94 @@ def activate(
         )
         quiescence["checked_immediately_before_mutation"] = True
         active_path = paths["active"]
-        previous_bytes = active_path.read_bytes() if active_path.is_file() else b""
-        previous_sha256 = _sha256_bytes(previous_bytes) if previous_bytes else ""
         paths["revisions"].mkdir(parents=True, exist_ok=True)
-        _publish_revision(paths["revisions"] / f"{active_sha256}.json", active_bytes)
-        if previous_bytes:
-            _publish_revision(
-                paths["revisions"] / f"{previous_sha256}.json",
-                previous_bytes,
-            )
-        run_id = active["manifest_id"]
-        journal_path = paths["journals"] / f"{run_id}.json"
-        receipt_path = paths["receipts"] / f"{run_id}.json"
-        journal = {
-            "schema_version": RECEIPT_SCHEMA,
-            "operation": "activate",
-            "run_id": run_id,
-            "phase": "prepared",
-            "graph_dir": str(graph),
-            "active_sha256": active_sha256,
-            "previous_active_sha256": previous_sha256,
-            "active_revision": str(paths["revisions"] / f"{active_sha256}.json"),
-            "previous_revision": (
-                str(paths["revisions"] / f"{previous_sha256}.json")
+        active_revision = paths["revisions"] / f"{active_sha256}.json"
+        _publish_revision(active_revision, active_bytes)
+        was_resumed = journal_path.is_file()
+        if was_resumed:
+            existing = _read_json(journal_path)
+            if (
+                not isinstance(existing, Mapping)
+                or existing.get("schema_version") != RECEIPT_SCHEMA
+                or existing.get("operation") != "activate"
+                or existing.get("run_id") != run_id
+                or existing.get("graph_dir") != str(graph)
+                or existing.get("active_sha256") != active_sha256
+                or Path(str(existing.get("active_revision") or "")).resolve()
+                != active_revision.resolve()
+            ):
+                raise MigrationError("existing ErrorFamily activation journal mismatches")
+            journal = dict(existing)
+            previous_sha256 = str(journal.get("previous_active_sha256") or "")
+            current_sha256 = _active_sha256(active_path)
+            if journal.get("phase") == "completed":
+                if current_sha256 != active_sha256:
+                    raise MigrationError(
+                        "completed ErrorFamily activation no longer matches active sidecar"
+                    )
+                _publish_receipt(receipt_path, journal)
+            elif journal.get("phase") == "prepared":
+                if current_sha256 not in {previous_sha256, active_sha256}:
+                    raise MigrationError(
+                        "cannot resume ErrorFamily activation after sidecar drift"
+                    )
+                if previous_sha256:
+                    previous_revision = Path(
+                        str(journal.get("previous_revision") or "")
+                    ).resolve()
+                    if (
+                        previous_revision.parent != paths["revisions"].resolve()
+                        or not previous_revision.is_file()
+                        or _sha256_file(previous_revision) != previous_sha256
+                    ):
+                        raise MigrationError(
+                            "prepared ErrorFamily activation lost previous revision"
+                        )
+                if current_sha256 != active_sha256:
+                    _atomic_write_bytes(active_path, active_bytes)
+                journal["phase"] = "completed"
+                journal["completed_at"] = _utc_now()
+                journal["engine_quiescence"] = quiescence
+                journal["resumed"] = True
+                _atomic_write_json(journal_path, journal)
+                _publish_receipt(receipt_path, journal)
+            else:
+                raise MigrationError("ErrorFamily activation journal phase is invalid")
+        else:
+            previous_bytes = active_path.read_bytes() if active_path.is_file() else b""
+            previous_sha256 = _sha256_bytes(previous_bytes) if previous_bytes else ""
+            if previous_sha256 == active_sha256:
+                raise MigrationError(
+                    "active ErrorFamily manifest has no matching activation journal"
+                )
+            previous_revision = (
+                paths["revisions"] / f"{previous_sha256}.json"
                 if previous_sha256
-                else ""
-            ),
-            "started_at": _utc_now(),
-        }
-        _atomic_write_json(journal_path, journal)
-        _atomic_write_bytes(active_path, active_bytes)
-        journal["phase"] = "completed"
-        journal["completed_at"] = _utc_now()
-        journal["engine_quiescence"] = quiescence
-        _atomic_write_json(journal_path, journal)
-        _atomic_write_json(receipt_path, journal)
+                else None
+            )
+            if previous_revision is not None:
+                _publish_revision(previous_revision, previous_bytes)
+            journal = {
+                "schema_version": RECEIPT_SCHEMA,
+                "operation": "activate",
+                "run_id": run_id,
+                "phase": "prepared",
+                "graph_dir": str(graph),
+                "active_sha256": active_sha256,
+                "previous_active_sha256": previous_sha256,
+                "active_revision": str(active_revision),
+                "previous_revision": (
+                    str(previous_revision) if previous_revision is not None else ""
+                ),
+                "started_at": _utc_now(),
+            }
+            _atomic_write_json(journal_path, journal)
+            _atomic_write_bytes(active_path, active_bytes)
+            journal["phase"] = "completed"
+            journal["completed_at"] = _utc_now()
+            journal["engine_quiescence"] = quiescence
+            _atomic_write_json(journal_path, journal)
+            _publish_receipt(receipt_path, journal)
     return {
         **journal,
         "receipt_path": str(receipt_path),
@@ -385,10 +454,6 @@ def rollback(
     paths = _family_paths(graph)
     active_path = paths["active"]
     expected_active_sha256 = str(receipt.get("active_sha256") or "")
-    if not active_path.is_file() or _sha256_file(active_path) != expected_active_sha256:
-        raise MigrationError(
-            "active ErrorFamily manifest changed after activation; refusing overwrite"
-        )
     quiescence = _require_engine_quiescence(
         graph_dir=graph,
         confirm_engine_stopped=confirm_engine_stopped,
@@ -402,6 +467,9 @@ def rollback(
             "receipt_sha256": _sha256_file(receipt_file),
         }
     )
+    rollback_id = f"rollback-{receipt.get('run_id')}-{plan_hash[:12]}"
+    journal_path = paths["journals"] / f"{rollback_id}.json"
+    rollback_path = paths["receipts"] / f"{rollback_id}.json"
     with _mutation_lock(graph, operation="error-family-rollback", plan_hash=plan_hash):
         quiescence = _require_engine_quiescence(
             graph_dir=graph,
@@ -412,6 +480,7 @@ def rollback(
         )
         quiescence["checked_immediately_before_mutation"] = True
         previous_sha256 = str(receipt.get("previous_active_sha256") or "")
+        previous_bytes = b""
         if previous_sha256:
             previous = Path(str(receipt.get("previous_revision") or "")).resolve()
             if (
@@ -420,23 +489,88 @@ def rollback(
                 or _sha256_file(previous) != previous_sha256
             ):
                 raise MigrationError("previous ErrorFamily revision is missing or changed")
-            _atomic_write_bytes(active_path, previous.read_bytes())
+            previous_bytes = previous.read_bytes()
+        activation_receipt_sha256 = _sha256_file(receipt_file)
+        current_sha256 = _active_sha256(active_path)
+        was_resumed = journal_path.is_file()
+        if was_resumed:
+            existing = _read_json(journal_path)
+            if (
+                not isinstance(existing, Mapping)
+                or existing.get("schema_version") != ROLLBACK_JOURNAL_SCHEMA
+                or existing.get("operation") != "rollback"
+                or existing.get("run_id") != rollback_id
+                or existing.get("graph_dir") != str(graph)
+                or existing.get("activation_receipt_sha256")
+                != activation_receipt_sha256
+                or existing.get("expected_active_sha256")
+                != expected_active_sha256
+                or existing.get("restored_active_sha256") != previous_sha256
+            ):
+                raise MigrationError("existing ErrorFamily rollback journal mismatches")
+            journal = dict(existing)
+            if journal.get("phase") == "completed":
+                if current_sha256 != previous_sha256:
+                    raise MigrationError(
+                        "completed ErrorFamily rollback no longer matches active sidecar"
+                    )
+                rollback_receipt = journal.get("receipt")
+                if not isinstance(rollback_receipt, Mapping):
+                    raise MigrationError("completed ErrorFamily rollback lost receipt")
+                rollback_receipt = dict(rollback_receipt)
+                _publish_receipt(rollback_path, rollback_receipt)
+            elif journal.get("phase") != "prepared":
+                raise MigrationError("ErrorFamily rollback journal phase is invalid")
+            else:
+                if current_sha256 not in {
+                    expected_active_sha256,
+                    previous_sha256,
+                }:
+                    raise MigrationError(
+                        "cannot resume ErrorFamily rollback after sidecar drift"
+                    )
+                rollback_receipt = {}
         else:
-            active_path.unlink()
-        rollback_receipt = {
-            "schema_version": ROLLBACK_RECEIPT_SCHEMA,
-            "status": "completed",
-            "rolled_back_at": _utc_now(),
-            "activation_receipt_sha256": _sha256_file(receipt_file),
-            "rolled_back_active_sha256": expected_active_sha256,
-            "restored_active_sha256": previous_sha256,
-            "engine_quiescence": quiescence,
-        }
-        rollback_path = (
-            paths["receipts"]
-            / f"rollback-{receipt.get('run_id')}-{plan_hash[:12]}.json"
-        )
-        _atomic_write_json(rollback_path, rollback_receipt)
+            if current_sha256 != expected_active_sha256:
+                raise MigrationError(
+                    "active ErrorFamily manifest changed after activation; "
+                    "refusing overwrite"
+                )
+            journal = {
+                "schema_version": ROLLBACK_JOURNAL_SCHEMA,
+                "operation": "rollback",
+                "run_id": rollback_id,
+                "phase": "prepared",
+                "graph_dir": str(graph),
+                "activation_receipt_sha256": activation_receipt_sha256,
+                "expected_active_sha256": expected_active_sha256,
+                "restored_active_sha256": previous_sha256,
+                "started_at": _utc_now(),
+            }
+            _atomic_write_json(journal_path, journal)
+            rollback_receipt = {}
+
+        if journal.get("phase") == "prepared":
+            if current_sha256 == expected_active_sha256:
+                if previous_sha256:
+                    _atomic_write_bytes(active_path, previous_bytes)
+                else:
+                    active_path.unlink(missing_ok=True)
+            rollback_receipt = {
+                "schema_version": ROLLBACK_RECEIPT_SCHEMA,
+                "status": "completed",
+                "rolled_back_at": _utc_now(),
+                "activation_receipt_sha256": activation_receipt_sha256,
+                "rolled_back_active_sha256": expected_active_sha256,
+                "restored_active_sha256": previous_sha256,
+                "engine_quiescence": quiescence,
+                "resumed": was_resumed,
+            }
+            journal["phase"] = "completed"
+            journal["completed_at"] = _utc_now()
+            journal["receipt"] = rollback_receipt
+            _atomic_write_json(journal_path, journal)
+            _publish_receipt(rollback_path, rollback_receipt)
     return {**rollback_receipt, "receipt_path": str(rollback_path)}
 
 

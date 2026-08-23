@@ -206,7 +206,7 @@ docs/                        用户指南、项目 Kit、协议、边界与证�
 | --- | ---: | --- |
 | Route benchmark | 46 queries；MRR `0.9783`；Recall@1 `0.8261`；Recall@3 / Hit@3 `1.0` | 在 16 节点公开合成 seed graph 上，任务路由能稳定找到预设相关节点 |
 | Substrate benchmark | 10 cases；Top-1 `1.0`；Top-3 mean recall `0.8167`；ERR proactive@3 `1.0` | 公开 fixture 中的项目结构、接口和错误提示能按预设答案出现 |
-| 本地发布验收 | `450 passed`；Ruff、严格隐私扫描、ZIP 解包扫描通过 | 当前候选的合同、并发、隔离、发布与安全回归在该测试环境通过 |
+| 本地发布验收 | `494 passed`；Ruff、严格隐私扫描通过 | 当前候选的合同、并发、隔离、发布与安全回归在该测试环境通过 |
 | GitHub clean clone | Ubuntu + Windows 独立 `9701` 冷启动、route/writeback、停止回收通过 | 一个不依赖维护者图谱的全新 checkout 能安装并运行 |
 
 完整内容寻址回执见 [SEED_GRAPH_BENCHMARK_20260809.json](./docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json)。这些数字是**官方自建 fixture 的能力证明，不是第三方排名**：它们不证明私有生产图质量、真实 OPC 长期收益、跨机器延迟，也不能直接与 Mem0、Graphiti、Letta 等不同赛道产品比较。仓库保留的历史 LongMemEval 试跑受 judge、runner 与 fixture 版本影响，不作为本候选的发布分数。

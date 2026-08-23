@@ -233,6 +233,129 @@ def test_activation_is_sidecar_only_and_rollback_is_exact(
     assert _mutable_graph_bytes(graph) == before
 
 
+def test_activation_resumes_after_active_swap_before_completed_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _graph(tmp_path)
+    candidates = GOVERN.build_candidate_manifest(graph)
+    endpoint = _offline_defaults(monkeypatch)
+    original_write = GOVERN._atomic_write_json
+    interrupted = False
+
+    def interrupt_completed_journal(path: Path, payload: dict) -> None:
+        nonlocal interrupted
+        if (
+            not interrupted
+            and path.parent.name == "journals"
+            and payload.get("operation") == "activate"
+            and payload.get("phase") == "completed"
+        ):
+            interrupted = True
+            raise RuntimeError("simulated activation process loss")
+        original_write(path, payload)
+
+    monkeypatch.setattr(GOVERN, "_atomic_write_json", interrupt_completed_journal)
+    with pytest.raises(RuntimeError, match="activation process loss"):
+        GOVERN.activate(
+            graph,
+            candidates,
+            _decisions(candidates),
+            confirm_engine_stopped=True,
+            engine_endpoints=[endpoint],
+            engine_probe_timeout_sec=0.05,
+        )
+
+    active_path = graph / "maintenance" / "error_families" / "active.json"
+    active_bytes = active_path.read_bytes()
+    resumed = GOVERN.activate(
+        graph,
+        candidates,
+        _decisions(candidates),
+        confirm_engine_stopped=True,
+        engine_endpoints=[endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    assert resumed["phase"] == "completed"
+    assert resumed["resumed"] is True
+    assert resumed["previous_active_sha256"] == ""
+    assert active_path.read_bytes() == active_bytes
+
+    replayed = GOVERN.activate(
+        graph,
+        candidates,
+        _decisions(candidates),
+        confirm_engine_stopped=True,
+        engine_endpoints=[endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    assert replayed["completed_at"] == resumed["completed_at"]
+    assert active_path.read_bytes() == active_bytes
+
+
+def test_rollback_resumes_after_sidecar_restore_before_completed_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _graph(tmp_path)
+    candidates = GOVERN.build_candidate_manifest(graph)
+    endpoint = _offline_defaults(monkeypatch)
+    activated = GOVERN.activate(
+        graph,
+        candidates,
+        _decisions(candidates),
+        confirm_engine_stopped=True,
+        engine_endpoints=[endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    original_write = GOVERN._atomic_write_json
+    interrupted = False
+
+    def interrupt_completed_journal(path: Path, payload: dict) -> None:
+        nonlocal interrupted
+        if (
+            not interrupted
+            and path.parent.name == "journals"
+            and payload.get("operation") == "rollback"
+            and payload.get("phase") == "completed"
+        ):
+            interrupted = True
+            raise RuntimeError("simulated rollback process loss")
+        original_write(path, payload)
+
+    monkeypatch.setattr(GOVERN, "_atomic_write_json", interrupt_completed_journal)
+    with pytest.raises(RuntimeError, match="rollback process loss"):
+        GOVERN.rollback(
+            graph,
+            activated["receipt_path"],
+            confirm_engine_stopped=True,
+            engine_endpoints=[endpoint],
+            engine_probe_timeout_sec=0.05,
+        )
+
+    active_path = graph / "maintenance" / "error_families" / "active.json"
+    assert not active_path.exists()
+    resumed = GOVERN.rollback(
+        graph,
+        activated["receipt_path"],
+        confirm_engine_stopped=True,
+        engine_endpoints=[endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    assert resumed["status"] == "completed"
+    assert resumed["resumed"] is True
+    assert not active_path.exists()
+
+    replayed = GOVERN.rollback(
+        graph,
+        activated["receipt_path"],
+        confirm_engine_stopped=True,
+        engine_endpoints=[endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    assert replayed["rolled_back_at"] == resumed["rolled_back_at"]
+
+
 def test_rollback_refuses_a_later_active_manifest(
     tmp_path: Path,
     monkeypatch,

@@ -53,6 +53,9 @@ threshold and remains typed `VALIDATING`.
 - Ordinary development queries still exclude ErrorKnowledge artifacts.
 - ErrorFamily never inherits a resolution and never changes ErrorCase nodes or
   graph edges.
+- Fault-injection tests cover process loss after activation swap and after
+  rollback restore; both resume from the prepared journal without changing the
+  recorded predecessor.
 - Production activation still requires reviewed PR state, a maintenance
   window, the canonical Supervisor owner, and a matching HTTP benchmark.
 
@@ -71,3 +74,8 @@ threshold and remains typed `VALIDATING`.
 
 These hashes identify local private evidence only. They do not make that
 evidence part of the public release.
+
+Final source validation after replay-safe journal hardening: `494 passed`,
+full Ruff clean, strict prerelease scan clean, and all 88 tracked Python files
+parsed successfully. The sole warning is the existing upstream
+`jieba/pkg_resources` deprecation notice.

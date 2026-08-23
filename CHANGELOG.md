@@ -27,6 +27,8 @@ claim that any private production graph has been migrated.
   ambiguous aliases receive no promotion.
 - Kept ErrorFamily aliases out of dense embedding source text, so a governance
   revision does not force a whole-graph embedding rebuild.
+- Made ErrorFamily activation and rollback replay-safe across process loss
+  between the atomic sidecar swap and completed receipt publication.
 - Clarified the default development contract: ordinary Git/code/test work has
   zero forced 3CAN calls; durable writeback defaults to `AUTO_CLOSEOUT` or
   explicit `OWNER_REQUESTED`. Typed 3CAN convergence states do not block safe

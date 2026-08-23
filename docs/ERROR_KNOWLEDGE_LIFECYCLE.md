@@ -605,7 +605,9 @@ ErrorCases, copy solutions, or add edges.
    fails closed without promotion. Exact ek2 identity remains stronger.
 4. The active manifest is a content-addressed atomic sidecar. Activation and
    rollback require graph quiescence, retain revision receipts, and refuse to
-   overwrite a later active manifest.
+   overwrite a later active manifest. Prepared journals resume after process
+   loss on either side of the atomic swap; a completed replay is idempotent and
+   cannot reinterpret the active version as its own rollback predecessor.
 5. Family aliases do not enter dense embedding source text. A governance
    revision therefore reuses the current synchronized embedding cache rather
    than rebuilding every node. The sidecar still participates in keyword DF,
