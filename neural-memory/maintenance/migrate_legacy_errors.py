@@ -994,9 +994,8 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
         target = str(edge.get("target") or "")
         if source in removal_set or target in removal_set:
             removed_indexes.add(index)
-            for node_id in removal_set:
-                if source == node_id or target == node_id:
-                    connected_by_candidate[node_id].append(copy.deepcopy(edge))
+            for node_id in removal_set.intersection((source, target)):
+                connected_by_candidate[node_id].append(copy.deepcopy(edge))
         if (
             source in registry_ids
             and target in noncanonical_error_set
