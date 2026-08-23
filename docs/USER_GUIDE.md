@@ -590,7 +590,7 @@ v0.2 支持多个 Agent/Session 并发连接同一个明确管理的本地实例
 
 完全可以。Hooks 是可选的收敛/硬化层，不是 3CAN 运行前提。普通开发不要求每个 Prompt、工具、测试或 Commit 调用 3CAN；有意义的模块收尾才可使用 `AUTO_CLOSEOUT`，用户明确要求时使用 `OWNER_REQUESTED`。3CAN 不可用时如实报告 `UNAVAILABLE`，不阻断安全的本地开发。
 
-Codex Project Kit 还提供一个不联网的原生收敛 Hook：它在压缩后恢复小型目标契约，并用当前 Git/Worktree 收据区分 `CANDIDATE_READY` 与真正的用户接受。启用、信任和全局推广都应由用户单独 review。
+Codex Project Kit 还提供一个不联网的原生收敛 Hook：它在压缩后恢复小型目标契约，要求每条验收条件显式绑定证据，并用当前 Git/Worktree 收据区分 `CANDIDATE_READY` 与真正的用户接受。只有所有绑定证据通过的 `CONVERGED` 才可产生 `AUTO_CLOSEOUT` 资格；启用、信任和全局推广都应由用户单独 review。
 
 ### Q11. 是否必须单独开一个 3CAN 管理 Session?
 

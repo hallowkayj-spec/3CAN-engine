@@ -16,12 +16,16 @@ deploy, or publish.
 - `.codex/convergence.json` owns the small project acceptance contract.
 - Git owns exact source state; declared commands and artifacts prove behavior.
 - The local receipt records evidence for the current Git/workspace fingerprint.
-- 3CAN receives durable meaning only at `AUTO_CLOSEOUT` or an explicit
+- 3CAN receives durable meaning only after `CONVERGED` makes an
+  `AUTO_CLOSEOUT` eligible, or at an explicit
   `OWNER_REQUESTED` checkpoint. Hook execution never performs that writeback.
 - `CANDIDATE_READY` is not Owner acceptance, merge, deployment, or publication.
 
-Missing configuration is a no-op. Invalid configuration or hook I/O fails open
-with a typed `UNAVAILABLE` message so safe local work can continue.
+Missing configuration is a no-op because convergence is opt-in. Invalid
+configuration or hook I/O fails open during development so safe local work can
+continue. At `Stop`, the same failure requests one bounded correction and can
+only finish with an explicit `UNAVAILABLE`/`PARTIAL` report, never proved
+convergence.
 
 ## Enable It Deliberately
 
@@ -42,10 +46,19 @@ configuration.
 {
   "schema": "3can.convergence-contract/v1",
   "status": "active",
+  "scope": "current_repository_only",
   "goal": "Deliver one independently reviewable module.",
   "acceptance": [
-    "The focused test suite passes.",
-    "The produced artifact has verified lineage."
+    {
+      "id": "mechanical-integrity",
+      "text": "The focused test suite passes and the result has verified lineage.",
+      "evidence": ["focused-tests", "result-artifact"]
+    },
+    {
+      "id": "owner-acceptance",
+      "text": "The Owner accepts the final result.",
+      "evidence": ["owner-review"]
+    }
   ],
   "non_goals": [
     "Do not merge, deploy, or publish."
@@ -75,6 +88,14 @@ configuration.
 }
 ```
 
+Every acceptance condition must have a stable ID, human-readable text, and one
+or more evidence check IDs. All referenced evidence runs at the final stage.
+Unbound or legacy string acceptance is invalid and cannot produce
+`CANDIDATE_READY` or `CONVERGED`. The hook verifies coverage and evidence state;
+it does not pretend that a mechanical check proves visual quality, product
+fitness, or taste. Those conditions must bind to an appropriate review receipt
+or `owner_review` check selected by the project.
+
 Commands are argv arrays and run without a shell. Artifact paths must stay
 inside the project root. Command output is not persisted; the receipt stores
 only byte counts and SHA-256 digests. This reduces accidental credential or
@@ -93,7 +114,9 @@ or domain action is hard-coded into the hook:
 
 A matching `PreToolUse` is denied until the named checks passed in a receipt
 whose contract and workspace fingerprints are still current. Broad patterns
-create friction and should not be used.
+create friction and should not be used. This is an efficiency/proof-order guard,
+not a security or authorization boundary; equivalent commands can bypass a
+substring convention.
 
 ## Episode Loop
 
@@ -116,10 +139,15 @@ python scripts\3can_convergence.py verify `
 Outcomes are intentionally distinct:
 
 - `PASS`: the current episode checks pass; work continues toward the next
-  objective.
+  objective. It is evidence, not a Git checkpoint. Before the next destructive
+  episode, preserve an accepted episode through the project's normal reviewed
+  Git checkpoint.
 - `FAIL`: at least one automated check failed.
-- `CANDIDATE_READY`: automated final checks pass; an Owner review check remains.
-- `CONVERGED`: all declared final checks are automated and pass.
+- `CANDIDATE_READY`: automated final evidence passes, but at least one bound
+  acceptance condition (normally Owner review) remains pending. It is not
+  eligible for `AUTO_CLOSEOUT`.
+- `CONVERGED`: every bound acceptance condition has passing evidence. Only this
+  outcome is eligible for `AUTO_CLOSEOUT`; the hook still performs no writeback.
 - `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, `CONFLICT`: honest non-success terminal
   states for the current turn, recorded with an exact reason.
 
@@ -132,21 +160,34 @@ python scripts\3can_convergence.py record `
   --next-objective "Wait for the scoped Owner decision."
 ```
 
-`Stop` requests at most one automatic continuation per turn. If evidence is
-still missing or stale while `stop_hook_active=true`, the hook allows the stop
-and requires an honest `PARTIAL` report instead of creating an infinite loop.
+`Stop` requests at most one automatic continuation per turn. Current
+`CANDIDATE_READY`, `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, and `CONFLICT` receipts
+are never silently accepted: the first Stop is blocked with the exact typed
+state and open evidence; the second receives the same developer-system warning
+and may stop without creating an infinite loop. The hook does not inspect the
+assistant message, so it guarantees the correction signal, not linguistic
+compliance through transcript parsing.
 
 ## Native Hook Events
 
 - `SessionStart` with `source=compact`: injects only goal, acceptance, non-goals,
   latest typed receipt, open checks, and next objective.
 - `PreToolUse`: evaluates only explicitly declared guards.
-- `Stop`: accepts a current terminal receipt, otherwise requests one bounded
-  continuation.
+- `Stop`: silently accepts only current `CONVERGED`; every incomplete or
+  candidate state requests one bounded explicit report.
 
 The hook deliberately ignores the assistant message and transcript path. Codex
 does not guarantee transcript file shape or location as a stable integration
 contract.
+
+The v1 scope is deliberately `current_repository_only`. A dirty Git submodule
+is rejected as unsupported rather than treated as covered evidence. Run a
+separate convergence contract inside that repository; this hook is not a
+cross-repository orchestrator.
+
+Efficiency counters beyond check elapsed time are deliberately deferred. First
+dogfood the contract on several real tasks; add a budget only if measured
+failures show that a new field changes decisions.
 
 ## Why This Shape
 

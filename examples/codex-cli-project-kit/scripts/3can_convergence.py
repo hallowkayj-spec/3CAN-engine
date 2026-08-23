@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Evidence-based convergence checks for long Codex tasks.
 
-The hook is deliberately local and fail-open. It does not parse Codex session
-files, call 3CAN, manage Git, or make completion decisions that belong to the
-owner. A project contract declares the goal, acceptance checks, and any guarded
-high-cost operations; a compact task-local receipt records current evidence.
+The hook is deliberately local. Development-path failures are fail-open while
+Stop failures can only converge to an explicit incomplete report. It does not
+parse Codex session files, call 3CAN, manage Git, or make acceptance decisions
+that belong to the owner. A project contract binds each acceptance condition to
+named evidence; a compact task-local receipt records current results.
 """
 from __future__ import annotations
 
@@ -27,8 +28,7 @@ DEFAULT_CONTRACT = Path(".codex/convergence.json")
 DEFAULT_RECEIPT = Path("test-results/3can/convergence/receipt.json")
 CONTRACT_SCHEMA = "3can.convergence-contract/v1"
 RECEIPT_SCHEMA = "3can.convergence-receipt/v1"
-TERMINAL_OUTCOMES = {
-    "CONVERGED",
+REPORTABLE_OUTCOMES = {
     "CANDIDATE_READY",
     "BLOCKED",
     "UNAVAILABLE",
@@ -130,16 +130,19 @@ def validate_contract(value: Any, root: Path) -> dict[str, Any]:
         raise ContractError(f"contract schema must be {CONTRACT_SCHEMA}")
     if value.get("status", "active") not in {"active", "paused", "complete"}:
         raise ContractError("contract status must be active, paused, or complete")
+    if value.get("scope") != "current_repository_only":
+        raise ContractError("contract scope must be current_repository_only")
     goal = value.get("goal")
     if not isinstance(goal, str) or not goal.strip():
         raise ContractError("contract goal must be a non-empty string")
-    _string_list(value.get("acceptance"), label="acceptance", required=True)
     _string_list(value.get("non_goals", []), label="non_goals")
 
     checks = value.get("checks", [])
     if not isinstance(checks, list) or not checks:
         raise ContractError("checks must be a non-empty list")
     check_ids: set[str] = set()
+    check_stages: dict[str, list[str]] = {}
+    check_types: dict[str, str] = {}
     automated_final = False
     for index, check in enumerate(checks):
         if not isinstance(check, dict):
@@ -154,6 +157,8 @@ def validate_contract(value: Any, root: Path) -> dict[str, Any]:
         if check_type not in {"command", "artifact", "owner_review"}:
             raise ContractError(f"check {check_id} has unsupported type: {check_type}")
         stages = _check_stages(check, check_id=check_id)
+        check_stages[check_id] = stages
+        check_types[check_id] = check_type
         if check_type == "command":
             automated_final = automated_final or "final" in stages
             argv = check.get("argv")
@@ -177,6 +182,56 @@ def validate_contract(value: Any, root: Path) -> dict[str, Any]:
             raise ContractError(f"owner_review check {check_id} must use only the final stage")
     if not automated_final:
         raise ContractError("at least one automated check must run at the final stage")
+
+    acceptance = value.get("acceptance")
+    if not isinstance(acceptance, list) or not acceptance:
+        raise ContractError("acceptance must be a non-empty list of evidence bindings")
+    acceptance_ids: set[str] = set()
+    referenced_evidence: set[str] = set()
+    for index, condition in enumerate(acceptance):
+        if not isinstance(condition, dict):
+            raise ContractError(f"acceptance {index} must bind text to evidence ids")
+        acceptance_id = condition.get("id")
+        if not isinstance(acceptance_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+", acceptance_id
+        ):
+            raise ContractError(
+                f"acceptance {index} id must use letters, digits, dot, dash, or underscore"
+            )
+        if acceptance_id in acceptance_ids:
+            raise ContractError(f"duplicate acceptance id: {acceptance_id}")
+        acceptance_ids.add(acceptance_id)
+        text = condition.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ContractError(f"acceptance {acceptance_id} requires non-empty text")
+        evidence = _string_list(
+            condition.get("evidence"),
+            label=f"acceptance {acceptance_id} evidence",
+            required=True,
+        )
+        unknown = sorted(set(evidence) - check_ids)
+        if unknown:
+            raise ContractError(
+                f"acceptance {acceptance_id} references unknown checks: {', '.join(unknown)}"
+            )
+        non_final = sorted(
+            check_id for check_id in evidence if "final" not in check_stages[check_id]
+        )
+        if non_final:
+            raise ContractError(
+                f"acceptance {acceptance_id} evidence must run at final: {', '.join(non_final)}"
+            )
+        referenced_evidence.update(evidence)
+    unbound_owner_review = sorted(
+        check_id
+        for check_id, check_type in check_types.items()
+        if check_type == "owner_review" and check_id not in referenced_evidence
+    )
+    if unbound_owner_review:
+        raise ContractError(
+            "owner_review checks must prove an acceptance condition: "
+            + ", ".join(unbound_owner_review)
+        )
 
     guards = value.get("guards", [])
     if not isinstance(guards, list):
@@ -239,6 +294,15 @@ def _changed_paths(status: bytes) -> list[str]:
     return sorted(set(paths))
 
 
+def _submodule_paths(status: bytes) -> list[str]:
+    paths: list[str] = []
+    for raw_line in status.decode("utf-8", errors="surrogateescape").splitlines():
+        match = re.match(r"^[ +\-U]?[0-9a-f]+\s+(.+?)(?:\s+\(|$)", raw_line)
+        if match:
+            paths.append(match.group(1).replace("\\", "/"))
+    return paths
+
+
 def _file_fingerprint(root: Path, relative: str) -> dict[str, Any]:
     try:
         path = _resolve_under(root, relative, label="changed path")
@@ -277,12 +341,19 @@ def workspace_fingerprint(root: Path) -> dict[str, Any]:
         "--porcelain=v1",
         "-z",
         "--untracked-files=all",
-        "--ignore-submodules=dirty",
+        "--ignore-submodules=none",
         "--",
         ".",
     )
     if any(item.returncode != 0 for item in (branch, head, prefix, status)):
         raise RuntimeError("Git workspace fingerprint failed")
+    git_top = Path(top.stdout.decode("utf-8", errors="surrogateescape").strip())
+    submodule_output = b""
+    if (git_top / ".gitmodules").is_file():
+        submodules = _git(resolved, "submodule", "status", "--recursive")
+        if submodules.returncode != 0:
+            raise RuntimeError("Git submodule fingerprint failed")
+        submodule_output = submodules.stdout
     prefix_text = (
         prefix.stdout.decode("utf-8", errors="surrogateescape")
         .strip()
@@ -298,6 +369,19 @@ def workspace_fingerprint(root: Path) -> dict[str, Any]:
             if normalized.startswith(prefix_text):
                 normalized = normalized[len(prefix_text) :]
         relative_paths.append(normalized)
+    submodule_paths: set[str] = set()
+    for item in _submodule_paths(submodule_output):
+        normalized = item
+        if prefix_text:
+            if not normalized.startswith(prefix_text):
+                continue
+            normalized = normalized[len(prefix_text) :]
+        submodule_paths.add(normalized)
+    dirty_submodules = sorted(set(relative_paths).intersection(submodule_paths))
+    if dirty_submodules:
+        raise ContractError(
+            "dirty submodules are unsupported for scope=current_repository_only"
+        )
     files = [_file_fingerprint(resolved, item) for item in relative_paths]
     state = {
         "kind": "git",
@@ -416,6 +500,32 @@ def _run_check(check: dict[str, Any], root: Path, stage: str) -> dict[str, Any]:
         }
 
 
+def _evaluate_acceptance(
+    contract: dict[str, Any], checks: list[dict[str, Any]], stage: str
+) -> list[dict[str, Any]]:
+    status_by_id = {item["id"]: item["status"] for item in checks}
+    results: list[dict[str, Any]] = []
+    for condition in contract["acceptance"]:
+        evidence = condition["evidence"]
+        statuses = [status_by_id.get(check_id, "missing") for check_id in evidence]
+        if stage != "final":
+            status = "not_evaluated"
+        elif any(item in {"fail", "missing", "skipped"} for item in statuses):
+            status = "fail"
+        elif all(item == "pass" for item in statuses):
+            status = "pass"
+        else:
+            status = "pending"
+        results.append(
+            {
+                "id": condition["id"],
+                "status": status,
+                "evidence": evidence,
+            }
+        )
+    return results
+
+
 def _receipt(
     *,
     contract_sha256: str,
@@ -423,11 +533,15 @@ def _receipt(
     stage: str,
     outcome: str,
     checks: list[dict[str, Any]],
+    acceptance: list[dict[str, Any]],
     next_objective: str,
     reason: str = "",
 ) -> dict[str, Any]:
     open_checks = [item["id"] for item in checks if item.get("status") in {"fail", "pending"}]
-    writeback = "AUTO_CLOSEOUT" if outcome in {"CONVERGED", "CANDIDATE_READY"} else "NONE"
+    open_acceptance = [
+        item["id"] for item in acceptance if item.get("status") != "pass"
+    ]
+    writeback = "AUTO_CLOSEOUT" if outcome == "CONVERGED" else "NONE"
     return {
         "schema": RECEIPT_SCHEMA,
         "recorded_at": _now(),
@@ -436,9 +550,16 @@ def _receipt(
         "stage": stage,
         "outcome": outcome,
         "checks": checks,
+        "acceptance": acceptance,
         "open_check_ids": open_checks,
+        "open_acceptance_ids": open_acceptance,
         "next_objective": next_objective,
         "reason": reason,
+        "checkpoint_expectation": (
+            "normal_git_checkpoint_before_next_destructive_episode"
+            if outcome == "PASS"
+            else "none"
+        ),
         "threecan_writeback": {"eligible_trigger": writeback, "performed": False},
     }
 
@@ -462,14 +583,14 @@ def verify(
     automated_failures = [
         item for item in checks if item["type"] != "owner_review" and item["status"] == "fail"
     ]
-    owner_review_pending = any(
-        item["type"] == "owner_review" and item["status"] == "pending" for item in checks
-    )
+    acceptance = _evaluate_acceptance(contract, checks, stage)
     if automated_failures:
         outcome = "FAIL"
     elif stage == "episode":
         outcome = "PASS"
-    elif owner_review_pending:
+    elif any(item["status"] == "fail" for item in acceptance):
+        outcome = "FAIL"
+    elif any(item["status"] == "pending" for item in acceptance):
         outcome = "CANDIDATE_READY"
     else:
         outcome = "CONVERGED"
@@ -482,6 +603,7 @@ def verify(
         stage=stage,
         outcome=outcome,
         checks=checks,
+        acceptance=acceptance,
         next_objective=next_objective.strip(),
     )
     _write_json_atomic(_receipt_path(root, receipt_path), value)
@@ -503,12 +625,16 @@ def record_typed(
     if not reason.strip():
         raise ContractError("typed incomplete state requires a non-empty reason")
     previous = read_receipt(root, receipt_path) or {}
+    previous_acceptance = previous.get("acceptance")
+    if not isinstance(previous_acceptance, list) or not previous_acceptance:
+        previous_acceptance = _evaluate_acceptance(contract, [], "current")
     value = _receipt(
         contract_sha256=contract_sha256,
         workspace=workspace_fingerprint(root),
         stage=str(previous.get("stage") or "current"),
         outcome=outcome,
         checks=previous.get("checks", []) if isinstance(previous.get("checks"), list) else [],
+        acceptance=previous_acceptance,
         next_objective=next_objective.strip(),
         reason=reason.strip(),
     )
@@ -524,7 +650,10 @@ def _compact_contract_context(
         f"Goal: {contract['goal'].strip()}",
         "Acceptance:",
     ]
-    lines.extend(f"- {item}" for item in contract["acceptance"])
+    lines.extend(
+        f"- {item['id']}: {item['text']} (evidence: {', '.join(item['evidence'])})"
+        for item in contract["acceptance"]
+    )
     non_goals = contract.get("non_goals", [])
     if non_goals:
         lines.append("Non-goals:")
@@ -534,6 +663,10 @@ def _compact_contract_context(
         lines.append(f"Latest evidence receipt: {receipt.get('outcome', 'UNKNOWN')} ({freshness}).")
         if receipt.get("open_check_ids"):
             lines.append("Open checks: " + ", ".join(receipt["open_check_ids"]))
+        if receipt.get("open_acceptance_ids"):
+            lines.append(
+                "Open acceptance: " + ", ".join(receipt["open_acceptance_ids"])
+            )
         if receipt.get("next_objective"):
             lines.append("Next objective: " + str(receipt["next_objective"]))
         if receipt.get("reason"):
@@ -597,12 +730,29 @@ def _guard_matches(guard: dict[str, Any], payload: dict[str, Any]) -> bool:
     )
 
 
+def _stop_report(receipt: dict[str, Any], outcome: str) -> str:
+    parts = [
+        f"Current convergence outcome is {outcome}.",
+        "Do not claim completion; explicitly report the typed outcome and open evidence.",
+    ]
+    if receipt.get("open_acceptance_ids"):
+        parts.append("Open acceptance: " + ", ".join(receipt["open_acceptance_ids"]) + ".")
+    if receipt.get("open_check_ids"):
+        parts.append("Open checks: " + ", ".join(receipt["open_check_ids"]) + ".")
+    if receipt.get("next_objective"):
+        parts.append("Next objective: " + str(receipt["next_objective"]))
+    return " ".join(parts)
+
+
 def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
+    event = ""
+    stop_hook_active = False
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             raise ValueError("hook input must be a JSON object")
         event = str(payload.get("hook_event_name") or "")
+        stop_hook_active = bool(payload.get("stop_hook_active"))
         contract, contract_sha256 = load_contract(root, contract_path)
         if contract is None or contract_sha256 is None:
             print("{}")
@@ -651,9 +801,16 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
             )
         elif event == "Stop":
             outcome = str((receipt or {}).get("outcome") or "MISSING")
-            if current and outcome in TERMINAL_OUTCOMES:
+            if current and outcome == "CONVERGED":
                 output = {}
-            elif payload.get("stop_hook_active"):
+            elif current and outcome in REPORTABLE_OUTCOMES:
+                report = _stop_report(receipt or {}, outcome)
+                output = (
+                    {"systemMessage": report}
+                    if stop_hook_active
+                    else {"decision": "block", "reason": report}
+                )
+            elif stop_hook_active:
                 output = {
                     "systemMessage": (
                         "Convergence evidence is missing or stale after one automatic continuation. "
@@ -669,16 +826,22 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
         print(json.dumps(output, ensure_ascii=False))
         return 0
     except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "systemMessage": (
-                        "Convergence hook is UNAVAILABLE and failed open: "
-                        f"{type(exc).__name__}. Continue safe local work and report the typed gap."
-                    )
-                },
-                ensure_ascii=False,
+        unavailable = (
+            "Convergence hook is UNAVAILABLE: "
+            f"{type(exc).__name__}. Continue safe local work, but do not claim convergence."
+        )
+        if event == "Stop":
+            output = (
+                {"systemMessage": unavailable + " Report PARTIAL with the exact gap."}
+                if stop_hook_active
+                else {"decision": "block", "reason": unavailable}
             )
+        else:
+            output = {
+                "systemMessage": unavailable + " The development path failed open."
+            }
+        print(
+            json.dumps(output, ensure_ascii=False)
         )
         return 0
 

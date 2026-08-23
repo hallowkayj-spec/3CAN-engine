@@ -1,10 +1,23 @@
 {
   "schema": "3can.convergence-contract/v1",
   "status": "active",
+  "scope": "current_repository_only",
   "goal": "Replace this with the accepted task outcome.",
   "acceptance": [
-    "Replace this with an observable acceptance condition.",
-    "All declared automated checks pass."
+    {
+      "id": "mechanical-integrity",
+      "text": "Replace this with an observable acceptance condition.",
+      "evidence": [
+        "diff-check"
+      ]
+    },
+    {
+      "id": "owner-acceptance",
+      "text": "The Owner accepts the final result.",
+      "evidence": [
+        "owner-review"
+      ]
+    }
   ],
   "non_goals": [
     "Owner acceptance, merge, deployment, and publication are separate decisions."

@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -78,13 +80,29 @@ def write_contract(path: Path, *, owner_review: bool = True, guards=None) -> Non
         checks.append(
             {"id": "owner-review", "type": "owner_review", "stages": ["final"]}
         )
+    acceptance = [
+        {
+            "id": "mechanical-integrity",
+            "text": "The declared automated evidence passes.",
+            "evidence": ["diff-check", "artifact"],
+        }
+    ]
+    if owner_review:
+        acceptance.append(
+            {
+                "id": "owner-acceptance",
+                "text": "The Owner accepts the final result.",
+                "evidence": ["owner-review"],
+            }
+        )
     path.write_text(
         json.dumps(
             {
                 "schema": "3can.convergence-contract/v1",
                 "status": "active",
+                "scope": "current_repository_only",
                 "goal": "Deliver one reusable convergence foundation.",
-                "acceptance": ["The declared checks pass.", "No false completion is reported."],
+                "acceptance": acceptance,
                 "non_goals": ["Do not merge or deploy."],
                 "checks": checks,
                 "guards": guards or [],
@@ -137,6 +155,39 @@ def test_contract_requires_automated_final_evidence(convergence):
         module.validate_contract(value, root)
 
 
+def test_visual_acceptance_without_bound_evidence_cannot_converge(convergence):
+    module, root, contract, receipt = convergence
+    write_contract(contract, owner_review=False)
+    value = json.loads(contract.read_text(encoding="utf-8"))
+    value["acceptance"] = [
+        {
+            "id": "visual-quality",
+            "text": "The final video is visually correct.",
+            "evidence": [],
+        }
+    ]
+    contract.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(module.ContractError, match="must not be empty"):
+        module.verify(
+            root,
+            contract,
+            receipt,
+            stage="final",
+            next_objective="Obtain a visual review.",
+        )
+
+
+def test_legacy_string_acceptance_cannot_silently_converge(convergence):
+    module, root, contract, _ = convergence
+    write_contract(contract, owner_review=False)
+    value = json.loads(contract.read_text(encoding="utf-8"))
+    value["acceptance"] = ["The final video is visually correct."]
+
+    with pytest.raises(module.ContractError, match="must bind text to evidence"):
+        module.validate_contract(value, root)
+
+
 def test_receipt_path_cannot_escape_project(convergence, tmp_path):
     module, root, contract, _ = convergence
     write_contract(contract)
@@ -173,7 +224,7 @@ def test_compact_session_reinjects_only_contract_and_receipt(convergence):
     context = output["hookSpecificOutput"]["additionalContext"]
 
     assert "Deliver one reusable convergence foundation." in context
-    assert "The declared checks pass." in context
+    assert "mechanical-integrity: The declared automated evidence passes." in context
     assert "PARTIAL (current)" in context
     assert "Run the final check." in context
     assert "transcript" not in context.lower()
@@ -205,6 +256,40 @@ def test_stop_blocks_once_then_requires_honest_partial(convergence):
     assert "decision" not in second
 
 
+def test_current_partial_receipt_cannot_stop_silently(convergence):
+    module, root, contract, receipt = convergence
+    write_contract(contract)
+    module.record_typed(
+        root,
+        contract,
+        receipt,
+        outcome="PARTIAL",
+        reason="Visual evidence is missing.",
+        next_objective="Run visual review.",
+    )
+
+    first = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": False},
+    )
+    second = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": True},
+    )
+
+    assert first["decision"] == "block"
+    assert "PARTIAL" in first["reason"]
+    assert "do not claim completion" in first["reason"].lower()
+    assert "Run visual review" in first["reason"]
+    assert "PARTIAL" in second["systemMessage"]
+
+
 def test_episode_and_final_receipts_keep_owner_acceptance_separate(convergence):
     module, root, contract, receipt = convergence
     write_contract(contract)
@@ -225,13 +310,34 @@ def test_episode_and_final_receipts_keep_owner_acceptance_separate(convergence):
     )
 
     assert episode["outcome"] == "PASS"
+    assert episode["checkpoint_expectation"] == (
+        "normal_git_checkpoint_before_next_destructive_episode"
+    )
     assert final["outcome"] == "CANDIDATE_READY"
     assert final["threecan_writeback"] == {
-        "eligible_trigger": "AUTO_CLOSEOUT",
+        "eligible_trigger": "NONE",
         "performed": False,
     }
     assert "owner-review" in final["open_check_ids"]
-    assert hook(module, root, contract, receipt, {"hook_event_name": "Stop"}) == {}
+    assert "owner-acceptance" in final["open_acceptance_ids"]
+    first_stop = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": False},
+    )
+    second_stop = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": True},
+    )
+    assert first_stop["decision"] == "block"
+    assert "CANDIDATE_READY" in first_stop["reason"]
+    assert "owner-acceptance" in first_stop["reason"]
+    assert "CANDIDATE_READY" in second_stop["systemMessage"]
 
 
 def test_final_without_owner_review_is_converged(convergence):
@@ -247,6 +353,7 @@ def test_final_without_owner_review_is_converged(convergence):
     )
 
     assert final["outcome"] == "CONVERGED"
+    assert final["threecan_writeback"]["eligible_trigger"] == "AUTO_CLOSEOUT"
 
 
 def test_command_failure_is_evidence_not_completion(convergence):
@@ -342,19 +449,67 @@ def test_workspace_change_stales_receipt_and_typed_state_allows_stop(convergence
         reason="Owner input is required.",
         next_objective="Wait for owner review.",
     )
-    typed = hook(module, root, contract, receipt, {"hook_event_name": "Stop"})
+    typed_first = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": False},
+    )
+    typed_second = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": True},
+    )
 
     assert stale["decision"] == "block"
-    assert typed == {}
+    assert typed_first["decision"] == "block"
+    assert "BLOCKED" in typed_first["reason"]
+    assert "do not claim completion" in typed_first["reason"].lower()
+    assert "BLOCKED" in typed_second["systemMessage"]
 
 
-def test_hook_fails_open_on_invalid_contract(convergence):
+def test_invalid_contract_is_asymmetric_at_stop(convergence):
     module, root, contract, receipt = convergence
     contract.write_text("{not-json", encoding="utf-8")
 
-    output = hook(module, root, contract, receipt, {"hook_event_name": "Stop"})
+    first = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": False},
+    )
+    second = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": True},
+    )
+
+    assert first["decision"] == "block"
+    assert "UNAVAILABLE" in first["reason"]
+    assert "UNAVAILABLE" in second["systemMessage"]
+    assert "PARTIAL" in second["systemMessage"]
+
+
+def test_invalid_contract_fails_open_on_development_path(convergence):
+    module, root, contract, receipt = convergence
+    contract.write_text("{not-json", encoding="utf-8")
+
+    output = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "PreToolUse", "tool_name": "exec_command"},
+    )
 
     assert "UNAVAILABLE" in output["systemMessage"]
+    assert "failed open" in output["systemMessage"]
     assert "decision" not in output
 
 
@@ -396,6 +551,95 @@ def test_nested_project_workspace_paths_are_normalized(tmp_path):
     assert workspace["changed_files_sha256"] == module._sha256_bytes(
         module._json_bytes(expected_files)
     )
+
+
+def test_dirty_submodule_is_rejected_by_current_repository_scope(tmp_path):
+    module = load_module()
+    child = tmp_path / "child"
+    parent = tmp_path / "parent"
+    for repository, name in ((child, "Child"), (parent, "Parent")):
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "config", "user.name", name], check=True
+        )
+    (child / "child.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(child), "add", "child.txt"], check=True)
+    subprocess.run(["git", "-C", str(child), "commit", "-qm", "child"], check=True)
+    (parent / "parent.txt").write_text("parent\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(parent), "add", "parent.txt"], check=True)
+    subprocess.run(["git", "-C", str(parent), "commit", "-qm", "parent"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "-C",
+            str(parent),
+            "submodule",
+            "add",
+            str(child),
+            "modules/child",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(parent), "commit", "-qam", "submodule"], check=True)
+    (parent / "modules" / "child" / "child.txt").write_text(
+        "dirty\n", encoding="utf-8"
+    )
+
+    with pytest.raises(module.ContractError, match="dirty submodules are unsupported"):
+        module.workspace_fingerprint(parent)
+
+
+def test_installed_project_kit_executes_exact_native_hook_command(tmp_path):
+    project_kit = SCRIPT.parents[1]
+    installed = tmp_path / "installed-project"
+    shutil.copytree(project_kit, installed)
+    shutil.copyfile(
+        installed / ".codex" / "convergence.example.json",
+        installed / ".codex" / "convergence.json",
+    )
+    subprocess.run(["git", "init", "-q", str(installed)], check=True)
+    subprocess.run(
+        ["git", "-C", str(installed), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(installed), "config", "user.name", "Installed Kit"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(installed), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(installed), "commit", "-qm", "installed kit"], check=True
+    )
+    hooks = json.loads(
+        (installed / ".codex" / "hooks.json").read_text(encoding="utf-8")
+    )["hooks"]
+    session_hook = hooks["SessionStart"][0]["hooks"][0]
+    command = session_hook["commandWindows" if os.name == "nt" else "command"]
+
+    result = subprocess.run(
+        command,
+        cwd=installed / "scripts",
+        input=json.dumps({"hook_event_name": "SessionStart", "source": "compact"}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        shell=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "Replace this with the accepted task outcome." in context
+    assert "owner-acceptance" in context
 
 
 def test_public_hook_configuration_and_package_surface_are_coherent():

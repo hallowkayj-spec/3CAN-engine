@@ -48,6 +48,9 @@ meaningful closeout (`AUTO_CLOSEOUT`) or an explicit Owner request
 (`OWNER_REQUESTED`). A typed 3CAN failure never fabricates completion and does
 not block safe local work.
 
+Ordinary safe work has no mandatory ceremony. Convergence is opt-in only when
+the project declares an evidence-bearing long task.
+
 The harness derives a stable, execution-specific `AgentId` and carries it on
 the protocol. The generic `codex-main` id is rejected. The wrapper never stores
 or selects ticket state; the shared API/ledger remains the canonical evidence
@@ -139,8 +142,12 @@ For long tasks, copy `.codex/convergence.example.json` to
 `.codex/convergence.json` and replace every example field. The convergence hook
 re-injects the accepted goal after native Codex compaction, evaluates only
 project-declared high-cost guards, and requires a current local evidence receipt
-before a success stop. It never parses session JSONL, calls 3CAN, commits,
-merges, deploys, or publishes. `CANDIDATE_READY` still requires Owner review.
+before a success stop. Every acceptance condition must bind to named evidence;
+mechanical checks do not prove semantic, visual, or Owner acceptance unless the
+contract names an appropriate reviewer receipt. The v1 scope covers only the
+current repository and rejects dirty submodules. It never parses session JSONL,
+calls 3CAN, commits, merges, deploys, or publishes. `CANDIDATE_READY` still
+requires Owner review and is not eligible for `AUTO_CLOSEOUT`.
 Review and trust exact definitions with `/hooks`; global enablement is not
 implied by copying this template.
 

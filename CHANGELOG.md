@@ -23,13 +23,22 @@ claim that any private production graph has been migrated.
   captured command output is represented only by byte count and SHA-256.
 - Kept ordinary development free of per-tool 3CAN calls. The hook makes no
   network call, does not parse Codex transcripts, and only marks 3CAN writeback
-  eligible at `AUTO_CLOSEOUT`; Owner-requested writeback remains separate.
+  eligible at `AUTO_CLOSEOUT` after every acceptance condition has passing
+  bound evidence; `CANDIDATE_READY` and Owner-requested writeback remain
+  separate.
 - Removed the broad research prompt/edit/stop gate from the default hook set.
   Research remains an explicit skill for current, uncertain, or failure-driven
   investigation instead of a universal development prerequisite.
 - Kept candidate readiness distinct from Owner acceptance, merge, deployment,
   and publication. Invalid hook state fails open as typed `UNAVAILABLE`, and a
   second Stop pass requires an honest `PARTIAL` report rather than looping.
+- Bound every acceptance condition to named final evidence, made incomplete and
+  candidate Stop outcomes request an explicit report, applied asymmetric
+  fail-open behavior at Stop, and rejected dirty submodules under the narrow
+  `current_repository_only` scope.
+- Added an installed-project smoke that executes the exact Windows or POSIX
+  `SessionStart` command from `hooks.json`, rather than proving only that the
+  referenced script file exists.
 
 ### 2026-08-20 portable public-release packaging
 

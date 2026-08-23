@@ -115,6 +115,11 @@ on the edit/test path. See [`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOO
 The tracked file is an example only; enabling it and trusting the exact hook
 definitions remain explicit Owner/project setup actions.
 
+Every acceptance condition must bind to named evidence. `CANDIDATE_READY`
+means that bound Owner/semantic evidence is still pending and is not an
+`AUTO_CLOSEOUT`. V1 is intentionally limited to the current repository; a dirty
+submodule requires its own contract rather than being silently covered.
+
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then
 `THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint
 in each MCP client process when the project uses an isolated port such as
@@ -131,6 +136,9 @@ Ordinary development remains `understand -> edit -> test -> Git checkpoint`.
 There is no forced 3CAN call per prompt, tool use, test, commit, or episode.
 Durable 3CAN writeback is eligible only at an accepted meaningful closeout or
 when the Owner explicitly requests it.
+
+Ordinary safe work has no mandatory ceremony. Convergence is opt-in when the
+project declares an evidence-bearing long task.
 
 ## Optional GitHub PR Fallback
 
