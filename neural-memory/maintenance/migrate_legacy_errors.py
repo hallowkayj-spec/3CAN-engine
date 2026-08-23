@@ -47,9 +47,10 @@ from graph_runtime_lock import (  # noqa: E402
     GraphRuntimeLockError,
     acquire_graph_runtime_lock,
 )
+from error_knowledge import ErrorCase, deterministic_fingerprint  # noqa: E402
 
 
-MIGRATION_VERSION = "3can.legacy-error-migration/v1"
+MIGRATION_VERSION = "3can.legacy-error-migration/v2"
 ARCHIVE_VERSION = "3can.legacy-error-archive/v1"
 BACKUP_VERSION = "3can.graph-rollback-backup/v1"
 ERROR_KNOWLEDGE_VERSION = "3can.error-knowledge/v1"
@@ -60,6 +61,9 @@ ATOMIC_REPLACE_RETRY_DELAYS_SEC = (0.05, 0.1, 0.2, 0.4, 0.8)
 TRANSIENT_WINDOWS_REPLACE_ERRORS = frozenset({5, 32})
 
 REPEATED_ERROR_PREFIX = "ERR-repeated-"
+LEGACY_ERROR_PREFIX = "ERR-"
+CANONICAL_ERROR_CASE_PREFIX = "ERR-case-"
+CANONICAL_ERROR_CLUSTER = "ErrorKnowledge"
 KNOWN_CORE_REGISTRY_IDS = frozenset(
     {
         "MEM-3can-core-memory-lane-registry-20260523",
@@ -69,17 +73,11 @@ KNOWN_CORE_REGISTRY_IDS = frozenset(
         "CORE-error-registry",
     }
 )
-RESOLUTION_EDGE_TYPES = frozenset(
-    {
-        "resolves",
-        "resolved_by",
-        "fixes",
-        "fixed_by",
-        "solution_for",
-        "has_solution",
-        "mitigates",
-        "supersedes",
-    }
+RESOLUTION_TARGET_ERROR_EDGE_TYPES = frozenset(
+    {"resolves", "fixes", "solution_for", "mitigates"}
+)
+RESOLUTION_SOURCE_ERROR_EDGE_TYPES = frozenset(
+    {"resolved_by", "fixed_by", "has_solution"}
 )
 RESOLVED_STATES = frozenset({"resolved", "mitigated", "superseded"})
 DIAGNOSED_STATES = frozenset({"diagnosed", "mitigated", "resolved", "regressed", "superseded"})
@@ -711,9 +709,42 @@ def _edge_sort_key(edge: Mapping[str, Any]) -> tuple[str, str, str, str]:
 
 def _has_resolution_edge(node_id: str, edges: Sequence[Mapping[str, Any]]) -> bool:
     return any(
-        _edge_type(edge) in RESOLUTION_EDGE_TYPES
-        and (str(edge.get("source") or "") == node_id or str(edge.get("target") or "") == node_id)
+        (
+            _edge_type(edge) in RESOLUTION_TARGET_ERROR_EDGE_TYPES
+            and str(edge.get("target") or "") == node_id
+        )
+        or (
+            _edge_type(edge) in RESOLUTION_SOURCE_ERROR_EDGE_TYPES
+            and str(edge.get("source") or "") == node_id
+        )
         for edge in edges
+    )
+
+
+def _is_canonical_error_case(node_id: str, node: Mapping[str, Any]) -> bool:
+    extra = _extra(node)
+    nested = extra.get("error_case")
+    payload = nested if isinstance(nested, Mapping) else extra
+    if payload.get("schema_version") != "3can.error-case/v1":
+        return False
+    if str(payload.get("case_id") or "") != node_id:
+        return False
+    try:
+        case = ErrorCase.from_dict(payload)
+        expected_fingerprint = deterministic_fingerprint(
+            project_id=str(payload.get("project_id") or ""),
+            operation=str(payload.get("operation") or ""),
+            component=str(payload.get("component") or ""),
+            error_type=str(payload.get("error_type") or ""),
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not case.fingerprint or case.occurrence_count < 2:
+        return False
+    expected_case_id = f"ERR-case-{expected_fingerprint.split(':', 1)[1][:24]}"
+    return (
+        case.fingerprint.casefold() == expected_fingerprint.casefold()
+        and case.case_id == expected_case_id
     )
 
 
@@ -784,10 +815,31 @@ def _normalize_case(
         has_solution=has_solution,
     )
 
+    source_cluster = str(normalized.get("cluster") or "")
+    if source_cluster and source_cluster != CANONICAL_ERROR_CLUSTER:
+        extra.setdefault("legacy_source_cluster", source_cluster)
+    normalized["cluster"] = CANONICAL_ERROR_CLUSTER
     extra["error_knowledge_schema_version"] = ERROR_KNOWLEDGE_VERSION
     extra["case_status"] = status
     extra["promoted"] = promoted
-    extra["route_blocking"] = bool(promoted and status in {"observed", "regressed"})
+    # Legacy records do not carry the complete ek2 identity. They may inform a
+    # review, but must never block unrelated work merely because their title or
+    # embedding resembles the current failure.
+    extra["route_blocking"] = False
+    extra["blocking_eligibility"] = "canonical_ek2_only"
+    extra["family_assignment_status"] = "review_required"
+    extra["knowledge_tier"] = "historical"
+    extra["route_visibility"] = "explicit_error_only"
+    extra["searchable"] = True
+    if has_solution:
+        evidence_quality = "resolution_claimed"
+    elif has_diagnosis:
+        evidence_quality = "diagnosed"
+    elif promoted:
+        evidence_quality = "repeated_observed"
+    else:
+        evidence_quality = "legacy_evidence_poor"
+    extra["legacy_evidence_quality"] = evidence_quality
     extra["legacy_error_migration_version"] = MIGRATION_VERSION
     if count is not None:
         extra["occurrence_count"] = count
@@ -833,14 +885,47 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
     run_id = f"legacy-errors-{snapshot_id[:16]}"
     paths = _maintenance_paths(graph_dir, run_id)
 
-    repeated_ids = sorted(node_id for node_id in nodes if node_id.startswith(REPEATED_ERROR_PREFIX))
-    repeated_set = set(repeated_ids)
+    corrupt_canonical_case_ids = sorted(
+        str(item["node_id"])
+        for item in corrupt_node_files
+        if str(item["node_id"]).startswith(CANONICAL_ERROR_CASE_PREFIX)
+    )
+    if corrupt_canonical_case_ids:
+        raise MigrationError(
+            "corrupt canonical ErrorCase files require explicit recovery; "
+            "the legacy migration will not delete or rewrite them: "
+            + ", ".join(corrupt_canonical_case_ids)
+        )
+
+    legacy_error_ids = sorted(
+        node_id
+        for node_id in nodes
+        if node_id.startswith(LEGACY_ERROR_PREFIX)
+        and not node_id.startswith(CANONICAL_ERROR_CASE_PREFIX)
+    )
+    canonical_prefixed_ids = sorted(
+        node_id for node_id in nodes if node_id.startswith(CANONICAL_ERROR_CASE_PREFIX)
+    )
+    canonical_case_ids = [
+        node_id
+        for node_id in canonical_prefixed_ids
+        if _is_canonical_error_case(node_id, nodes[node_id])
+    ]
+    invalid_canonical_case_ids = sorted(
+        set(canonical_prefixed_ids) - set(canonical_case_ids)
+    )
+    noncanonical_error_set = set(legacy_error_ids) | set(
+        invalid_canonical_case_ids
+    )
+    repeated_ids = sorted(
+        node_id for node_id in legacy_error_ids if node_id.startswith(REPEATED_ERROR_PREFIX)
+    )
     corrupt_node_ids = sorted(
         str(item["node_id"]) for item in corrupt_node_files
     )
     corrupt_node_set = set(corrupt_node_ids)
     resolution_edge_ids = {
-        node_id for node_id in repeated_ids if _has_resolution_edge(node_id, edges)
+        node_id for node_id in legacy_error_ids if _has_resolution_edge(node_id, edges)
     }
 
     candidates: list[str] = []
@@ -875,16 +960,26 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
             preserved_diagnosed.append(node_id)
         elif promoted:
             preserved_promoted.append(node_id)
+    candidate_set = set(candidates)
+    removal_set = candidate_set | corrupt_node_set
+    retained_legacy_ids = [
+        node_id for node_id in legacy_error_ids if node_id not in removal_set
+    ]
+    evidence_quality_counts: dict[str, int] = {}
+    for node_id in retained_legacy_ids:
+        node = nodes[node_id]
         normalized = _normalize_case(
             node,
-            has_resolution_edge=has_resolution_edge,
+            has_resolution_edge=node_id in resolution_edge_ids,
         )
         normalized_nodes[node_id] = normalized
         if normalized != node:
             changed_normalized_ids.append(node_id)
-
-    candidate_set = set(candidates)
-    removal_set = candidate_set | corrupt_node_set
+        quality = str(
+            _extra(normalized).get("legacy_evidence_quality")
+            or "legacy_evidence_poor"
+        )
+        evidence_quality_counts[quality] = evidence_quality_counts.get(quality, 0) + 1
     registry_ids = {
         node_id for node_id, node in nodes.items() if _is_core_registry(node_id, node)
     }
@@ -904,7 +999,7 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
                     connected_by_candidate[node_id].append(copy.deepcopy(edge))
         if (
             source in registry_ids
-            and target in repeated_set
+            and target in noncanonical_error_set
             and _edge_type(edge) == "requires"
         ):
             removed_indexes.add(index)
@@ -958,8 +1053,16 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
         "node_file_count": len(nodes) + len(corrupt_node_files),
         "edge_count": len(edges),
         "repeated_error_count": len(repeated_ids),
+        "legacy_error_count": len(legacy_error_ids),
+        "canonical_error_case_count": len(canonical_case_ids),
+        "invalid_canonical_error_case_count": len(invalid_canonical_case_ids),
+        "canonical_error_cluster_count": sum(
+            1
+            for node_id in (*legacy_error_ids, *canonical_case_ids)
+            if str(nodes[node_id].get("cluster") or "") == CANONICAL_ERROR_CLUSTER
+        ),
         "corrupt_node_file_count": len(corrupt_node_files),
-        "core_registry_requires_to_repeated_count": len(registry_edge_indexes),
+        "core_registry_requires_to_legacy_count": len(registry_edge_indexes),
         "embedding_cache_present": (graph_dir / "embeddings.npz").is_file(),
     }
     after = {
@@ -967,8 +1070,16 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
         "node_file_count": len(nodes) - len(candidates),
         "edge_count": len(remaining_edges),
         "repeated_error_count": len(repeated_ids) - len(candidates),
+        "legacy_error_count": len(retained_legacy_ids),
+        "canonical_error_case_count": len(canonical_case_ids),
+        "invalid_canonical_error_case_count": len(invalid_canonical_case_ids),
+        "canonical_error_cluster_count": len(retained_legacy_ids) + sum(
+            1
+            for node_id in canonical_case_ids
+            if str(nodes[node_id].get("cluster") or "") == CANONICAL_ERROR_CLUSTER
+        ),
         "corrupt_node_file_count": 0,
-        "core_registry_requires_to_repeated_count": 0,
+        "core_registry_requires_to_legacy_count": 0,
         "embedding_cache_present": False,
         "embedding_rebuild_marker_present": True,
     }
@@ -993,6 +1104,9 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
         "corrupt_node_files": copy.deepcopy(corrupt_node_files),
         "removal_node_ids": sorted(removal_set),
         "normalized_node_ids": sorted(changed_normalized_ids),
+        "retained_legacy_node_ids": retained_legacy_ids,
+        "invalid_canonical_error_case_ids": invalid_canonical_case_ids,
+        "legacy_evidence_quality_counts": dict(sorted(evidence_quality_counts.items())),
         "preserved": {
             "promoted_node_ids": sorted(set(preserved_promoted)),
             "diagnosed_node_ids": sorted(set(preserved_diagnosed)),
@@ -1022,7 +1136,7 @@ def build_plan(graph_dir: Path) -> dict[str, Any]:
         "_internal": {
             "node_paths": {
                 node_id: str(node_paths[node_id])
-                for node_id in sorted(set(repeated_ids) | corrupt_node_set)
+                for node_id in sorted(set(legacy_error_ids) | corrupt_node_set)
             },
             "normalized_nodes": normalized_nodes,
             "remaining_edges": remaining_edges,
@@ -1072,6 +1186,8 @@ def _public_manifest(
         "corrupt_node_files",
         "removal_node_ids",
         "normalized_node_ids",
+        "retained_legacy_node_ids",
+        "invalid_canonical_error_case_ids",
         "removed_edges",
         "removed_core_registry_requires_edges",
     ):
@@ -1513,7 +1629,12 @@ def _new_apply_journal(plan: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _plan_from_journal(path: Path, journal: Mapping[str, Any]) -> dict[str, Any]:
+def _plan_from_journal(
+    path: Path,
+    journal: Mapping[str, Any],
+    *,
+    require_current_version: bool = True,
+) -> dict[str, Any]:
     plan = journal.get("plan")
     if not isinstance(plan, dict):
         raise MigrationError(f"apply journal does not contain its deterministic plan: {path}")
@@ -1521,12 +1642,21 @@ def _plan_from_journal(path: Path, journal: Mapping[str, Any]) -> dict[str, Any]
         raise MigrationError(f"apply journal plan hash mismatch: {path}")
     if str(plan.get("graph_dir") or "") != str(journal.get("graph_dir") or ""):
         raise MigrationError(f"apply journal graph path mismatch: {path}")
+    if (
+        require_current_version
+        and str(plan.get("schema_version") or "") != MIGRATION_VERSION
+    ):
+        raise MigrationError(
+            "incomplete apply journal uses a different migration version; "
+            "use its recorded rollback command before running this version: "
+            f"{path}"
+        )
     return copy.deepcopy(plan)
 
 
 def _expected_embedding_marker(plan: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": MIGRATION_VERSION,
+        "schema_version": str(plan["schema_version"]),
         "reason": "legacy ErrorCase nodes, edges, or searchable content changed",
         "run_id": plan["run_id"],
         "removed_node_ids": plan["removal_node_ids"],
@@ -1969,7 +2099,11 @@ def _mark_matching_apply_journals_rolled_back(
     for path, journal in _incomplete_journals(graph):
         if journal.get("operation") != "apply":
             continue
-        plan = _plan_from_journal(path, journal)
+        plan = _plan_from_journal(
+            path,
+            journal,
+            require_current_version=False,
+        )
         if Path(str(plan["paths"]["backup"])).resolve() != backup_dir:
             continue
         journal["rollback_journal"] = str(
@@ -2045,7 +2179,11 @@ def rollback(
                 f"backup first: {other_path}"
             )
         if other.get("operation") == "apply":
-            other_plan = _plan_from_journal(other_path, other)
+            other_plan = _plan_from_journal(
+                other_path,
+                other,
+                require_current_version=False,
+            )
             if Path(str(other_plan["paths"]["backup"])).resolve() != backup_dir:
                 raise MigrationError(
                     "an unrelated apply journal is incomplete; resume it or "

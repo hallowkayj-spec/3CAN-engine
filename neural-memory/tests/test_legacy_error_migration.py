@@ -24,6 +24,14 @@ SPEC.loader.exec_module(MIGRATION)
 
 
 REGISTRY_ID = "MEM-3can-core-memory-lane-registry-20260523"
+CANONICAL_IDENTITY = {
+    "project_id": "fixture-project",
+    "operation": "fixture-operation",
+    "component": "fixture-component",
+    "error_type": "FixtureError",
+}
+CANONICAL_FINGERPRINT = MIGRATION.deterministic_fingerprint(**CANONICAL_IDENTITY)
+CANONICAL_CASE_ID = f"ERR-case-{CANONICAL_FINGERPRINT.split(':', 1)[1][:24]}"
 
 
 class _QuietHandler(BaseHTTPRequestHandler):
@@ -132,10 +140,33 @@ def _write_graph(root: Path) -> Path:
             case_status="resolved",
         ),
         "ERR-repeated-edge-resolved": _node("ERR-repeated-edge-resolved", count=1),
+        "ERR-legacy-review-required": _node("ERR-legacy-review-required"),
         "FIX-edge-resolution": _node("FIX-edge-resolution"),
         "DOC-unrelated": _node("DOC-unrelated"),
         "DOC-neighbor": _node("DOC-neighbor"),
     }
+    canonical_case = _node(CANONICAL_CASE_ID)
+    canonical_case["cluster"] = "ErrorKnowledge"
+    canonical_case["content"]["extra"] = {
+        "error_knowledge_schema_version": "3can.error-knowledge/v2",
+        "error_case": {
+            "schema_version": "3can.error-case/v1",
+            "case_id": CANONICAL_CASE_ID,
+            "fingerprint": CANONICAL_FINGERPRINT,
+            "fingerprint_version": "ek2",
+            **CANONICAL_IDENTITY,
+            "root_cause": "unclassified-root-cause",
+            "state": "observed",
+            "blocking": True,
+            "occurrence_count": 2,
+            "first_seen_at": "2026-08-23T00:00:00+00:00",
+            "last_seen_at": "2026-08-23T00:01:00+00:00",
+            "promoted_at": "2026-08-23T00:01:00+00:00",
+            "state_changed_at": "2026-08-23T00:01:00+00:00",
+        },
+        "route_blocking": True,
+    }
+    fixtures[CANONICAL_CASE_ID] = canonical_case
     for node_id, payload in fixtures.items():
         (nodes / f"{node_id}.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
@@ -149,7 +180,8 @@ def _write_graph(root: Path) -> Path:
             "weight": 1.0,
         }
         for node_id in fixtures
-        if node_id.startswith("ERR-repeated-")
+        if node_id.startswith("ERR-")
+        and not node_id.startswith("ERR-case-")
     ]
     edges.extend(
         [
@@ -205,8 +237,19 @@ def test_dry_run_is_default_and_does_not_mutate(tmp_path: Path) -> None:
         "ERR-repeated-diagnosed",
         "ERR-repeated-remove",
     ]
-    assert result["before"]["core_registry_requires_to_repeated_count"] == 6
-    assert result["after"]["core_registry_requires_to_repeated_count"] == 0
+    assert result["before"]["core_registry_requires_to_legacy_count"] == 7
+    assert result["after"]["core_registry_requires_to_legacy_count"] == 0
+    assert result["before"]["legacy_error_count"] == 7
+    assert result["after"]["legacy_error_count"] == 5
+    assert result["before"]["canonical_error_case_count"] == 1
+    assert result["after"]["canonical_error_cluster_count"] == 6
+    assert CANONICAL_CASE_ID not in result["normalized_node_ids"]
+    assert result["invalid_canonical_error_case_ids"] == []
+    assert result["legacy_evidence_quality_counts"] == {
+        "legacy_evidence_poor": 1,
+        "repeated_observed": 2,
+        "resolution_claimed": 2,
+    }
     assert _tree_bytes(graph) == before
     assert not (graph / "maintenance").exists()
 
@@ -338,6 +381,146 @@ def test_corrupt_node_is_backed_up_removed_and_exactly_restored(
     assert restored_mutable == original
 
 
+def test_corrupt_canonical_case_fails_closed_without_mutation(tmp_path: Path) -> None:
+    graph = _write_graph(tmp_path)
+    corrupt_id = "ERR-case-corrupt"
+    (graph / "nodes" / f"{corrupt_id}.json").write_bytes(b"{")
+    before = _tree_bytes(graph)
+
+    with pytest.raises(
+        MIGRATION.MigrationError,
+        match="corrupt canonical ErrorCase files require explicit recovery",
+    ):
+        MIGRATION.migrate(graph)
+
+    assert _tree_bytes(graph) == before
+
+
+def test_pseudo_canonical_case_is_reported_and_preserved(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _write_graph(tmp_path)
+    pseudo_id = "ERR-case-pseudo"
+    pseudo_path = graph / "nodes" / f"{pseudo_id}.json"
+    pseudo_path.write_text(
+        json.dumps(_node(pseudo_id), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    edges = _read_edges(graph)
+    edges.append({"source": REGISTRY_ID, "target": pseudo_id, "type": "requires"})
+    (graph / "edges.json").write_text(
+        json.dumps(edges, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    original = pseudo_path.read_bytes()
+    silent_endpoint = _offline_defaults(monkeypatch)
+
+    dry_run = MIGRATION.migrate(graph)
+    assert dry_run["before"]["canonical_error_case_count"] == 1
+    assert dry_run["before"]["invalid_canonical_error_case_count"] == 1
+    assert dry_run["invalid_canonical_error_case_ids"] == [pseudo_id]
+
+    MIGRATION.migrate(
+        graph,
+        apply=True,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    assert pseudo_path.read_bytes() == original
+    assert not any(
+        edge.get("source") == REGISTRY_ID
+        and edge.get("target") == pseudo_id
+        and edge.get("type") == "requires"
+        for edge in _read_edges(graph)
+    )
+
+
+def test_supersedes_edge_does_not_claim_resolution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _write_graph(tmp_path)
+    source_id = "ERR-legacy-newer"
+    target_id = "ERR-legacy-older"
+    for node_id in (source_id, target_id):
+        (graph / "nodes" / f"{node_id}.json").write_text(
+            json.dumps(_node(node_id), ensure_ascii=False),
+            encoding="utf-8",
+        )
+    edges = _read_edges(graph)
+    edges.append({"source": source_id, "target": target_id, "type": "supersedes"})
+    (graph / "edges.json").write_text(
+        json.dumps(edges, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    silent_endpoint = _offline_defaults(monkeypatch)
+
+    MIGRATION.migrate(
+        graph,
+        apply=True,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+
+    for node_id in (source_id, target_id):
+        node = json.loads(
+            (graph / "nodes" / f"{node_id}.json").read_text(encoding="utf-8")
+        )
+        extra = node["content"]["extra"]
+        assert extra["case_status"] == "observed"
+        assert extra["promoted"] is False
+        assert extra["legacy_evidence_quality"] == "legacy_evidence_poor"
+
+
+def test_cross_version_apply_journal_requires_recorded_rollback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _write_graph(tmp_path)
+    original = _tree_bytes(graph)
+    silent_endpoint = _offline_defaults(monkeypatch)
+    applied = MIGRATION.migrate(
+        graph,
+        apply=True,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    journal_path = Path(applied["journal_path"])
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    journal["phase"] = "edges_written"
+    journal["plan"]["schema_version"] = "3can.legacy-error-migration/v1"
+    journal["plan_hash"] = MIGRATION._plan_hash(journal["plan"])
+    journal_path.write_text(
+        json.dumps(journal, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        MIGRATION.MigrationError,
+        match="different migration version",
+    ):
+        MIGRATION.migrate(graph)
+
+    result = MIGRATION.rollback(
+        graph,
+        Path(applied["paths"]["backup"]),
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    restored_mutable = {
+        name: payload
+        for name, payload in _tree_bytes(graph).items()
+        if not name.startswith("maintenance/")
+    }
+    assert result["restored"] is True
+    assert restored_mutable == original
+
+
 def test_apply_requires_explicit_engine_stopped_confirmation(tmp_path: Path) -> None:
     graph = _write_graph(tmp_path)
     before = _tree_bytes(graph)
@@ -427,6 +610,7 @@ def test_apply_backs_up_archives_cleans_edges_and_preserves_knowledge(
     graph = _write_graph(tmp_path)
     original_edges = (graph / "edges.json").read_bytes()
     original_candidate = (graph / "nodes" / "ERR-repeated-remove.json").read_bytes()
+    original_canonical_case = (graph / "nodes" / f"{CANONICAL_CASE_ID}.json").read_bytes()
     silent_endpoint = _offline_defaults(monkeypatch)
 
     result = MIGRATION.migrate(
@@ -449,6 +633,7 @@ def test_apply_backs_up_archives_cleans_edges_and_preserves_knowledge(
         "ERR-repeated-explicit-promoted",
         "ERR-repeated-resolved",
         "ERR-repeated-edge-resolved",
+        "ERR-legacy-review-required",
         "DOC-unrelated",
     ):
         assert (graph / "nodes" / f"{preserved_id}.json").is_file()
@@ -483,7 +668,32 @@ def test_apply_backs_up_archives_cleans_edges_and_preserves_knowledge(
     assert promoted_extra["error_knowledge_schema_version"] == "3can.error-knowledge/v1"
     assert promoted_extra["promoted"] is True
     assert promoted_extra["case_status"] == "observed"
-    assert promoted_extra["route_blocking"] is True
+    assert promoted_extra["route_blocking"] is False
+    assert promoted_extra["blocking_eligibility"] == "canonical_ek2_only"
+    assert promoted_extra["family_assignment_status"] == "review_required"
+    assert promoted_extra["knowledge_tier"] == "historical"
+    assert promoted_extra["route_visibility"] == "explicit_error_only"
+    assert promoted_extra["searchable"] is True
+    assert promoted_extra["legacy_evidence_quality"] == "repeated_observed"
+    assert promoted["cluster"] == "ErrorKnowledge"
+    assert promoted_extra["legacy_source_cluster"] == "errors"
+    assert (
+        graph / "nodes" / f"{CANONICAL_CASE_ID}.json"
+    ).read_bytes() == original_canonical_case
+
+    legacy = json.loads(
+        (graph / "nodes" / "ERR-legacy-review-required.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert legacy["cluster"] == "ErrorKnowledge"
+    assert legacy["content"]["extra"]["route_blocking"] is False
+    assert legacy["content"]["extra"]["knowledge_tier"] == "historical"
+    assert legacy["content"]["extra"]["route_visibility"] == "explicit_error_only"
+    assert (
+        legacy["content"]["extra"]["legacy_evidence_quality"]
+        == "legacy_evidence_poor"
+    )
 
     backup = Path(result["paths"]["backup"])
     assert (backup / "backup_metadata.json").is_file()

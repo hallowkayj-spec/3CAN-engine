@@ -557,16 +557,28 @@ phases below have run on a private graph. Its dry run:
    at most one and it has no recurrence, explicit promotion, solution, or
    resolution edge; diagnosis text alone does not retain a node;
 2. preserves unknown-count records only when recurrence, explicit promotion,
-   a solution, or a resolution edge supplies reusable evidence;
-3. removes registry-to-error `requires` edges that could turn historical
+   a solution, or a directionally valid resolution edge supplies reusable
+   evidence; `supersedes` alone never proves a case resolved;
+3. removes registry-to-legacy-error `requires` edges that could turn historical
    errors into unrelated task gates; and
 4. bounds node/edge lists in the public manifest while reporting an exact
    `<field>_count` and `<field>_truncated` flag. The content-addressed rollback
    backup and JSONL archive are not truncated.
+5. moves every retained legacy `ERR-*` record into the single
+   `ErrorKnowledge` cluster while preserving its source cluster, labels its
+   evidence quality, and leaves family assignment as `review_required`; and
+6. makes retained legacy records non-blocking because only a complete `ek2`
+   identity may gate an exact retry. Similar titles, embeddings, and historical
+   loop signatures remain retrieval or review signals, never enforcement; and
+7. marks retained legacy evidence `historical` and
+   `explicit_error_only`, so it stays searchable for error work without
+   receiving the canonical-case route boost or competing in ordinary routes.
 
 Apply still requires an explicit stopped-engine confirmation and a reviewed
 dry-run result. Every removed record remains recoverable from the complete
-backup/archive.
+backup/archive. A corrupt canonical `ERR-case-*` file fails closed for explicit
+recovery, and an incomplete journal from another migration version requires
+rollback with that version instead of cross-version resume.
 
 ### Phase 1: shadow model
 
