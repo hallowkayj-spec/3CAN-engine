@@ -573,6 +573,13 @@ phases below have run on a private graph. Its dry run:
 7. marks retained legacy evidence `historical` and
    `explicit_error_only`, so it stays searchable for error work without
    receiving the canonical-case route boost or competing in ordinary routes.
+8. records the exact post-apply node/edge snapshot. Rollback requires the
+   matching content-addressed apply journal, computes a three-way delta against
+   that snapshot, and replays later node and edge additions, modifications, and
+   deletions onto the pre-migration backup. It emits an immutable sanitized
+   delta receipt before swapping files, invalidates embeddings when a delta is
+   preserved, and fails closed if the baseline, receipt, or captured graph
+   changes. A second rollback of the same apply is rejected.
 
 Apply still requires an explicit stopped-engine confirmation and a reviewed
 dry-run result. Every removed record remains recoverable from the complete
@@ -605,10 +612,13 @@ remain read-only for a configurable retention window.
 
 ### Rollback
 
-Rollback switches the route adapter to v0.1, disables v0.2 writes, and replays
-only committed outbox events. It MUST NOT require reconstructing deleted legacy
-nodes. Physical pruning is permitted only after the retention window and a
-second integrity snapshot.
+Rollback switches the route adapter to v0.1 and disables v0.2 writes. A
+maintenance rollback MUST restore the pre-migration state while preserving
+committed post-apply graph changes through a verified three-way delta or
+committed outbox. It MUST fail closed rather than overwrite later writes when
+the post-apply baseline is absent or ambiguous, and MUST NOT require
+reconstructing deleted legacy nodes. Physical pruning is permitted only after
+the retention window and a second integrity snapshot.
 
 ## 11. Proposed benchmark and release gates
 

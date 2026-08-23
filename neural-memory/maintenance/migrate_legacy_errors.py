@@ -35,6 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -56,6 +57,7 @@ BACKUP_VERSION = "3can.graph-rollback-backup/v1"
 ERROR_KNOWLEDGE_VERSION = "3can.error-knowledge/v1"
 LOCK_VERSION = "3can.legacy-error-migration-lock/v1"
 JOURNAL_VERSION = "3can.legacy-error-migration-journal/v1"
+ROLLBACK_DELTA_VERSION = "3can.graph-rollback-delta/v1"
 JOURNAL_CHECKPOINT_BATCH_SIZE = 100
 ATOMIC_REPLACE_RETRY_DELAYS_SEC = (0.05, 0.1, 0.2, 0.4, 0.8)
 TRANSIENT_WINDOWS_REPLACE_ERRORS = frozenset({5, 32})
@@ -2004,6 +2006,24 @@ def migrate(
             checkpoint="embeddings_invalidated",
         )
 
+        post_apply_inventory = _node_inventory(graph / "nodes")
+        post_apply = {
+            "snapshot_id": _snapshot_id(graph),
+            "node_file_count": len(post_apply_inventory),
+            "node_inventory_sha256": _inventory_digest(post_apply_inventory),
+            "edges_sha256": _sha256_file(graph / "edges.json"),
+            "captured_at": _utc_now(),
+        }
+        expected_post_apply = _completed_apply_baseline_from_plan_for_apply(
+            graph,
+            paths["backup"],
+            plan,
+        )
+        if post_apply["snapshot_id"] != expected_post_apply["snapshot_id"]:
+            raise MigrationError("applied graph does not match the deterministic post-apply plan")
+        journal["post_apply"] = post_apply
+        _save_journal(journal_path, journal)
+
         manifest = _public_manifest(
             plan,
             mode="apply",
@@ -2013,6 +2033,7 @@ def migrate(
         )
         manifest["engine_quiescence"] = quiescence
         manifest["resumed_from_journal"] = resumed
+        manifest["post_apply"] = copy.deepcopy(post_apply)
         manifest["journal_path"] = str(journal_path)
         manifest["journal_phase"] = "manifest_written"
         _atomic_write_json(paths["manifest"], manifest)
@@ -2047,6 +2068,442 @@ def _nodes_match_backup(
     return actual == declared
 
 
+def _node_inventory(nodes_dir: Path) -> dict[str, str]:
+    if not nodes_dir.is_dir():
+        raise MigrationError(f"node directory does not exist: {nodes_dir}")
+    return {
+        path.relative_to(nodes_dir).as_posix(): _sha256_file(path)
+        for path in sorted(
+            nodes_dir.rglob("*"),
+            key=lambda item: item.relative_to(nodes_dir).as_posix(),
+        )
+        if path.is_file()
+    }
+
+
+def _inventory_digest(inventory: Mapping[str, str]) -> str:
+    return _sha256_bytes(
+        _canonical_json_bytes(dict(sorted(inventory.items())), pretty=False)
+    )
+
+
+def _snapshot_id_from_hashes(
+    node_inventory: Mapping[str, str],
+    edges_sha256: str,
+) -> str:
+    digest = hashlib.sha256()
+    for relative, node_sha256 in sorted(node_inventory.items()):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(node_sha256).encode("ascii"))
+        digest.update(b"\0")
+    digest.update(b"edges.json\0")
+    digest.update(str(edges_sha256).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _nodes_match_target(nodes_dir: Path, target: Mapping[str, Any]) -> bool:
+    if not nodes_dir.is_dir():
+        return False
+    inventory = _node_inventory(nodes_dir)
+    return (
+        len(inventory) == int(target.get("node_file_count") or -1)
+        and _inventory_digest(inventory)
+        == str(target.get("node_inventory_sha256") or "")
+    )
+
+
+def _journal_directory(graph: Path) -> Path:
+    return graph / "maintenance" / "legacy_error_migration" / "journals"
+
+
+def _matching_apply_journal(
+    graph: Path,
+    backup_dir: Path,
+) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    run_id = str(_read_json(backup_dir / "backup_metadata.json").get("run_id") or "")
+    candidate = _journal_directory(graph) / f"{run_id}.json"
+    if not run_id or not candidate.is_file():
+        raise MigrationError(
+            "matching apply journal is missing; rollback cannot distinguish "
+            "migration changes from later graph writes"
+        )
+    journal = _load_journal(candidate)
+    if journal.get("operation") != "apply":
+        raise MigrationError(f"matching migration journal is not an apply journal: {candidate}")
+    plan = _plan_from_journal(candidate, journal, require_current_version=False)
+    recorded_backup = Path(str(plan.get("paths", {}).get("backup") or "")).resolve()
+    if recorded_backup != backup_dir:
+        raise MigrationError("matching apply journal points to a different rollback backup")
+    if Path(str(journal.get("graph_dir") or "")).resolve() != graph:
+        raise MigrationError("matching apply journal points to a different graph")
+    return candidate, journal, plan
+
+
+def _planned_node_relative_path(
+    graph: Path,
+    internal: Mapping[str, Any],
+    node_id: str,
+) -> str:
+    raw_paths = internal.get("node_paths")
+    if not isinstance(raw_paths, Mapping) or node_id not in raw_paths:
+        raise MigrationError(f"apply journal has no source path for node {node_id!r}")
+    nodes_dir = (graph / "nodes").resolve()
+    candidate = Path(str(raw_paths[node_id])).resolve()
+    if candidate.parent != nodes_dir:
+        raise MigrationError(f"apply journal contains an unsafe node path: {candidate}")
+    return candidate.relative_to(nodes_dir).as_posix()
+
+
+def _completed_apply_baseline_from_plan_for_apply(
+    graph: Path,
+    backup_dir: Path,
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    metadata = _read_json(backup_dir / "backup_metadata.json")
+    if not isinstance(metadata, Mapping):
+        raise MigrationError("rollback backup metadata is invalid")
+    internal = plan.get("_internal")
+    if not isinstance(internal, Mapping):
+        raise MigrationError("apply plan lacks deterministic internal state")
+    normalized_nodes = internal.get("normalized_nodes")
+    remaining_edges = internal.get("remaining_edges")
+    if not isinstance(normalized_nodes, Mapping) or not isinstance(remaining_edges, list):
+        raise MigrationError("apply plan has an invalid deterministic post-apply state")
+    if any(not isinstance(edge, Mapping) for edge in remaining_edges):
+        raise MigrationError("apply plan has invalid post-apply edges")
+
+    inventory = {
+        str(entry.get("path") or ""): str(entry.get("sha256") or "")
+        for entry in metadata.get("node_files", [])
+        if isinstance(entry, Mapping)
+    }
+    if not inventory or any(not path or not digest for path, digest in inventory.items()):
+        raise MigrationError("rollback backup has an invalid node inventory")
+    for node_id in plan.get("removal_node_ids", []):
+        relative = _planned_node_relative_path(graph, internal, str(node_id))
+        inventory.pop(relative, None)
+    for node_id in plan.get("normalized_node_ids", []):
+        node_key = str(node_id)
+        if node_key not in normalized_nodes:
+            raise MigrationError(f"apply plan lacks normalized payload for {node_key!r}")
+        relative = _planned_node_relative_path(graph, internal, node_key)
+        inventory[relative] = _sha256_bytes(
+            _canonical_json_bytes(normalized_nodes[node_key])
+        )
+    edges = copy.deepcopy(remaining_edges)
+    edges_sha256 = _sha256_bytes(_canonical_json_bytes(edges))
+    return {
+        "node_inventory": inventory,
+        "edges": edges,
+        "edges_sha256": edges_sha256,
+        "snapshot_id": _snapshot_id_from_hashes(inventory, edges_sha256),
+    }
+
+
+def _completed_apply_baseline(
+    graph: Path,
+    backup_dir: Path,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    journal_path, journal, plan = _matching_apply_journal(graph, backup_dir)
+    phase = str(journal.get("phase") or "")
+    if phase == "rolled_back":
+        matching_rollback = any(
+            candidate.get("operation") == "rollback"
+            and Path(str(candidate.get("backup") or "")).resolve() == backup_dir
+            for _path, candidate in _incomplete_journals(graph)
+        )
+        if matching_rollback:
+            return {
+                "mode": "rolled_back_apply_resume",
+                "apply_journal": str(journal_path),
+                "apply_journal_sha256": _sha256_file(journal_path),
+                "apply_phase": phase,
+            }
+        raise MigrationError("this migration backup has already been rolled back")
+    if phase != "completed":
+        return {
+            "mode": "incomplete_apply_exact_restore",
+            "apply_journal": str(journal_path),
+            "apply_journal_sha256": _sha256_file(journal_path),
+            "apply_phase": phase,
+        }
+
+    deterministic = _completed_apply_baseline_from_plan_for_apply(
+        graph,
+        backup_dir,
+        plan,
+    )
+    snapshot_id = deterministic["snapshot_id"]
+    recorded_post_apply = journal.get("post_apply")
+    if isinstance(recorded_post_apply, Mapping):
+        recorded_snapshot = str(recorded_post_apply.get("snapshot_id") or "")
+        if recorded_snapshot and recorded_snapshot != snapshot_id:
+            raise MigrationError("apply journal post-apply snapshot does not match its plan")
+    return {
+        "mode": "completed_apply_delta_preserving",
+        "apply_journal": str(journal_path),
+        "apply_journal_sha256": _sha256_file(journal_path),
+        "apply_phase": phase,
+        **deterministic,
+    }
+
+
+def _edge_token(edge: Mapping[str, Any]) -> bytes:
+    return _canonical_json_bytes(dict(edge), pretty=False)
+
+
+def _edge_three_way_merge(
+    backup_edges: Sequence[Mapping[str, Any]],
+    baseline_edges: Sequence[Mapping[str, Any]],
+    current_edges: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
+    baseline_counts = Counter(_edge_token(edge) for edge in baseline_edges)
+    current_counts = Counter(_edge_token(edge) for edge in current_edges)
+    removed_counts = baseline_counts - current_counts
+    added_counts = current_counts - baseline_counts
+
+    remaining_removals = removed_counts.copy()
+    target: list[dict[str, Any]] = []
+    for edge in backup_edges:
+        token = _edge_token(edge)
+        if remaining_removals[token] > 0:
+            remaining_removals[token] -= 1
+            continue
+        target.append(copy.deepcopy(dict(edge)))
+    if sum(remaining_removals.values()):
+        raise MigrationError(
+            "post-apply edge deletion cannot be replayed onto the rollback backup"
+        )
+
+    remaining_additions = added_counts.copy()
+    for edge in current_edges:
+        token = _edge_token(edge)
+        if remaining_additions[token] <= 0:
+            continue
+        target.append(copy.deepcopy(dict(edge)))
+        remaining_additions[token] -= 1
+    if sum(remaining_additions.values()):
+        raise MigrationError("post-apply edge additions could not be captured deterministically")
+    return target, sum(added_counts.values()), sum(removed_counts.values())
+
+
+def _capture_rollback_target(
+    graph: Path,
+    backup_dir: Path,
+    metadata: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+) -> tuple[dict[str, Any], bytes]:
+    backup_inventory = {
+        str(entry.get("path") or ""): str(entry.get("sha256") or "")
+        for entry in metadata.get("node_files", [])
+        if isinstance(entry, Mapping)
+    }
+    current_inventory = _node_inventory(graph / "nodes")
+    _current_nodes, current_node_paths, _loaded_edges, corrupt_nodes = _load_graph(graph)
+    if corrupt_nodes or set(current_inventory) != {
+        path.relative_to(graph / "nodes").as_posix()
+        for path in current_node_paths.values()
+    }:
+        raise MigrationError(
+            "current graph contains corrupt or non-node files; rollback delta cannot be replayed safely"
+        )
+    current_edges_raw = (graph / "edges.json").read_bytes()
+    current_edges = _read_json(graph / "edges.json")
+    if not isinstance(current_edges, list) or any(
+        not isinstance(edge, Mapping) for edge in current_edges
+    ):
+        raise MigrationError("current graph edges are not a JSON array of objects")
+    current_snapshot = _snapshot_id_from_hashes(
+        current_inventory,
+        _sha256_bytes(current_edges_raw),
+    )
+    if current_snapshot != _snapshot_id(graph):
+        raise MigrationError("graph changed while rollback state was being captured")
+
+    if baseline.get("mode") == "incomplete_apply_exact_restore":
+        target_edges_bytes = (backup_dir / "edges.json").read_bytes()
+        target_inventory = dict(backup_inventory)
+        delta = {
+            "node_added": [],
+            "node_modified": [],
+            "node_deleted": [],
+            "source_node_hashes": {},
+            "edge_added_count": 0,
+            "edge_deleted_count": 0,
+        }
+        embedding_mode = "restore_backup"
+    else:
+        baseline_inventory = baseline.get("node_inventory")
+        baseline_edges = baseline.get("edges")
+        if not isinstance(baseline_inventory, Mapping) or not isinstance(
+            baseline_edges, list
+        ):
+            raise MigrationError("completed apply baseline is incomplete")
+        added = sorted(set(current_inventory) - set(baseline_inventory))
+        deleted = sorted(set(baseline_inventory) - set(current_inventory))
+        modified = sorted(
+            path
+            for path in set(current_inventory) & set(baseline_inventory)
+            if current_inventory[path] != baseline_inventory[path]
+        )
+        target_inventory = dict(backup_inventory)
+        for relative in deleted:
+            target_inventory.pop(relative, None)
+        for relative in (*added, *modified):
+            target_inventory[relative] = current_inventory[relative]
+
+        backup_edges = _read_json(backup_dir / "edges.json")
+        if not isinstance(backup_edges, list) or any(
+            not isinstance(edge, Mapping) for edge in backup_edges
+        ):
+            raise MigrationError("rollback backup edges are invalid")
+        target_edges, edge_added_count, edge_deleted_count = _edge_three_way_merge(
+            backup_edges,
+            baseline_edges,
+            current_edges,
+        )
+        deleted_node_ids = {Path(relative).stem for relative in deleted}
+        edge_count_before_node_prune = len(target_edges)
+        target_edges = [
+            edge
+            for edge in target_edges
+            if str(edge.get("source") or "") not in deleted_node_ids
+            and str(edge.get("target") or "") not in deleted_node_ids
+        ]
+        edge_pruned_for_deleted_nodes = edge_count_before_node_prune - len(target_edges)
+        has_edge_delta = bool(edge_added_count or edge_deleted_count)
+        has_node_delta = bool(added or modified or deleted)
+        target_edges_bytes = (
+            _canonical_json_bytes(target_edges)
+            if has_edge_delta
+            else (backup_dir / "edges.json").read_bytes()
+        )
+        delta = {
+            "node_added": added,
+            "node_modified": modified,
+            "node_deleted": deleted,
+            "source_node_hashes": {
+                relative: current_inventory[relative]
+                for relative in (*added, *modified)
+            },
+            "edge_added_count": edge_added_count,
+            "edge_deleted_count": edge_deleted_count,
+            "edge_pruned_for_deleted_nodes": edge_pruned_for_deleted_nodes,
+        }
+        embedding_mode = (
+            "invalidate_for_rebuild"
+            if has_node_delta or has_edge_delta
+            else "restore_backup"
+        )
+
+    target_edges_sha256 = _sha256_bytes(target_edges_bytes)
+    target = {
+        "captured_current_snapshot_id": current_snapshot,
+        "baseline_snapshot_id": str(baseline.get("snapshot_id") or ""),
+        "node_file_count": len(target_inventory),
+        "node_inventory_sha256": _inventory_digest(target_inventory),
+        "edges_sha256": target_edges_sha256,
+        "snapshot_id": _snapshot_id_from_hashes(
+            target_inventory,
+            target_edges_sha256,
+        ),
+        "embedding_mode": embedding_mode,
+        "delta": delta,
+    }
+    if embedding_mode == "restore_backup" and target["snapshot_id"] != metadata.get(
+        "snapshot_id"
+    ):
+        raise MigrationError("exact rollback target does not match the backup snapshot")
+    return target, target_edges_bytes
+
+
+def _write_rollback_delta_receipt(
+    graph: Path,
+    run_id: str,
+    plan_digest: str,
+    baseline: Mapping[str, Any],
+    target: Mapping[str, Any],
+    target_edges_bytes: bytes,
+) -> tuple[Path, Path, str]:
+    root = graph / "maintenance" / "legacy_error_migration" / "rollback_deltas"
+    stem = f"rollback-{run_id}-{plan_digest[:12]}"
+    edges_path = root / f"{stem}.edges.json"
+    receipt_path = root / f"{stem}.json"
+    if edges_path.exists():
+        if edges_path.read_bytes() != target_edges_bytes:
+            raise MigrationError(f"rollback target edges conflict with existing evidence: {edges_path}")
+    else:
+        _atomic_write_bytes(edges_path, target_edges_bytes)
+    receipt = {
+        "schema_version": ROLLBACK_DELTA_VERSION,
+        "run_id": run_id,
+        "captured_at": _utc_now(),
+        "baseline": {
+            key: value
+            for key, value in baseline.items()
+            if key not in {"node_inventory", "edges"}
+        },
+        "target": copy.deepcopy(dict(target)),
+        "target_edges_file": str(edges_path),
+        "target_edges_sha256": _sha256_bytes(target_edges_bytes),
+    }
+    payload = _canonical_json_bytes(receipt)
+    if receipt_path.exists():
+        existing = _read_json(receipt_path)
+        if not isinstance(existing, Mapping):
+            raise MigrationError(f"invalid rollback delta receipt: {receipt_path}")
+        comparable = copy.deepcopy(dict(existing))
+        comparable["captured_at"] = receipt["captured_at"]
+        if comparable != receipt:
+            raise MigrationError(f"rollback delta receipt conflicts with existing evidence: {receipt_path}")
+        receipt_sha256 = _sha256_file(receipt_path)
+    else:
+        _atomic_write_bytes(receipt_path, payload)
+        receipt_sha256 = _sha256_file(receipt_path)
+    return receipt_path, edges_path, receipt_sha256
+
+
+def _prepare_target_nodes(
+    graph: Path,
+    backup_dir: Path,
+    restore_nodes: Path,
+    target: Mapping[str, Any],
+) -> None:
+    if restore_nodes.exists():
+        if restore_nodes.is_dir():
+            shutil.rmtree(restore_nodes)
+        else:
+            restore_nodes.unlink()
+    shutil.copytree(backup_dir / "nodes", restore_nodes)
+    delta = target.get("delta")
+    if not isinstance(delta, Mapping):
+        raise MigrationError("rollback target has no deterministic delta")
+    for relative in delta.get("node_deleted", []):
+        candidate = (restore_nodes / str(relative)).resolve()
+        if not _path_is_within(candidate, restore_nodes):
+            raise MigrationError(f"unsafe rollback node deletion path: {relative!r}")
+        candidate.unlink(missing_ok=True)
+    source_hashes = delta.get("source_node_hashes")
+    if not isinstance(source_hashes, Mapping):
+        raise MigrationError("rollback target has invalid node source hashes")
+    for relative in (*delta.get("node_added", []), *delta.get("node_modified", [])):
+        source = (graph / "nodes" / str(relative)).resolve()
+        destination = (restore_nodes / str(relative)).resolve()
+        if not _path_is_within(source, graph / "nodes") or not _path_is_within(
+            destination, restore_nodes
+        ):
+            raise MigrationError(f"unsafe rollback node replay path: {relative!r}")
+        expected_hash = str(source_hashes.get(str(relative)) or "")
+        if not source.is_file() or _sha256_file(source) != expected_hash:
+            raise MigrationError(f"post-apply node changed during rollback capture: {relative}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    if not _nodes_match_target(restore_nodes, target):
+        raise MigrationError("prepared rollback node store does not match the captured target")
+
+
 def _rollback_journal_details(
     graph: Path,
     backup_dir: Path,
@@ -2079,6 +2536,7 @@ def _rollback_journal_details(
         "updated_at": _utc_now(),
         "phase": "backup_validated",
         "checkpoints": {
+            "delta_captured": False,
             "restore_nodes_prepared": False,
             "nodes_swapped": False,
             "edges_restored": False,
@@ -2095,24 +2553,15 @@ def _mark_matching_apply_journals_rolled_back(
     graph: Path,
     backup_dir: Path,
 ) -> None:
-    for path, journal in _incomplete_journals(graph):
-        if journal.get("operation") != "apply":
-            continue
-        plan = _plan_from_journal(
-            path,
-            journal,
-            require_current_version=False,
-        )
-        if Path(str(plan["paths"]["backup"])).resolve() != backup_dir:
-            continue
-        journal["rollback_journal"] = str(
-            _rollback_journal_details(
-                graph,
-                backup_dir,
-                _read_json(backup_dir / "backup_metadata.json"),
-            )[0]
-        )
-        _set_journal_phase(path, journal, "rolled_back")
+    path, journal, _plan = _matching_apply_journal(graph, backup_dir)
+    journal["rollback_journal"] = str(
+        _rollback_journal_details(
+            graph,
+            backup_dir,
+            _read_json(backup_dir / "backup_metadata.json"),
+        )[0]
+    )
+    _set_journal_phase(path, journal, "rolled_back")
 
 
 def rollback(
@@ -2124,7 +2573,7 @@ def rollback(
     additional_engine_endpoints: Sequence[str] | None = None,
     engine_probe_timeout_sec: float = DEFAULT_ENGINE_PROBE_TIMEOUT_SEC,
 ) -> dict[str, Any]:
-    """Restore the exact node/edge/cache snapshot from a migration backup."""
+    """Undo the migration while preserving graph writes committed after apply."""
 
     graph = Path(graph_dir).resolve()
     backup_dir = Path(backup).resolve()
@@ -2148,8 +2597,10 @@ def rollback(
     if Path(str(metadata.get("graph_dir") or "")).resolve() != graph:
         raise MigrationError("backup was created for a different graph directory")
     _validate_backup_files(backup_dir, metadata)
-    backup_nodes = backup_dir / "nodes"
-    backup_edges = backup_dir / "edges.json"
+    # This also refuses a second rollback.  A verified apply journal is
+    # required because otherwise later graph writes cannot be separated from
+    # the migration itself without guessing.
+    _completed_apply_baseline(graph, backup_dir, metadata)
     journal_path, plan_digest, new_journal = _rollback_journal_details(
         graph,
         backup_dir,
@@ -2225,75 +2676,124 @@ def rollback(
         if not isinstance(checkpoints, dict):
             raise MigrationError(f"rollback journal has invalid checkpoints: {journal_path}")
 
-        if not bool(checkpoints.get("nodes_swapped")):
-            if restore_nodes.exists() and not _nodes_match_backup(
-                restore_nodes,
+        if not bool(checkpoints.get("delta_captured")):
+            baseline = _completed_apply_baseline(graph, backup_dir, metadata)
+            target, target_edges_bytes = _capture_rollback_target(
+                graph,
+                backup_dir,
                 metadata,
-            ):
-                if nodes_dir.is_dir() and not displaced_nodes.exists():
+                baseline,
+            )
+            receipt_path, target_edges_path, receipt_sha256 = (
+                _write_rollback_delta_receipt(
+                    graph,
+                    str(metadata.get("run_id") or "unknown"),
+                    plan_digest,
+                    baseline,
+                    target,
+                    target_edges_bytes,
+                )
+            )
+            journal["baseline"] = {
+                key: value
+                for key, value in baseline.items()
+                if key not in {"node_inventory", "edges"}
+            }
+            journal["target"] = target
+            journal["delta_receipt"] = str(receipt_path)
+            journal["delta_receipt_sha256"] = receipt_sha256
+            journal["target_edges_file"] = str(target_edges_path)
+            _set_journal_phase(
+                journal_path,
+                journal,
+                "delta_captured",
+                checkpoint="delta_captured",
+            )
+        target = journal.get("target")
+        if not isinstance(target, Mapping):
+            raise MigrationError(f"rollback journal has no captured target: {journal_path}")
+        receipt_path = Path(str(journal.get("delta_receipt") or "")).resolve()
+        target_edges_path = Path(str(journal.get("target_edges_file") or "")).resolve()
+        evidence_root = (
+            graph / "maintenance" / "legacy_error_migration" / "rollback_deltas"
+        ).resolve()
+        if (
+            not _path_is_within(receipt_path, evidence_root)
+            or not receipt_path.is_file()
+            or _sha256_file(receipt_path)
+            != str(journal.get("delta_receipt_sha256") or "")
+        ):
+            raise MigrationError("rollback delta receipt is missing or changed")
+        if (
+            not _path_is_within(target_edges_path, evidence_root)
+            or not target_edges_path.is_file()
+            or _sha256_file(target_edges_path)
+            != str(target.get("edges_sha256") or "")
+        ):
+            raise MigrationError("rollback target edges are missing or changed")
+
+        if not bool(checkpoints.get("nodes_swapped")):
+            if nodes_dir.is_dir() and displaced_nodes.is_dir() and not restore_nodes.exists():
+                if not _nodes_match_target(nodes_dir, target):
+                    raise MigrationError(
+                        "rollback resume found an ambiguous displaced node store"
+                    )
+            elif not nodes_dir.exists():
+                if not restore_nodes.is_dir() or not displaced_nodes.is_dir():
+                    raise MigrationError(
+                        "rollback lost the active node directory without both recovery copies"
+                    )
+                if not _nodes_match_target(restore_nodes, target):
+                    raise MigrationError("rollback restore copy no longer matches its target")
+                os.replace(restore_nodes, nodes_dir)
+            elif displaced_nodes.exists():
+                raise MigrationError(
+                    "rollback resume found conflicting active and displaced node stores"
+                )
+            else:
+                if _snapshot_id(graph) != str(
+                    target.get("captured_current_snapshot_id") or ""
+                ):
+                    raise MigrationError(
+                        "graph changed after rollback delta capture; no mutation was made"
+                    )
+                if restore_nodes.exists() and not _nodes_match_target(
+                    restore_nodes,
+                    target,
+                ):
                     if restore_nodes.is_dir():
                         shutil.rmtree(restore_nodes)
                     else:
                         restore_nodes.unlink()
-                else:
-                    raise MigrationError(
-                        "rollback resume found an incomplete restore copy in "
-                        "an unsafe node-directory state"
-                    )
-            if (
-                nodes_dir.is_dir()
-                and not restore_nodes.exists()
-                and displaced_nodes.is_dir()
-            ):
-                if not _nodes_match_backup(nodes_dir, metadata):
-                    raise MigrationError(
-                        "rollback resume found an ambiguous displaced node store"
-                    )
-            else:
                 if not restore_nodes.exists():
-                    if not nodes_dir.is_dir() or displaced_nodes.exists():
-                        raise MigrationError(
-                            "rollback resume found an unsafe node-directory state"
-                        )
-                    shutil.copytree(backup_nodes, restore_nodes)
-                    if not _nodes_match_backup(restore_nodes, metadata):
-                        raise MigrationError(
-                            "rollback restore copy does not match the backup"
-                        )
+                    _prepare_target_nodes(
+                        graph,
+                        backup_dir,
+                        restore_nodes,
+                        target,
+                    )
                     _set_journal_phase(
                         journal_path,
                         journal,
                         "restore_nodes_prepared",
                         checkpoint="restore_nodes_prepared",
                     )
-                if not nodes_dir.exists():
-                    if not restore_nodes.is_dir() or not displaced_nodes.is_dir():
-                        raise MigrationError(
-                            "rollback lost the active node directory without both recovery copies"
-                        )
-                    os.replace(restore_nodes, nodes_dir)
-                elif restore_nodes.is_dir() and not displaced_nodes.exists():
-                    os.replace(nodes_dir, displaced_nodes)
-                    os.replace(restore_nodes, nodes_dir)
-                elif restore_nodes.exists() and displaced_nodes.exists():
-                    raise MigrationError(
-                        "rollback has both restore and displaced directories; "
-                        "manual inspection is required"
-                    )
-            if not _nodes_match_backup(nodes_dir, metadata):
-                raise MigrationError("rollback node swap does not match the backup")
+                os.replace(nodes_dir, displaced_nodes)
+                os.replace(restore_nodes, nodes_dir)
+            if not _nodes_match_target(nodes_dir, target):
+                raise MigrationError("rollback node swap does not match the captured target")
             _set_journal_phase(
                 journal_path,
                 journal,
                 "nodes_swapped",
                 checkpoint="nodes_swapped",
             )
-        elif not _nodes_match_backup(nodes_dir, metadata):
+        elif not _nodes_match_target(nodes_dir, target):
             raise MigrationError(
-                "rollback journal says nodes were swapped but the backup does not match"
+                "rollback journal says nodes were swapped but the target does not match"
             )
 
-        _atomic_write_bytes(graph / "edges.json", backup_edges.read_bytes())
+        _atomic_write_bytes(graph / "edges.json", target_edges_path.read_bytes())
         _set_journal_phase(
             journal_path,
             journal,
@@ -2301,21 +2801,49 @@ def rollback(
             checkpoint="edges_restored",
         )
         backup_embeddings = backup_dir / "embeddings.npz"
-        if bool(metadata.get("embeddings_present")):
-            if not backup_embeddings.is_file():
-                raise MigrationError("backup metadata expects embeddings.npz but the file is missing")
-            _atomic_write_bytes(graph / "embeddings.npz", backup_embeddings.read_bytes())
-        else:
-            (graph / "embeddings.npz").unlink(missing_ok=True)
-
         marker = graph / "embeddings.rebuild_required.json"
         backup_marker = backup_dir / "embeddings.rebuild_required.json"
-        if bool(metadata.get("embedding_marker_present")):
-            if not backup_marker.is_file():
-                raise MigrationError("backup metadata expects an embedding marker but the file is missing")
-            _atomic_write_bytes(marker, backup_marker.read_bytes())
+        if target.get("embedding_mode") == "invalidate_for_rebuild":
+            (graph / "embeddings.npz").unlink(missing_ok=True)
+            delta = target.get("delta")
+            if not isinstance(delta, Mapping):
+                raise MigrationError("rollback target delta is invalid")
+            _atomic_write_json(
+                marker,
+                {
+                    "schema_version": MIGRATION_VERSION,
+                    "reason": "rollback preserved graph writes committed after migration apply",
+                    "run_id": str(metadata.get("run_id") or "unknown"),
+                    "rollback_delta_receipt": str(receipt_path),
+                    "preserved_node_changes": sum(
+                        len(delta.get(key, []))
+                        for key in ("node_added", "node_modified", "node_deleted")
+                    ),
+                    "preserved_edge_changes": int(delta.get("edge_added_count") or 0)
+                    + int(delta.get("edge_deleted_count") or 0)
+                    + int(delta.get("edge_pruned_for_deleted_nodes") or 0),
+                },
+            )
         else:
-            marker.unlink(missing_ok=True)
+            if bool(metadata.get("embeddings_present")):
+                if not backup_embeddings.is_file():
+                    raise MigrationError(
+                        "backup metadata expects embeddings.npz but the file is missing"
+                    )
+                _atomic_write_bytes(
+                    graph / "embeddings.npz",
+                    backup_embeddings.read_bytes(),
+                )
+            else:
+                (graph / "embeddings.npz").unlink(missing_ok=True)
+            if bool(metadata.get("embedding_marker_present")):
+                if not backup_marker.is_file():
+                    raise MigrationError(
+                        "backup metadata expects an embedding marker but the file is missing"
+                    )
+                _atomic_write_bytes(marker, backup_marker.read_bytes())
+            else:
+                marker.unlink(missing_ok=True)
         _set_journal_phase(
             journal_path,
             journal,
@@ -2324,10 +2852,10 @@ def rollback(
         )
 
         restored_snapshot = _snapshot_id(graph)
-        if restored_snapshot != metadata.get("snapshot_id"):
+        if restored_snapshot != target.get("snapshot_id"):
             raise MigrationError(
                 "rollback files were restored but verification failed: "
-                f"expected {metadata.get('snapshot_id')}, got {restored_snapshot}"
+                f"expected {target.get('snapshot_id')}, got {restored_snapshot}"
             )
         _set_journal_phase(
             journal_path,
@@ -2348,7 +2876,11 @@ def rollback(
         "restored": True,
         "graph_dir": str(graph),
         "backup": str(backup_dir),
-        "snapshot_id": metadata["snapshot_id"],
+        "snapshot_id": target["snapshot_id"],
+        "backup_snapshot_id": metadata["snapshot_id"],
+        "rollback_mode": journal.get("baseline", {}).get("mode"),
+        "preserved_delta": copy.deepcopy(target.get("delta")),
+        "delta_receipt": str(receipt_path),
         "engine_quiescence": quiescence,
         "resumed_from_journal": resumed,
         "journal_path": str(journal_path),

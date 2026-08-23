@@ -817,6 +817,171 @@ def test_rollback_restores_exact_graph_snapshot(tmp_path: Path, monkeypatch) -> 
     assert restored_mutable == original
 
 
+def test_rollback_preserves_post_apply_node_and_edge_delta(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _write_graph(tmp_path)
+    silent_endpoint = _offline_defaults(monkeypatch)
+    applied = MIGRATION.migrate(
+        graph,
+        apply=True,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    backup = Path(applied["paths"]["backup"])
+
+    added = _node("DOC-post-apply")
+    (graph / "nodes" / "DOC-post-apply.json").write_text(
+        json.dumps(added, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    modified_path = graph / "nodes" / "DOC-unrelated.json"
+    modified = json.loads(modified_path.read_text(encoding="utf-8"))
+    modified["content"]["description"] = "committed after migration"
+    modified_path.write_text(
+        json.dumps(modified, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (graph / "nodes" / "DOC-neighbor.json").unlink()
+    current_edges = [
+        edge
+        for edge in _read_edges(graph)
+        if not (
+            edge["source"] == "DOC-unrelated"
+            and edge["target"] == "DOC-neighbor"
+        )
+    ]
+    current_edges.append(
+        {
+            "source": "DOC-unrelated",
+            "target": "DOC-post-apply",
+            "type": "informs",
+            "weight": 0.9,
+        }
+    )
+    (graph / "edges.json").write_text(
+        json.dumps(current_edges, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    result = MIGRATION.rollback(
+        graph,
+        backup,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+
+    assert result["rollback_mode"] == "completed_apply_delta_preserving"
+    assert result["snapshot_id"] != result["backup_snapshot_id"]
+    assert result["preserved_delta"]["node_added"] == ["DOC-post-apply.json"]
+    assert result["preserved_delta"]["node_modified"] == ["DOC-unrelated.json"]
+    assert result["preserved_delta"]["node_deleted"] == ["DOC-neighbor.json"]
+    assert Path(result["delta_receipt"]).is_file()
+    assert (graph / "nodes" / "DOC-post-apply.json").is_file()
+    assert not (graph / "nodes" / "DOC-neighbor.json").exists()
+    restored_modified = json.loads(modified_path.read_text(encoding="utf-8"))
+    assert restored_modified["content"]["description"] == "committed after migration"
+    restored_edges = _read_edges(graph)
+    node_ids = {path.stem for path in (graph / "nodes").glob("*.json")}
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in restored_edges)
+    assert any(edge["target"] == "DOC-post-apply" for edge in restored_edges)
+    assert not (graph / "embeddings.npz").exists()
+    marker = json.loads(
+        (graph / "embeddings.rebuild_required.json").read_text(encoding="utf-8")
+    )
+    assert marker["preserved_node_changes"] == 3
+    apply_journal = json.loads(Path(applied["journal_path"]).read_text(encoding="utf-8"))
+    assert apply_journal["phase"] == "rolled_back"
+    with pytest.raises(MIGRATION.MigrationError, match="already been rolled back"):
+        MIGRATION.rollback(
+            graph,
+            backup,
+            confirm_engine_stopped=True,
+            engine_endpoints=[silent_endpoint],
+            engine_probe_timeout_sec=0.05,
+        )
+
+
+def test_rollback_refuses_missing_apply_journal_without_graph_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _write_graph(tmp_path)
+    silent_endpoint = _offline_defaults(monkeypatch)
+    applied = MIGRATION.migrate(
+        graph,
+        apply=True,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    Path(applied["journal_path"]).unlink()
+    mutable_before = {
+        name: payload
+        for name, payload in _tree_bytes(graph).items()
+        if not name.startswith("maintenance/")
+    }
+
+    with pytest.raises(MIGRATION.MigrationError, match="apply journal is missing"):
+        MIGRATION.rollback(
+            graph,
+            Path(applied["paths"]["backup"]),
+            confirm_engine_stopped=True,
+            engine_endpoints=[silent_endpoint],
+            engine_probe_timeout_sec=0.05,
+        )
+
+    mutable_after = {
+        name: payload
+        for name, payload in _tree_bytes(graph).items()
+        if not name.startswith("maintenance/")
+    }
+    assert mutable_after == mutable_before
+
+
+def test_rollback_refuses_graph_change_after_delta_capture(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _write_graph(tmp_path)
+    silent_endpoint = _offline_defaults(monkeypatch)
+    applied = MIGRATION.migrate(
+        graph,
+        apply=True,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    backup = Path(applied["paths"]["backup"])
+    original_writer = MIGRATION._write_rollback_delta_receipt
+
+    def write_then_change(*args, **kwargs):
+        receipt = original_writer(*args, **kwargs)
+        path = graph / "nodes" / "DOC-unrelated.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["content"]["description"] = "raced after capture"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return receipt
+
+    monkeypatch.setattr(MIGRATION, "_write_rollback_delta_receipt", write_then_change)
+    with pytest.raises(MIGRATION.MigrationError, match="changed after rollback delta capture"):
+        MIGRATION.rollback(
+            graph,
+            backup,
+            confirm_engine_stopped=True,
+            engine_endpoints=[silent_endpoint],
+            engine_probe_timeout_sec=0.05,
+        )
+    assert not (graph / "nodes" / "ERR-repeated-remove.json").exists()
+    raced = json.loads(
+        (graph / "nodes" / "DOC-unrelated.json").read_text(encoding="utf-8")
+    )
+    assert raced["content"]["description"] == "raced after capture"
+
+
 def test_rollback_rejects_corrupt_backup_before_mutating(
     tmp_path: Path,
     monkeypatch,
@@ -1099,6 +1264,67 @@ def test_interrupted_rollback_resumes_after_atomic_node_swap(
         engine_probe_timeout_sec=0.05,
     )
 
+    restored_mutable = {
+        name: payload
+        for name, payload in _tree_bytes(graph).items()
+        if not name.startswith("maintenance/")
+    }
+    assert resumed["restored"] is True
+    assert resumed["resumed_from_journal"] is True
+    assert restored_mutable == original
+
+
+def test_interrupted_rollback_resumes_after_apply_is_marked_rolled_back(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    graph = _write_graph(tmp_path)
+    original = _tree_bytes(graph)
+    silent_endpoint = _offline_defaults(monkeypatch)
+    applied = MIGRATION.migrate(
+        graph,
+        apply=True,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
+    backup = Path(applied["paths"]["backup"])
+    original_marker = MIGRATION._mark_matching_apply_journals_rolled_back
+    crashed = False
+
+    def mark_then_crash(graph_dir: Path, backup_dir: Path) -> None:
+        nonlocal crashed
+        original_marker(graph_dir, backup_dir)
+        if not crashed:
+            crashed = True
+            raise RuntimeError("simulated loss after apply rollback marker")
+
+    monkeypatch.setattr(
+        MIGRATION,
+        "_mark_matching_apply_journals_rolled_back",
+        mark_then_crash,
+    )
+    with pytest.raises(RuntimeError, match="after apply rollback marker"):
+        MIGRATION.rollback(
+            graph,
+            backup,
+            confirm_engine_stopped=True,
+            engine_endpoints=[silent_endpoint],
+            engine_probe_timeout_sec=0.05,
+        )
+    monkeypatch.setattr(
+        MIGRATION,
+        "_mark_matching_apply_journals_rolled_back",
+        original_marker,
+    )
+
+    resumed = MIGRATION.rollback(
+        graph,
+        backup,
+        confirm_engine_stopped=True,
+        engine_endpoints=[silent_endpoint],
+        engine_probe_timeout_sec=0.05,
+    )
     restored_mutable = {
         name: payload
         for name, payload in _tree_bytes(graph).items()
