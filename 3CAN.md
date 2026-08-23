@@ -118,9 +118,28 @@ architectural decision, rollback boundary, or release boundary changes.
 Do not create a node for every commit, test, tool call, provider call, or
 session. Do not add a Git watcher, commit daemon, or Git-state mirror.
 
-When an Agent observes that Git may be newer than durable project meaning, the
-Agent routes to the relevant module, verifies Git as the exact authority, and
-uses the existing writeback path only for an accepted meaningful checkpoint.
+Ordinary development follows `understand -> edit -> test -> Git checkpoint ->
+deliver` with zero forced 3CAN calls. A route is a read tool used when project
+meaning would materially improve the decision; it is not a universal pre-edit
+gate.
+
+Durable writeback has only two default triggers:
+
+- `AUTO_CLOSEOUT`: after a meaningful module or milestone has finished local
+  verification, record its semantic delta and remaining typed evidence state;
+- `OWNER_REQUESTED`: the Owner explicitly asks to record, summarize, compact,
+  or checkpoint current meaning at any point.
+
+Both triggers use the existing writeback path. They do not introduce a watcher,
+queue, daemon, or second execution state. If 3CAN is unavailable or concurrent
+state has moved, local Git work remains complete and the receipt stays typed
+`UNAVAILABLE`, `PARTIAL`, or `CONFLICT`.
+
+Concurrent convergence is node-first and compare-and-swap. Update the canonical
+owner with its observed `expected_updated_at`, then add only edges whose
+endpoints are present. A stale node update, missing endpoint, or already-applied
+semantic delta is a typed convergence result, never permission to guess,
+duplicate a node, or block unrelated local development.
 
 ## Provenance boundary
 

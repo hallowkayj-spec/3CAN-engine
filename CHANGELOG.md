@@ -11,6 +11,30 @@ The implementation and migration tooling below are staged and locally tested.
 They are not yet tagged or published as a release, and this changelog does not
 claim that any private production graph has been migrated.
 
+### 2026-08-23 ErrorKnowledge consolidation candidate
+
+- Changed legacy rollback from whole-snapshot overwrite to a receipt-bound
+  three-way delta replay. Post-apply node and edge additions, updates, and
+  deletions survive rollback; stale or ambiguous baselines fail closed.
+- Added a reviewed real-query ErrorKnowledge runner with fixed recall,
+  pollution, ordinary-route false-positive, and latency gates. Internal query
+  text stays outside the release and results remain typed.
+- Added deterministic ErrorFamily candidate, decision, activation, and
+  rollback manifests. The sidecar never merges ErrorCase nodes, inherits
+  solutions, or accepts semantic similarity as identity.
+- Limited exact alias promotion to explicit operational-error queries and
+  unique reviewer-supplied aliases. Proposed aliases remain sparse evidence;
+  ambiguous aliases receive no promotion.
+- Kept ErrorFamily aliases out of dense embedding source text, so a governance
+  revision does not force a whole-graph embedding rebuild.
+- Clarified the default development contract: ordinary Git/code/test work has
+  zero forced 3CAN calls; durable writeback defaults to `AUTO_CLOSEOUT` or
+  explicit `OWNER_REQUESTED`. Typed 3CAN convergence states do not block safe
+  local development.
+- Recorded a production-derived isolated candidate with recall and isolation
+  gates passing. It remains `VALIDATING`, is not live-deployed, and still
+  requires a comparable HTTP latency run and maintainer review.
+
 ### 2026-08-20 portable public-release packaging
 
 - Reworked the repository landing page into a Chinese-first OPC guide while

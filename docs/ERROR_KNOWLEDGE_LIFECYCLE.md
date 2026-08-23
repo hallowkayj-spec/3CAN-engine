@@ -614,6 +614,21 @@ ErrorCases, copy solutions, or add edges.
    A compiled or isolated candidate is not evidence that the live runtime is
    using the manifest.
 
+The public tool is dry-run-first:
+
+```text
+python neural-memory/maintenance/govern_error_families.py --graph-dir <graph> \
+  --plan-output <candidates.json>
+python neural-memory/maintenance/govern_error_families.py --graph-dir <graph> \
+  --compile-output <active-candidate.json> \
+  --candidates <candidates.json> --decisions <reviewed-decisions.json>
+```
+
+`--apply` additionally requires `--confirm-engine-stopped` and probes the
+configured engine endpoints immediately before mutation. `--rollback
+<activation-receipt.json>` has the same quiescence requirement and restores
+only the exact prior sidecar revision.
+
 ### Phase 1: shadow model
 
 1. Create v0.2 shadow objects in a separate namespace or store.
