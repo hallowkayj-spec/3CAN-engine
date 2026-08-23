@@ -620,12 +620,15 @@ the post-apply baseline is absent or ambiguous, and MUST NOT require
 reconstructing deleted legacy nodes. Physical pruning is permitted only after
 the retention window and a second integrity snapshot.
 
-## 11. Proposed benchmark and release gates
+## 11. Benchmark and release gates
 
-The following are candidate v0.2 gates. They are deliberately separate rather
-than combined into one marketing score. Thresholds MUST remain versioned policy
-data and SHOULD be recalibrated on a representative, redacted corpus before
-release.
+The following v0.2 gates are enforced by
+`benchmark/error_knowledge_benchmark.py`. They are deliberately separate
+rather than combined into one marketing score. Thresholds remain versioned
+policy data and may be tightened, but a dataset is rejected if it weakens the
+release policy. Production query text remains internal; committed evidence is
+sanitized and must state whether a result is `PASS`, `FAIL`,
+`VALIDATING`, `INVALID_GRAPH_BINDING`, or `UNAVAILABLE`.
 
 | Gate | Draft threshold |
 |---|---:|
@@ -662,6 +665,12 @@ All reported results MUST identify dataset version, judge method, route mode,
 policy version, hardware class, and known caveats. Internal-only datasets MUST
 be labeled as such. 3CAN MUST NOT claim that it “beats” another product without
 an apples-to-apples independent evaluation.
+
+The first reviewed production baseline is recorded in
+`docs/evidence/ERROR_KNOWLEDGE_QUERY_BENCHMARK_20260823.md`. It is a typed
+`FAIL`: exact ek2 identity retrieval passed 5/5, while natural-language
+paraphrase retrieval passed 0/5. It establishes the before-repair evidence and
+does not mark semantic quality production-ready.
 
 ## 12. External patterns and license boundaries
 
