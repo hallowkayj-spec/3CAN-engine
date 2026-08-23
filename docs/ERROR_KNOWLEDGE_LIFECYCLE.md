@@ -6,7 +6,8 @@
 >
 > Implementation status: **the stdlib core, bounded production route,
 > SQLite/WAL ticket and occurrence ledgers, evidence-backed replay-safe `done`,
-> migration tooling, focused tests, and benchmark fixtures are staged; the
+> migration tooling, reviewed ErrorFamily sidecar governance, focused tests,
+> and benchmark fixtures are staged; the
 > candidate is not yet deployed, tagged, or publicly released**
 >
 > License: this document is part of the 3CAN-engine source-available
@@ -557,16 +558,78 @@ phases below have run on a private graph. Its dry run:
    at most one and it has no recurrence, explicit promotion, solution, or
    resolution edge; diagnosis text alone does not retain a node;
 2. preserves unknown-count records only when recurrence, explicit promotion,
-   a solution, or a resolution edge supplies reusable evidence;
-3. removes registry-to-error `requires` edges that could turn historical
+   a solution, or a directionally valid resolution edge supplies reusable
+   evidence; `supersedes` alone never proves a case resolved;
+3. removes registry-to-legacy-error `requires` edges that could turn historical
    errors into unrelated task gates; and
 4. bounds node/edge lists in the public manifest while reporting an exact
    `<field>_count` and `<field>_truncated` flag. The content-addressed rollback
    backup and JSONL archive are not truncated.
+5. moves every retained legacy `ERR-*` record into the single
+   `ErrorKnowledge` cluster while preserving its source cluster, labels its
+   evidence quality, and leaves family assignment as `review_required`; and
+6. makes retained legacy records non-blocking because only a complete `ek2`
+   identity may gate an exact retry. Similar titles, embeddings, and historical
+   loop signatures remain retrieval or review signals, never enforcement; and
+7. marks retained legacy evidence `historical` and
+   `explicit_error_only`, so it stays searchable for error work without
+   receiving the canonical-case route boost or competing in ordinary routes.
+8. records the exact post-apply node/edge snapshot. Rollback requires the
+   matching content-addressed apply journal, computes a three-way delta against
+   that snapshot, and replays later node and edge additions, modifications, and
+   deletions onto the pre-migration backup. It emits an immutable sanitized
+   delta receipt before swapping files, invalidates embeddings when a delta is
+   preserved, and fails closed if the baseline, receipt, or captured graph
+   changes. A second rollback of the same apply is rejected.
 
 Apply still requires an explicit stopped-engine confirmation and a reviewed
 dry-run result. Every removed record remains recoverable from the complete
-backup/archive.
+backup/archive. A corrupt canonical `ERR-case-*` file fails closed for explicit
+recovery, and an incomplete journal from another migration version requires
+rollback with that version instead of cross-version resume.
+
+### Reviewed ErrorFamily sidecar
+
+`maintenance/govern_error_families.py` provides a separate, reversible route
+index for canonical ErrorCases. It does not create graph nodes, rewrite
+ErrorCases, copy solutions, or add edges.
+
+1. Candidate families are derived only when `project_id`, `component`, and
+   `error_type` form a complete deterministic identity. `operation` remains
+   case-level evidence. Incomplete legacy records stay `review_required`.
+2. Every candidate requires one explicit `accept`, `defer`, or `reject`
+   decision. Semantic similarity never accepts or merges a family.
+3. Proposed identity aliases contribute only bounded sparse retrieval evidence.
+   A ranking promotion requires a reviewer-supplied alias, an explicit
+   operational-error query, and one unique owning ErrorCase. An ambiguous alias
+   fails closed without promotion. Exact ek2 identity remains stronger.
+4. The active manifest is a content-addressed atomic sidecar. Activation and
+   rollback require graph quiescence, retain revision receipts, and refuse to
+   overwrite a later active manifest. Prepared journals resume after process
+   loss on either side of the atomic swap; a completed replay is idempotent and
+   cannot reinterpret the active version as its own rollback predecessor.
+5. Family aliases do not enter dense embedding source text. A governance
+   revision therefore reuses the current synchronized embedding cache rather
+   than rebuilding every node. The sidecar still participates in keyword DF,
+   exact lexical scoring, and the reviewed unique-alias route gate.
+6. Production activation remains a separate maintainer operation after review.
+   A compiled or isolated candidate is not evidence that the live runtime is
+   using the manifest.
+
+The public tool is dry-run-first:
+
+```text
+python neural-memory/maintenance/govern_error_families.py --graph-dir <graph> \
+  --plan-output <candidates.json>
+python neural-memory/maintenance/govern_error_families.py --graph-dir <graph> \
+  --compile-output <active-candidate.json> \
+  --candidates <candidates.json> --decisions <reviewed-decisions.json>
+```
+
+`--apply` additionally requires `--confirm-engine-stopped` and probes the
+configured engine endpoints immediately before mutation. `--rollback
+<activation-receipt.json>` has the same quiescence requirement and restores
+only the exact prior sidecar revision.
 
 ### Phase 1: shadow model
 
@@ -593,17 +656,23 @@ remain read-only for a configurable retention window.
 
 ### Rollback
 
-Rollback switches the route adapter to v0.1, disables v0.2 writes, and replays
-only committed outbox events. It MUST NOT require reconstructing deleted legacy
-nodes. Physical pruning is permitted only after the retention window and a
-second integrity snapshot.
+Rollback switches the route adapter to v0.1 and disables v0.2 writes. A
+maintenance rollback MUST restore the pre-migration state while preserving
+committed post-apply graph changes through a verified three-way delta or
+committed outbox. It MUST fail closed rather than overwrite later writes when
+the post-apply baseline is absent or ambiguous, and MUST NOT require
+reconstructing deleted legacy nodes. Physical pruning is permitted only after
+the retention window and a second integrity snapshot.
 
-## 11. Proposed benchmark and release gates
+## 11. Benchmark and release gates
 
-The following are candidate v0.2 gates. They are deliberately separate rather
-than combined into one marketing score. Thresholds MUST remain versioned policy
-data and SHOULD be recalibrated on a representative, redacted corpus before
-release.
+The following v0.2 gates are enforced by
+`benchmark/error_knowledge_benchmark.py`. They are deliberately separate
+rather than combined into one marketing score. Thresholds remain versioned
+policy data and may be tightened, but a dataset is rejected if it weakens the
+release policy. Production query text remains internal; committed evidence is
+sanitized and must state whether a result is `PASS`, `FAIL`,
+`VALIDATING`, `INVALID_GRAPH_BINDING`, or `UNAVAILABLE`.
 
 | Gate | Draft threshold |
 |---|---:|
@@ -640,6 +709,17 @@ All reported results MUST identify dataset version, judge method, route mode,
 policy version, hardware class, and known caveats. Internal-only datasets MUST
 be labeled as such. 3CAN MUST NOT claim that it “beats” another product without
 an apples-to-apples independent evaluation.
+
+The first reviewed production baseline is recorded in
+`docs/evidence/ERROR_KNOWLEDGE_QUERY_BENCHMARK_20260823.md`. It is a typed
+`FAIL`: exact ek2 identity retrieval passed 5/5, while natural-language
+paraphrase retrieval passed 0/5. It establishes the before-repair evidence and
+does not mark semantic quality production-ready.
+
+The isolated reviewed ErrorFamily candidate is recorded in
+`docs/evidence/ERROR_FAMILY_CANDIDATE_20260823.md`. Its recall, pollution, and
+ordinary-route gates pass, but its overall state remains `VALIDATING` until a
+matching HTTP candidate run establishes a comparable p95 latency result.
 
 ## 12. External patterns and license boundaries
 

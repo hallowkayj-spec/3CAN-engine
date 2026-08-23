@@ -58,6 +58,8 @@ Agent 可以读取精确节点、查看项目 briefing，并把完成的里程�
 
 错误先以 occurrence 记录；只有兼容、确定性的重复错误才提升为 ErrorCase。修复完成后可以关联解决方案、验证证据、适用项目和 superseded lineage，避免把每次普通拒绝都变成永久噪声。
 
+历史 ErrorCase 的归类使用经过人工决策的 ErrorFamily 侧车：完整身份可以形成候选，但语义相似度不会自动合并节点或继承解决方案。审定别名只参与稀疏检索和唯一命中路由，不触发整图 embedding 重建；身份不完整的旧记录继续保持 `review_required`。
+
 ### 🧑‍🤝‍🧑 多 Agent / 多 Worktree 协作
 
 每次有状态操作都可以绑定 `AgentId`、项目/命名空间、物理 Worktree/Workspace，以及需要时的 `WorkorderId`、`TicketId` 和 target/scope digest。这样多个客户端可以并行使用同一图谱，同时把冲突限制在真正相撞的节点或治理对象上。
@@ -77,6 +79,12 @@ Agent 可以读取精确节点、查看项目 briefing，并把完成的里程�
 - 不是 Git、CI、Issue Tracker、数据库或凭据系统的替代品；
 - 不是把所有日志永久收集起来的监控平台；
 - 不是面向公网裸露的多租户 SaaS。本版本没有内建公网认证层。
+
+## 默认开发路径
+
+普通开发按“理解问题 → 编辑 → 测试 → Git 检查点 → 交付”推进，不要求每次编辑前 route、领 ticket 或写回 3CAN。读取发生在项目语义确实能改善判断时；耐久写回默认只发生于完成一个有意义模块后的 `AUTO_CLOSEOUT`，或用户随时明确提出的 `OWNER_REQUESTED`。
+
+3CAN 离线、写回冲突或边端点暂缺时，结果保持 `UNAVAILABLE`、`PARTIAL` 或 `CONFLICT`，安全的本地开发继续。Git、测试、CI、运行时和供应商回执仍是各自事实的权威；3CAN 只收敛项目意义，不复制这些系统。
 
 ## 非技术用户：10 分钟本地体验
 
@@ -181,6 +189,7 @@ python scripts/prerelease_scan.py --strict
 
 ```text
 neural-memory/backend/       FastAPI 服务、图引擎、路由、票据与 ErrorKnowledge
+neural-memory/maintenance/   可审计、可回滚的图谱维护与 ErrorFamily 侧车工具
 neural-memory/frontend/      本地图谱与 Token 面板
 neural-memory/expansions/    中文与领域词扩展
 neural-memory/tests/         回归、并发、隔离、发布与安全测试
@@ -197,7 +206,7 @@ docs/                        用户指南、项目 Kit、协议、边界与证�
 | --- | ---: | --- |
 | Route benchmark | 46 queries；MRR `0.9783`；Recall@1 `0.8261`；Recall@3 / Hit@3 `1.0` | 在 16 节点公开合成 seed graph 上，任务路由能稳定找到预设相关节点 |
 | Substrate benchmark | 10 cases；Top-1 `1.0`；Top-3 mean recall `0.8167`；ERR proactive@3 `1.0` | 公开 fixture 中的项目结构、接口和错误提示能按预设答案出现 |
-| 本地发布验收 | `450 passed`；Ruff、严格隐私扫描、ZIP 解包扫描通过 | 当前候选的合同、并发、隔离、发布与安全回归在该测试环境通过 |
+| 本地发布验收 | `494 passed`；Ruff、严格隐私扫描通过 | 当前候选的合同、并发、隔离、发布与安全回归在该测试环境通过 |
 | GitHub clean clone | Ubuntu + Windows 独立 `9701` 冷启动、route/writeback、停止回收通过 | 一个不依赖维护者图谱的全新 checkout 能安装并运行 |
 
 完整内容寻址回执见 [SEED_GRAPH_BENCHMARK_20260809.json](./docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json)。这些数字是**官方自建 fixture 的能力证明，不是第三方排名**：它们不证明私有生产图质量、真实 OPC 长期收益、跨机器延迟，也不能直接与 Mem0、Graphiti、Letta 等不同赛道产品比较。仓库保留的历史 LongMemEval 试跑受 judge、runner 与 fixture 版本影响，不作为本候选的发布分数。
