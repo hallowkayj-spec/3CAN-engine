@@ -6,7 +6,8 @@
 >
 > Implementation status: **the stdlib core, bounded production route,
 > SQLite/WAL ticket and occurrence ledgers, evidence-backed replay-safe `done`,
-> migration tooling, focused tests, and benchmark fixtures are staged; the
+> migration tooling, reviewed ErrorFamily sidecar governance, focused tests,
+> and benchmark fixtures are staged; the
 > candidate is not yet deployed, tagged, or publicly released**
 >
 > License: this document is part of the 3CAN-engine source-available
@@ -587,6 +588,32 @@ backup/archive. A corrupt canonical `ERR-case-*` file fails closed for explicit
 recovery, and an incomplete journal from another migration version requires
 rollback with that version instead of cross-version resume.
 
+### Reviewed ErrorFamily sidecar
+
+`maintenance/govern_error_families.py` provides a separate, reversible route
+index for canonical ErrorCases. It does not create graph nodes, rewrite
+ErrorCases, copy solutions, or add edges.
+
+1. Candidate families are derived only when `project_id`, `component`, and
+   `error_type` form a complete deterministic identity. `operation` remains
+   case-level evidence. Incomplete legacy records stay `review_required`.
+2. Every candidate requires one explicit `accept`, `defer`, or `reject`
+   decision. Semantic similarity never accepts or merges a family.
+3. Proposed identity aliases contribute only bounded sparse retrieval evidence.
+   A ranking promotion requires a reviewer-supplied alias, an explicit
+   operational-error query, and one unique owning ErrorCase. An ambiguous alias
+   fails closed without promotion. Exact ek2 identity remains stronger.
+4. The active manifest is a content-addressed atomic sidecar. Activation and
+   rollback require graph quiescence, retain revision receipts, and refuse to
+   overwrite a later active manifest.
+5. Family aliases do not enter dense embedding source text. A governance
+   revision therefore reuses the current synchronized embedding cache rather
+   than rebuilding every node. The sidecar still participates in keyword DF,
+   exact lexical scoring, and the reviewed unique-alias route gate.
+6. Production activation remains a separate maintainer operation after review.
+   A compiled or isolated candidate is not evidence that the live runtime is
+   using the manifest.
+
 ### Phase 1: shadow model
 
 1. Create v0.2 shadow objects in a separate namespace or store.
@@ -671,6 +698,11 @@ The first reviewed production baseline is recorded in
 `FAIL`: exact ek2 identity retrieval passed 5/5, while natural-language
 paraphrase retrieval passed 0/5. It establishes the before-repair evidence and
 does not mark semantic quality production-ready.
+
+The isolated reviewed ErrorFamily candidate is recorded in
+`docs/evidence/ERROR_FAMILY_CANDIDATE_20260823.md`. Its recall, pollution, and
+ordinary-route gates pass, but its overall state remains `VALIDATING` until a
+matching HTTP candidate run establishes a comparable p95 latency result.
 
 ## 12. External patterns and license boundaries
 
