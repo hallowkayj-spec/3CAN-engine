@@ -1,0 +1,37 @@
+{
+  "schema": "3can.convergence-contract/v1",
+  "status": "active",
+  "goal": "Replace this with the accepted task outcome.",
+  "acceptance": [
+    "Replace this with an observable acceptance condition.",
+    "All declared automated checks pass."
+  ],
+  "non_goals": [
+    "Owner acceptance, merge, deployment, and publication are separate decisions."
+  ],
+  "checks": [
+    {
+      "id": "diff-check",
+      "type": "command",
+      "argv": [
+        "git",
+        "diff",
+        "HEAD",
+        "--check"
+      ],
+      "stages": [
+        "episode",
+        "final"
+      ],
+      "timeout_seconds": 30
+    },
+    {
+      "id": "owner-review",
+      "type": "owner_review",
+      "stages": [
+        "final"
+      ]
+    }
+  ],
+  "guards": []
+}

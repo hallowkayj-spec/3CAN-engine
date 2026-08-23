@@ -103,9 +103,17 @@ The kit includes optional adapters:
 - `scripts/codex-3can.*`
 - `scripts/3can_codex.py`
 - `scripts/3can_pr_harness.py`
+- `scripts/3can_convergence.py`
 - standing-order and task-ledger helpers
 - the 3CAN deep-research skill
 - `.codex/` hook config
+
+The optional convergence hook uses Codex-native `SessionStart(compact)`,
+`PreToolUse`, and `Stop` events with a project-local acceptance contract and a
+task-local evidence receipt. It does not parse Codex transcripts or call 3CAN
+on the edit/test path. See [`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOOK.md).
+The tracked file is an example only; enabling it and trusting the exact hook
+definitions remain explicit Owner/project setup actions.
 
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then
 `THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint
@@ -118,6 +126,11 @@ evidence requirement. The wrapper never starts or terminates backend/proxy
 processes. Explicit `-StartServer`/`--start-server` is an operator setup
 action. A managed Windows installation may use one machine-owned Supervisor
 Scheduled Task; wrappers only observe Runtime readiness.
+
+Ordinary development remains `understand -> edit -> test -> Git checkpoint`.
+There is no forced 3CAN call per prompt, tool use, test, commit, or episode.
+Durable 3CAN writeback is eligible only at an accepted meaningful closeout or
+when the Owner explicitly requests it.
 
 ## Optional GitHub PR Fallback
 

@@ -267,11 +267,11 @@ LLM 接入地图详见 `LLM_POLICY.md`: retrieval models / tokenizer budget / ge
 
 ### 第五层 (隐式): 工程纪律 / harness engineering
 
-3CAN 的 Route Ticket Gate + PostToolUse 强制写回 + 内容审查 Stage 2, **本质上是在做** "harness engineering" — 2026 年 Anthropic / OpenAI / Stripe / Shopify 等公开讨论的方向. 它的核心想法是: **模型本身是智能, 但让它在真实系统里稳定工作, 需要外部 harness 提供 routing / safety / writeback / audit**.
+3CAN 的可选 Harness 层只收敛**可验证的进展**：Codex 原生 Hook 可以在上下文压缩后重新注入当前目标与验收条件，在停止前检查一份与当前 Git/Worktree 绑定的本地证据收据。它不管理模型的思考，不解析 Session JSONL，也不要求每次编辑、测试或提交都访问 3CAN。
 
 **我们不把这个当身份标签**, 不标榜"harness-first" 或"next-gen platform". 只说: 如果你关心工程层面让 agent **更可控、更可审计、更少重复错误**, 3CAN 的这些机制对齐主流趋势.
 
-这一层可以**完全关掉** (不装 hooks), 3CAN 就退回单纯的记忆 + 检索服务. 要不要 harness 层, 看你项目需要.
+这一层可以**完全关掉** (不装 hooks), 3CAN 就退回单纯的记忆 + 检索服务。启用时也只应选择项目真正需要的 bounded hook；日常开发仍然是理解、编辑、测试和 Git 检查点。完整契约见 `docs/CODEX_CONVERGENCE_HOOK.md`。
 
 ---
 
@@ -500,10 +500,7 @@ agent: 跑 project_bootstrapper 针对性扫 handoffs 目录 → 建 DEC-* / SES
 
 ### 已有的 Claude Code hooks
 
-不冲突. 我们的 hooks (在 `examples/claude-code-hooks/`) 是**额外**的, 你可以:
-- 全加 (推荐, 拿完整 gate + writeback 闭环)
-- 部分加 (只加 cold-start, 不加 Pre/PostToolUse)
-- 不加 (3CAN 引擎照样工作, 只是失去 harness 层, agent 要靠自觉)
+不冲突。`examples/claude-code-hooks/` 和 Codex Project Kit 的 Hook 都是可选适配器。只启用能够说明明确风险、输入和退出条件的 Hook；不要为了“完整”把所有门禁叠加到开发热路径。不装 Hook 时 3CAN 引擎仍可正常提供记忆与检索。
 
 ### 已有 `.claude/rules/*.md`
 
@@ -591,12 +588,9 @@ v0.2 支持多个 Agent/Session 并发连接同一个明确管理的本地实例
 
 ### Q10. 可以不用你的 hooks 吗?
 
-完全可以. hooks 只是**让 3CAN 更深地嵌入 agent 工作流**, 不装的话 3CAN 照样工作, 只是:
-- agent 不会被 gate 拦 (要靠自觉调 `/api/route`)
-- writeback 不自动, 全靠 agent 记得
-- Observer 不触发 (Ka 的纠错信号不自动沉淀为 PROPOSED 节点)
+完全可以。Hooks 是可选的收敛/硬化层，不是 3CAN 运行前提。普通开发不要求每个 Prompt、工具、测试或 Commit 调用 3CAN；有意义的模块收尾才可使用 `AUTO_CLOSEOUT`，用户明确要求时使用 `OWNER_REQUESTED`。3CAN 不可用时如实报告 `UNAVAILABLE`，不阻断安全的本地开发。
 
-hooks 是"硬化"层, 可选.
+Codex Project Kit 还提供一个不联网的原生收敛 Hook：它在压缩后恢复小型目标契约，并用当前 Git/Worktree 收据区分 `CANDIDATE_READY` 与真正的用户接受。启用、信任和全局推广都应由用户单独 review。
 
 ### Q11. 是否必须单独开一个 3CAN 管理 Session?
 

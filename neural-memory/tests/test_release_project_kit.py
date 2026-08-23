@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -901,9 +902,10 @@ def test_project_kit_hook_commands_resolve_to_shipped_scripts():
         if hook.get("type") == "command"
     ]
     for command in commands:
-        parts = command.split()
-        assert parts[0] == "python"
-        assert (project_kit / parts[1]).is_file(), command
+        names = re.findall(r"scripts[/\\\\]([A-Za-z0-9_.-]+\.py)", command)
+        assert names, command
+        for name in names:
+            assert (project_kit / "scripts" / name).is_file(), command
 
 
 def test_active_client_guidance_keeps_runtime_machine_owned():

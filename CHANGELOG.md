@@ -11,6 +11,26 @@ The implementation and migration tooling below are staged and locally tested.
 They are not yet tagged or published as a release, and this changelog does not
 claim that any private production graph has been migrated.
 
+### 2026-08-23 Codex convergence hook
+
+- Added one standard-library, project-local convergence helper that records a
+  small goal/acceptance contract and current Git/workspace-bound evidence
+  receipt. Native `SessionStart(compact)` restores the accepted boundary after
+  context compaction; `Stop` requests at most one bounded continuation when
+  evidence is missing or stale.
+- Added optional project-declared `PreToolUse` guards for high-cost operations.
+  No domain action is hard-coded, command checks run without a shell, and
+  captured command output is represented only by byte count and SHA-256.
+- Kept ordinary development free of per-tool 3CAN calls. The hook makes no
+  network call, does not parse Codex transcripts, and only marks 3CAN writeback
+  eligible at `AUTO_CLOSEOUT`; Owner-requested writeback remains separate.
+- Removed the broad research prompt/edit/stop gate from the default hook set.
+  Research remains an explicit skill for current, uncertain, or failure-driven
+  investigation instead of a universal development prerequisite.
+- Kept candidate readiness distinct from Owner acceptance, merge, deployment,
+  and publication. Invalid hook state fails open as typed `UNAVAILABLE`, and a
+  second Stop pass requires an honest `PARTIAL` report rather than looping.
+
 ### 2026-08-20 portable public-release packaging
 
 - Reworked the repository landing page into a Chinese-first OPC guide while

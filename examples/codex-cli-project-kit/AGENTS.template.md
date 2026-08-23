@@ -41,6 +41,13 @@ mutation. Retrieve full node content only for selected results. Treat typed
 `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, and readiness reason codes as real
 outcomes; do not collapse them into one `healthy` boolean.
 
+Ordinary development has zero forced 3CAN calls. Understand the task, edit,
+test, and create the appropriate Git checkpoint without per-prompt, per-tool,
+per-test, or per-commit graph traffic. Use 3CAN writeback only for an accepted
+meaningful closeout (`AUTO_CLOSEOUT`) or an explicit Owner request
+(`OWNER_REQUESTED`). A typed 3CAN failure never fabricates completion and does
+not block safe local work.
+
 The harness derives a stable, execution-specific `AgentId` and carries it on
 the protocol. The generic `codex-main` id is rejected. The wrapper never stores
 or selects ticket state; the shared API/ledger remains the canonical evidence
@@ -127,6 +134,15 @@ every edit or API call.
 Hook examples under `.codex/` and the Claude Code examples are optional
 policy adapters. Enable only the bounded hooks a project needs; they are not
 engine dependencies.
+
+For long tasks, copy `.codex/convergence.example.json` to
+`.codex/convergence.json` and replace every example field. The convergence hook
+re-injects the accepted goal after native Codex compaction, evaluates only
+project-declared high-cost guards, and requires a current local evidence receipt
+before a success stop. It never parses session JSONL, calls 3CAN, commits,
+merges, deploys, or publishes. `CANDIDATE_READY` still requires Owner review.
+Review and trust exact definitions with `/hooks`; global enablement is not
+implied by copying this template.
 
 The local GitHub REST adapter is also optional. PR creation is an external
 publish action: prepare the candidate first, obtain explicit approval, then
