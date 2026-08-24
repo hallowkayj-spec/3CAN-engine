@@ -1,0 +1,23 @@
+{
+  "schema": "3can.convergence-contract/v2",
+  "status": "active",
+  "scope": "current_repository_only",
+  "run_id": "replace-with-a-unique-run-id",
+  "task_hook": {
+    "path": ".codex/task-hooks/generic-delivery.example.json",
+    "sha256": "ab19245e94110532e6ffaa002bd40759fe3a53c6b9b68a30a226445df10e25f4",
+    "revision": "v1"
+  },
+  "activation": {
+    "task_hook_sha256": "ab19245e94110532e6ffaa002bd40759fe3a53c6b9b68a30a226445df10e25f4",
+    "confirmed_revision": "v1",
+    "confirmed_by": "owner",
+    "confirmation_ref": "replace-with-the-real-review-reference"
+  },
+  "bindings": {},
+  "allowed_fallbacks": [],
+  "non_goals": [
+    "Owner acceptance, merge, deployment, publication, and 3CAN writeback remain separate decisions."
+  ],
+  "guards": []
+}

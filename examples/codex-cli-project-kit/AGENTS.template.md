@@ -41,6 +41,16 @@ mutation. Retrieve full node content only for selected results. Treat typed
 `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, and readiness reason codes as real
 outcomes; do not collapse them into one `healthy` boolean.
 
+Ordinary development has zero forced 3CAN calls. Understand the task, edit,
+test, and create the appropriate Git checkpoint without per-prompt, per-tool,
+per-test, or per-commit graph traffic. Use 3CAN writeback only for an accepted
+meaningful closeout (`AUTO_CLOSEOUT`) or an explicit Owner request
+(`OWNER_REQUESTED`). A typed 3CAN failure never fabricates completion and does
+not block safe local work.
+
+Ordinary safe work has no mandatory ceremony. Convergence is opt-in only when
+the project declares an evidence-bearing long task.
+
 The harness derives a stable, execution-specific `AgentId` and carries it on
 the protocol. The generic `codex-main` id is rejected. The wrapper never stores
 or selects ticket state; the shared API/ledger remains the canonical evidence
@@ -127,6 +137,69 @@ every edit or API call.
 Hook examples under `.codex/` and the Claude Code examples are optional
 policy adapters. Enable only the bounded hooks a project needs; they are not
 engine dependencies.
+
+For long tasks, create a tracked versioned Task Hook from
+`.codex/task-hooks/generic-delivery.example.json`, validate its canonical digest,
+then copy `.codex/convergence.example.json` to `.codex/convergence.json` and pin
+that exact revision for one run. The single convergence hook restores the
+selected boundary at startup, resume, clear, and compaction, evaluates only declared
+high-cost guards, and requires a current candidate-bound evidence receipt before
+a success stop.
+
+Keep `.codex/convergence.json` untracked. Track reusable Task Hooks, their exact
+registry entries, and sanitized qualifying receipts under
+`.codex/task-hooks/evidence/`. In a later worktree, use `select-task` with an
+exact task family, new run ID, and JSON bindings; never hand-carry a prior run's
+paths or defaults into executable fields. A launcher may instead declare that
+same exact selection through the documented `THREECAN_TASK_*` environment at
+native `SessionStart`; it is explicit run intent, not prompt inference, and
+never replaces an existing selector.
+
+Native selection validates only the explicitly selected family so an unrelated
+registry entry cannot consume the lifecycle timeout. Audit every registered
+family explicitly with `validate-registry` outside a native Hook event.
+
+The shipped Hook configuration does not start convergence on every tool call;
+it restores at `SessionStart` and checks completion at `Stop`. A project with a
+real declared high-cost guard may add a narrowly matched convergence
+`PreToolUse` handler. A declared guard without that installed handler is
+inactive, not enforced. No first-write gate is shipped; do not classify
+arbitrary Bash or MCP text as read versus mutation or globally enable an
+unproven gate.
+
+Declare stable protocol and safety constants as invariants. Declare every
+run-varying asset, path, model/version, tenant/product input, strategy, and
+fallback as a mutable binding. Candidate providers must attest all current
+binding fingerprints and every fallback used; hidden defaults are typed
+`IMPLICIT_MUTABLE_BINDING` or `FALLBACK_NOT_ALLOWED`. Do not use constant grep or
+add domain branches to the Global Hook. A repeatable command provider contains
+its launcher, any explicitly reviewed fixed interpreter flags in
+`invariant_argv`, and its versioned adapter; all run configuration enters
+through bindings. `invariant_argv` is a governance assertion, not an escape
+hatch for a run value. When correctness depends on artifact lineage, bind a
+project-owned relational or semantic Oracle that compares those bindings with
+the actual candidate manifest.
+
+Changing Goal, Acceptance, Oracle meaning/version, mutable-binding policy, or
+Candidate Provider requires a new pinned Task Hook digest and explicit review;
+old evidence cannot prove the new revision. One-off Task Hooks retire only with
+a retained final receipt whose current candidate and evidence still match.
+Repeatable hooks remain parameterized and require real retained reproduced
+receipts plus review before promotion. Re-pinning changed semantics under the
+same revision is invalid even across runs or after a local receipt is removed;
+repeatable Task Hooks must be committed so the bounded Git lineage can enforce
+that rule; the current semantic value, registry, and reusable active entry must
+match Git `HEAD` before activation. `confirmed_by` is an audit assertion, not
+authentication.
+
+Mechanical checks do not prove semantic, visual, or Owner acceptance unless the
+Task Hook binds an appropriate reviewer receipt. Scope covers only the current
+repository and rejects dirty submodules. The Hook never parses session JSONL,
+calls an LLM or 3CAN, commits, merges, deploys, publishes, or performs writeback.
+`CANDIDATE_READY` still requires the named pending review and is not eligible
+for `AUTO_CLOSEOUT`.
+Review and trust exact definitions with `/hooks`; global enablement is not
+implied by copying this template.
 
 The local GitHub REST adapter is also optional. PR creation is an external
 publish action: prepare the candidate first, obtain explicit approval, then

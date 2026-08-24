@@ -1,3 +1,8 @@
 # Copy these entries into the target project's .gitignore when installing the
 # Codex project kit. They contain local test and research receipts.
 test-results/3can/
+# Per-run selector. Version Task Hooks, registries, and sanitized promotion
+# receipts under .codex/task-hooks/; do not version this active run binding.
+.codex/convergence.json
+# RuntimeHook keeps only current semantic state in one project-local root.
+.codex/runtimehook/

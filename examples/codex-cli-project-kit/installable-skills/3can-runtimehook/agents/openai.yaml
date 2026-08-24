@@ -1,0 +1,6 @@
+interface:
+  display_name: "3CAN RuntimeHook"
+  short_description: "Lightweight semantic intent and review supervision"
+  default_prompt: "Keep this task aligned with $3can-runtimehook."
+policy:
+  allow_implicit_invocation: true

@@ -103,9 +103,49 @@ The kit includes optional adapters:
 - `scripts/codex-3can.*`
 - `scripts/3can_codex.py`
 - `scripts/3can_pr_harness.py`
+- `scripts/3can_runtimehook.py`
+- `scripts/3can_convergence.py`
+- `scripts/task_oracle.py`
 - standing-order and task-ledger helpers
-- the 3CAN deep-research skill
-- `.codex/` hook config
+- the 3CAN deep-research skill and one globally installable RuntimeHook skill
+- `.codex/` native hook configuration
+
+The optional convergence hook uses Codex-native `SessionStart` at
+startup/resume/clear/compaction and `Stop`; the default kit does not launch
+convergence on every tool call. A project may explicitly add a narrowly matched
+`PreToolUse` handler for a measured high-cost guard. A tracked,
+content-addressed Task Hook defines Goal, Acceptance, Candidate, Oracle,
+invariant, and mutable-binding semantics; a run selector supplies only current
+values. Proof receipts bind the exact Task Hook revision, run inputs, evaluator
+version, and current candidate. It does not parse Codex transcripts, run an
+LLM, or call 3CAN on the edit/test path. See
+[`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOOK.md). The tracked files are
+examples only; selecting a Task Hook and trusting the exact native definitions
+remain explicit Owner/project setup actions.
+
+For RuntimeHook's implicit/natural-language UX, installation/removal commands,
+one-file semantic state, and current custom-slash limitation, see
+[`RUNTIMEHOOK.md`](./RUNTIMEHOOK.md). Its light/medium/max value records
+Agent-selected review timing; it is not a user-facing mode and does not own the
+convergence selector or Stop gate.
+
+Reusable Task Hooks are selected by exact registry entry with `select-task`, or
+by the same explicit `THREECAN_TASK_*` run intent at native `SessionStart`;
+the per-run `.codex/convergence.json` stays untracked while sanitized promotion
+receipts are retained with the Task Hook. The selector does not classify prompts
+or overwrite an active run, and repeatable revisions are checked against bounded
+tracked Git lineage.
+
+Every acceptance condition must bind to named evidence. `CANDIDATE_READY`
+means that bound Owner/semantic evidence is still pending and is not an
+`AUTO_CLOSEOUT`. Hidden run-varying defaults are rejected through declared
+mutable-binding and fallback receipts plus a structural adapter boundary rather
+than constant grep or domain branches. Domain-specific lineage still needs a
+bound relational/semantic Oracle. Scope is intentionally limited to the current
+repository; a dirty submodule requires its own contract rather than being
+silently covered. The isolated adaptive experiment is documented in
+[`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md); global rollout
+remains blocked.
 
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then
 `THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint
@@ -118,6 +158,14 @@ evidence requirement. The wrapper never starts or terminates backend/proxy
 processes. Explicit `-StartServer`/`--start-server` is an operator setup
 action. A managed Windows installation may use one machine-owned Supervisor
 Scheduled Task; wrappers only observe Runtime readiness.
+
+Ordinary development remains `understand -> edit -> test -> Git checkpoint`.
+There is no forced 3CAN call per prompt, tool use, test, commit, or episode.
+Durable 3CAN writeback is eligible only at an accepted meaningful closeout or
+when the Owner explicitly requests it.
+
+Ordinary safe work has no mandatory ceremony. Convergence is opt-in when the
+project declares an evidence-bearing long task.
 
 ## Optional GitHub PR Fallback
 

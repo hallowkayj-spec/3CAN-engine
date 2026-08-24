@@ -1,32 +1,35 @@
 {
   "hooks": {
-    "UserPromptSubmit": [
+    "SessionStart": [
       {
+        "matcher": "^(startup|resume|clear|compact)$",
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/3can_research_harness.py hook",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/3can_convergence.py\" hook",
+            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_convergence.py') hook\"",
+            "timeout": 30,
+            "statusMessage": "Restoring the accepted convergence contract"
+          },
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
+            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
             "timeout": 10,
-            "statusMessage": "Checking 3CAN research gate"
+            "additionalContextLimit": 5000
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*",
+        "matcher": "Bash|mcp__.*create_pull_request.*",
         "hooks": [
           {
             "type": "command",
             "command": "python scripts/3can_pr_harness.py hook",
             "timeout": 10,
             "statusMessage": "Checking 3CAN GitHub PR guard"
-          },
-          {
-            "type": "command",
-            "command": "python scripts/3can_research_harness.py hook",
-            "timeout": 10,
-            "statusMessage": "Checking 3CAN research ledger"
           }
         ]
       }
@@ -36,9 +39,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/3can_research_harness.py hook",
-            "timeout": 10,
-            "statusMessage": "Checking 3CAN research completion"
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/3can_convergence.py\" hook",
+            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_convergence.py') hook\"",
+            "timeout": 30,
+            "statusMessage": "Checking convergence evidence"
+          },
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
+            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
+            "timeout": 10
           }
         ]
       }
