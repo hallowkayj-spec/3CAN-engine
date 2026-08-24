@@ -72,6 +72,11 @@ claim that any private production graph has been migrated.
   boundary, bound singular external-receipt criterion IDs, added aggregate
   native read budgets, recaptured the complete control plane before allowing a
   converged Stop, and enabled valid closeout of later `REUSABLE_ACTIVE` runs.
+- Bound repeatable activation to the current Git `HEAD` meaning and exact
+  registry value, distinguished reviewed invariant launcher flags from mutable
+  run arguments, capped contract/receipt control files, and added a terminal
+  Stop control read plus exact native environment-selection coverage for
+  startup, resume, and compaction.
 
 ### 2026-08-20 portable public-release packaging
 

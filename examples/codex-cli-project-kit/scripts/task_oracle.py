@@ -117,6 +117,28 @@ def _git(
         ) from exc
 
 
+def _repo_relative(root: Path, path: Path) -> str:
+    prefix = _git(root, "rev-parse", "--show-prefix")
+    if prefix.returncode != 0:
+        raise TaskOracleError("REVISION_PENDING", "a Git worktree is required")
+    relative = path.resolve().relative_to(root.resolve()).as_posix()
+    return (
+        prefix.stdout.decode("utf-8", errors="surrogateescape").strip() + relative
+    ).replace("\\", "/")
+
+
+def _head_json(root: Path, path: Path, label: str) -> Any:
+    tracked = _git(root, "show", f"HEAD:{_repo_relative(root, path)}")
+    if tracked.returncode != 0:
+        raise TaskOracleError("REVISION_PENDING", f"{label} must exist in Git HEAD")
+    if len(tracked.stdout) > MAX_TASK_HOOK_BYTES:
+        raise TaskOracleError("INVALID_TASK_HOOK", f"{label} exceeds the bounded size")
+    try:
+        return json.loads(tracked.stdout.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TaskOracleError("REVISION_PENDING", f"{label} in Git HEAD is invalid") from exc
+
+
 def _lineage_blobs(root: Path, object_names: list[str]) -> list[bytes]:
     request = "".join(f"{name}\n" for name in object_names).encode("utf-8")
     checked = _git(root, "cat-file", "--batch-check", input_bytes=request)
@@ -173,11 +195,6 @@ def validate_revision_lineage(
     """Keep one repeatable revision semantically immutable across Git history."""
     if task_hook["lifecycle"] != "repeatable":
         return
-    prefix = _git(root, "rev-parse", "--show-prefix")
-    if prefix.returncode != 0:
-        raise TaskOracleError(
-            "REVISION_PENDING", "repeatable Task Hooks require a Git worktree"
-        )
     relative = task_path.resolve().relative_to(root.resolve()).as_posix()
     relative_path = Path(relative)
     if (
@@ -188,9 +205,21 @@ def validate_revision_lineage(
             "INVALID_TASK_HOOK",
             "repeatable Task Hooks must be direct JSON files under .codex/task-hooks",
         )
-    repo_prefix = prefix.stdout.decode(
-        "utf-8", errors="surrogateescape"
-    ).strip().replace("\\", "/")
+    expected = task_semantics_sha256(task_hook)
+    tracked_current = _head_json(root, task_path, "repeatable Task Hook")
+    if (
+        not isinstance(tracked_current, dict)
+        or tracked_current.get("schema") != TASK_HOOK_SCHEMA
+        or tracked_current.get("task_family") != task_hook["task_family"]
+        or tracked_current.get("revision") != task_hook["revision"]
+        or task_semantics_sha256(tracked_current) != expected
+    ):
+        raise TaskOracleError(
+            "REVISION_PENDING",
+            "current repeatable Task Hook family, revision, and meaning must exist in Git HEAD",
+        )
+    repo_relative = _repo_relative(root, task_path)
+    repo_prefix = repo_relative[: -len(relative)] if relative else repo_relative
     pathspec = f":(top,glob){repo_prefix}.codex/task-hooks/*.json"
     history = _git(
         root,
@@ -221,7 +250,6 @@ def validate_revision_lineage(
             "REVISION_PENDING",
             "repeatable Task Hook lineage exceeds the native audit window; create a successor revision after offline review",
         )
-    expected = task_semantics_sha256(task_hook)
     blob_ids: list[str] = []
     for line in history.stdout.splitlines():
         if not line.startswith(b":") or b"\t" not in line:
@@ -243,12 +271,13 @@ def validate_revision_lineage(
             ) from exc
         if not isinstance(historical, dict):
             continue
-        if (
+        same_revision = (
             historical.get("schema") == TASK_HOOK_SCHEMA
             and historical.get("task_family") == task_hook["task_family"]
             and historical.get("revision") == task_hook["revision"]
-            and task_semantics_sha256(historical) != expected
-        ):
+        )
+        historical_semantics = task_semantics_sha256(historical)
+        if same_revision and historical_semantics != expected:
             raise TaskOracleError(
                 "REVISION_PENDING",
                 "repeatable Task Hook meaning changed under an existing revision; create a successor revision",
@@ -380,7 +409,13 @@ def _validate_provider(
         return provider
     _known_fields(
         provider,
-        {"type", "argv", "timeout_seconds", "consumes_bindings"},
+        {
+            "type",
+            "argv",
+            "timeout_seconds",
+            "consumes_bindings",
+            "invariant_argv",
+        },
         label,
     )
     argv = provider.get("argv")
@@ -392,6 +427,13 @@ def _validate_provider(
     if not isinstance(timeout, (int, float)) or not 0 < timeout <= max_timeout:
         raise TaskOracleError(
             "INVALID_TASK_HOOK", f"{label} timeout must be 1..{max_timeout:g}"
+        )
+    invariant_argv = _strings(
+        provider.get("invariant_argv", []), f"{label} invariant_argv"
+    )
+    if len(set(invariant_argv)) != len(invariant_argv):
+        raise TaskOracleError(
+            "INVALID_TASK_HOOK", f"{label} invariant_argv must be unique"
         )
     return provider
 
@@ -492,10 +534,14 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
                 "UNBOUND",
                 "command candidate must consume every mutable binding",
             )
-        if lifecycle == "repeatable" and len(provider["argv"]) > 2:
+        invariant_argv = provider.get("invariant_argv", [])
+        if lifecycle == "repeatable" and (
+            len(provider["argv"]) != len(invariant_argv) + 2
+            or provider["argv"][1:-1] != invariant_argv
+        ):
             raise TaskOracleError(
                 "IMPLICIT_MUTABLE_BINDING",
-                "repeatable command candidate argv may contain only its launcher and adapter; pass run values through bindings",
+                "repeatable command candidate argv must be launcher, declared invariant_argv, and versioned adapter; pass run values through bindings",
             )
 
     oracles = value.get("oracles")
@@ -1045,6 +1091,10 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
             "INVALID_TASK_HOOK",
             f"task registry schema must be {TASK_REGISTRY_SCHEMA}",
         )
+    if sha256_json(_head_json(root, path, "task registry")) != sha256_json(value):
+        raise TaskOracleError(
+            "REVISION_PENDING", "task registry must match its exact Git HEAD value"
+        )
     _known_fields(value, {"schema", "families"}, "task registry")
     families = value.get("families")
     if not isinstance(families, list):
@@ -1081,6 +1131,11 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
                 "INVALID_TASK_HOOK", f"registered task hook is invalid: {family}"
             ) from exc
         digest = sha256_json(task_hook)
+        if sha256_json(_head_json(root, task_path, f"Task Hook {family}")) != digest:
+            raise TaskOracleError(
+                "REVISION_PENDING",
+                f"registered Task Hook must match its exact Git HEAD value: {family}",
+            )
         validate_revision_lineage(root, task_path, task_hook)
         if (
             task_hook["status"] != "REUSABLE_ACTIVE"

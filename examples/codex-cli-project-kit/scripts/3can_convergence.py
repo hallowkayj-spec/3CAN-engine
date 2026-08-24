@@ -64,6 +64,7 @@ MAX_EVIDENCE_HASH_BYTES = 32 * 1024 * 1024
 MAX_WORKSPACE_HASH_BYTES = 64 * 1024 * 1024
 MAX_CHANGED_FILES = 256
 MAX_GIT_METADATA_BYTES = 4 * 1024 * 1024
+MAX_CONTROL_JSON_BYTES = 256 * 1024
 
 
 class ContractError(ValueError):
@@ -422,7 +423,11 @@ def load_contract(root: Path, contract_path: Path) -> tuple[dict[str, Any] | Non
     path = _bounded_path(root, contract_path, label="contract path")
     if not path.is_file():
         return None, None
+    if path.stat().st_size > MAX_CONTROL_JSON_BYTES:
+        raise ContractError("contract exceeds the bounded control-file size")
     raw = path.read_bytes()
+    if len(raw) > MAX_CONTROL_JSON_BYTES:
+        raise ContractError("contract exceeds the bounded control-file size")
     value = json.loads(raw.decode("utf-8-sig"))
     return validate_contract(value, root), _sha256_bytes(_json_bytes(value))
 
@@ -805,7 +810,12 @@ def read_receipt(root: Path, receipt_path: Path) -> dict[str, Any] | None:
     path = _receipt_path(root, receipt_path)
     if not path.is_file():
         return None
-    value = _read_json(path)
+    if path.stat().st_size > MAX_CONTROL_JSON_BYTES:
+        raise ContractError("receipt exceeds the bounded control-file size")
+    raw = path.read_bytes()
+    if len(raw) > MAX_CONTROL_JSON_BYTES:
+        raise ContractError("receipt exceeds the bounded control-file size")
+    value = json.loads(raw.decode("utf-8-sig"))
     return value if isinstance(value, dict) else None
 
 
@@ -1625,12 +1635,24 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
                     )
                     final_evidence = evidence_fingerprint(final_contract, root)
                     final_task = task_snapshot(final_contract, root, final_workspace)
-                    current = receipt_is_current(
-                        final_receipt,
-                        contract_sha256=final_contract_sha256,
-                        workspace=final_workspace,
-                        evidence_sha256=final_evidence,
-                        task_state=final_task,
+                    terminal_contract, terminal_contract_sha256 = load_contract(
+                        root, contract_path
+                    )
+                    terminal_receipt = read_receipt(root, receipt_path)
+                    current = bool(
+                        final_workspace == workspace
+                        and final_evidence == current_evidence
+                        and final_task == current_task
+                        and terminal_contract is not None
+                        and terminal_contract_sha256 == final_contract_sha256
+                        and terminal_receipt == final_receipt
+                        and receipt_is_current(
+                            final_receipt,
+                            contract_sha256=final_contract_sha256,
+                            workspace=final_workspace,
+                            evidence_sha256=final_evidence,
+                            task_state=final_task,
+                        )
                     )
                 else:
                     current = False

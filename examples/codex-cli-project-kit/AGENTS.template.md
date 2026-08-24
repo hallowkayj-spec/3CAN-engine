@@ -161,8 +161,10 @@ fallback as a mutable binding. Candidate providers must attest all current
 binding fingerprints and every fallback used; hidden defaults are typed
 `IMPLICIT_MUTABLE_BINDING` or `FALLBACK_NOT_ALLOWED`. Do not use constant grep or
 add domain branches to the Global Hook. A repeatable command provider contains
-only its launcher and versioned adapter in `argv`; all run configuration enters
-through bindings. When correctness depends on artifact lineage, bind a
+its launcher, any explicitly reviewed fixed interpreter flags in
+`invariant_argv`, and its versioned adapter; all run configuration enters
+through bindings. `invariant_argv` is a governance assertion, not an escape
+hatch for a run value. When correctness depends on artifact lineage, bind a
 project-owned relational or semantic Oracle that compares those bindings with
 the actual candidate manifest.
 
@@ -174,7 +176,9 @@ Repeatable hooks remain parameterized and require real retained reproduced
 receipts plus review before promotion. Re-pinning changed semantics under the
 same revision is invalid even across runs or after a local receipt is removed;
 repeatable Task Hooks must be committed so the bounded Git lineage can enforce
-that rule. `confirmed_by` is an audit assertion, not authentication.
+that rule; the current semantic value, registry, and reusable active entry must
+match Git `HEAD` before activation. `confirmed_by` is an audit assertion, not
+authentication.
 
 Mechanical checks do not prove semantic, visual, or Owner acceptance unless the
 Task Hook binds an appropriate reviewer receipt. Scope covers only the current

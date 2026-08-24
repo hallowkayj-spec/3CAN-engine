@@ -111,9 +111,13 @@ other domain classifier. It asks a narrower, enforceable question:
   and other run-varying decisions belong in `mutable_bindings`.
 - A command Candidate Provider declares `consumes_bindings`. The helper passes
   only those values through `THREECAN_TASK_BINDINGS_JSON`; a repeatable provider
-  must consume every mutable binding. Its `argv` contains at most the launcher
-  and versioned adapter; all run configuration, including short, numeric, stale,
-  or current defaults, enters through bindings rather than extra arguments.
+  must consume every mutable binding. Its `argv` is exactly the launcher,
+  optional explicitly declared `invariant_argv`, and versioned adapter. Fixed
+  interpreter flags such as `-I` belong in `invariant_argv`; all run
+  configuration, including short, numeric, stale, or current defaults, enters
+  through bindings rather than extra arguments. The invariant declaration is
+  an Owner-reviewed governance assertion, not proof that a disguised run value
+  is genuinely stable.
 - The provider returns `3can.candidate/v1` with an opaque
   candidate fingerprint, the SHA-256 of every current binding value, and all
   fallbacks actually used.
@@ -238,10 +242,14 @@ ineligible. A superseded file retains a confirmed transition and successor
 revision.
 
 For repeatable Task Hooks this rule also survives a missing prior run receipt:
-the Hook compares the current semantic digest with the bounded tracked history
-for the same task family and revision (up to 64 file-touching commits and
-4 MiB). A same-revision mismatch is `REVISION_PENDING`; a history beyond that
-audit bound requires a successor revision or a deliberate offline audit.
+the current family, revision, and semantic digest must first exist in Git
+`HEAD`, then the Hook compares that digest with bounded tracked history across
+all direct Task Hook JSON files (up to 64 file-touching commits and 4 MiB).
+An untracked Task Hook cannot borrow an unrelated file's history. A
+same-revision mismatch is `REVISION_PENDING`; a history beyond that audit bound
+requires a successor revision or a deliberate offline audit. Reusable registry
+selection additionally requires the registry and selected active Task Hook to
+match their exact Git `HEAD` JSON values.
 
 Lifecycle states are:
 
@@ -316,14 +324,18 @@ classifier or add a per-prompt LLM hot path.
   high-cost guards require current proof-eligible named checks.
 - `Stop` accepts only a current `CONVERGED` receipt. The first incomplete stop
   requests one bounded continuation; when `stop_hook_active=true`, it emits an
-  explicit typed report instead of creating a loop.
+  explicit typed report instead of creating a loop. Before allowing a success
+  stop it compares two complete workspace/evidence/task captures and performs a
+  final contract/receipt control read; a concurrent save becomes stale or
+  `REVISION_PENDING` instead of returning a false success.
 
 Native convergence handlers have a 30-second outer budget. Their hot path runs
 no Oracle suite; Git probes and Candidate Provider subprocesses are individually
 bounded to 3 seconds. Contracts are capped at 16 Oracles, 32 Acceptance
-criteria, and 16 promotion receipts; registry size, Git metadata, lineage,
-changed-file count/bytes, and evidence bytes also have named aggregate bounds.
-Long checks run only through explicit `verify` commands.
+criteria, and 16 promotion receipts; contract and current-receipt control JSON
+are each capped at 256 KiB. Registry size, Git metadata, lineage, changed-file
+count/bytes, and evidence bytes also have named aggregate bounds. Long checks
+run only through explicit `verify` commands.
 
 The `verify` CLI exits zero only for `PASS` at the episode stage or `CONVERGED`
 at the final stage. Every typed incomplete, stale, conflicting, or

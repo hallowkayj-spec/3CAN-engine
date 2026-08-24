@@ -4,6 +4,8 @@ import copy
 import importlib.util
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -246,6 +248,32 @@ def test_stop_recaptures_control_plane_before_allowing_convergence(
     assert "stale" in stopped["reason"]
 
 
+def test_stop_rechecks_task_hook_after_second_snapshot(tmp_path, monkeypatch):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    task_path, _, _ = write_active(module, tmp_path, contract, task_hook())
+    module.verify(tmp_path, contract, receipt_path, stage="final", next_objective="")
+    original = module.task_snapshot
+    calls = 0
+
+    def mutate_after_second_snapshot(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            changed = json.loads(task_path.read_text(encoding="utf-8"))
+            changed["acceptance"][0]["text"] = "Changed after the final snapshot."
+            task_path.write_text(json.dumps(changed), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(module, "task_snapshot", mutate_after_second_snapshot)
+    stopped = hook(module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"})
+
+    assert calls == 2
+    assert stopped["decision"] == "block"
+    assert "REVISION_PENDING" in stopped["reason"]
+
+
 def test_protocol_receipt_is_not_part_of_v2_candidate_even_when_unignored(tmp_path):
     module = load_module()
     contract, receipt = init_repo(tmp_path)
@@ -308,7 +336,17 @@ def test_large_generic_artifact_requires_content_addressed_provider(tmp_path):
 
 def test_native_hook_budgets_bound_contracts_evidence_and_dirty_files(tmp_path):
     module = load_module()
-    contract_path, _ = init_repo(tmp_path)
+    contract_path, receipt_path = init_repo(tmp_path)
+    contract_path.write_bytes(b"x" * (module.MAX_CONTROL_JSON_BYTES + 1))
+    with pytest.raises(module.ContractError, match="bounded control-file size"):
+        module.load_contract(tmp_path, contract_path)
+    contract_path.unlink()
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_bytes(b"x" * (module.MAX_CONTROL_JSON_BYTES + 1))
+    with pytest.raises(module.ContractError, match="bounded control-file size"):
+        module.read_receipt(tmp_path, receipt_path)
+    receipt_path.unlink()
+
     too_many_oracles = task_hook(
         oracles=[
             {
@@ -519,6 +557,59 @@ def test_committed_repeatable_revision_meaning_is_immutable_across_runs(tmp_path
         module.load_contract(tmp_path, contract_path)
     assert pending.value.code == "REVISION_PENDING"
     assert "successor revision" in str(pending.value)
+
+
+def test_untracked_repeatable_hook_cannot_borrow_unrelated_git_history(tmp_path):
+    module = load_module()
+    contract_path, _ = init_repo(tmp_path)
+    unrelated = task_hook(lifecycle="repeatable")
+    unrelated["task_family"] = "unrelated-delivery"
+    unrelated_path = tmp_path / ".codex" / "task-hooks" / "unrelated.json"
+    unrelated_path.write_text(json.dumps(unrelated), encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", ".codex/task-hooks/unrelated.json"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-qm", "track unrelated hook"],
+        check=True,
+    )
+
+    target = task_hook(lifecycle="repeatable")
+    target_path = tmp_path / ".codex" / "task-hooks" / "generic.json"
+    target_path.write_text(json.dumps(target), encoding="utf-8")
+    digest = module.task_oracle.sha256_json(target)
+    contract_path.write_text(
+        json.dumps(
+            {
+                "schema": "3can.convergence-contract/v2",
+                "status": "active",
+                "scope": "current_repository_only",
+                "run_id": "untracked-run",
+                "task_hook": {
+                    "path": ".codex/task-hooks/generic.json",
+                    "sha256": digest,
+                    "revision": "v1",
+                },
+                "activation": {
+                    "task_hook_sha256": digest,
+                    "confirmed_revision": "v1",
+                    "confirmed_by": "owner",
+                    "confirmation_ref": "untracked-selection",
+                },
+                "bindings": {},
+                "allowed_fallbacks": [],
+                "non_goals": [],
+                "guards": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.task_oracle.TaskOracleError) as pending:
+        module.load_contract(tmp_path, contract_path)
+    assert pending.value.code == "REVISION_PENDING"
+    assert "Git HEAD" in str(pending.value)
 
 
 def test_unknown_safety_field_and_duplicate_promotion_evidence_fail_closed(tmp_path):
@@ -823,7 +914,8 @@ def test_repeatable_command_receives_only_declared_binding_interface(tmp_path):
         lifecycle="repeatable",
         candidate={
             "type": "command",
-            "argv": [sys.executable, "provider.py"],
+            "argv": [sys.executable, "-I", "provider.py"],
+            "invariant_argv": ["-I"],
             "consumes_bindings": ["asset_id"],
         },
         mutable_bindings=["asset_id"],
@@ -842,6 +934,23 @@ def test_repeatable_command_receives_only_declared_binding_interface(tmp_path):
 
     assert result["outcome"] == "CONVERGED"
     assert result["task"]["candidate"]["status"] == "PASS"
+
+
+def test_repeatable_command_rejects_misplaced_invariant_argv(tmp_path):
+    module = load_module()
+    init_repo(tmp_path)
+    task = task_hook(
+        lifecycle="repeatable",
+        candidate={
+            "type": "command",
+            "argv": [sys.executable, "provider.py", "-I"],
+            "invariant_argv": ["-I"],
+        },
+    )
+
+    with pytest.raises(module.task_oracle.TaskOracleError) as rejected:
+        module.task_oracle.validate_task_hook(task, tmp_path)
+    assert rejected.value.code == "IMPLICIT_MUTABLE_BINDING"
 
 
 def test_legitimate_invariant_does_not_create_hardcode_violation(tmp_path):
@@ -1129,8 +1238,9 @@ def test_superseded_revision_requires_explicit_successor_transition(tmp_path):
     ] == "SUPERSEDED"
 
 
+@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
 def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, source
 ):
     module = load_module()
     first_root = tmp_path / "first"
@@ -1275,6 +1385,12 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         ),
         encoding="utf-8",
     )
+    scripts_dir = third_root / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(SCRIPT, scripts_dir / "3can_convergence.py")
+    shutil.copy2(SCRIPT.parent / "task_oracle.py", scripts_dir / "task_oracle.py")
+    hooks_path = third_root / ".codex" / "hooks.json"
+    shutil.copy2(SCRIPT.parents[1] / ".codex" / "hooks.json", hooks_path)
     subprocess.run(
         [
             "git",
@@ -1284,6 +1400,9 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
             "--",
             ".codex/task-hooks/generic.json",
             ".codex/task-hooks/registry.json",
+            ".codex/hooks.json",
+            "scripts/3can_convergence.py",
+            "scripts/task_oracle.py",
         ],
         check=True,
     )
@@ -1291,6 +1410,31 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         ["git", "-C", str(third_root), "commit", "-qm", "register active Task Hook"],
         check=True,
     )
+    registry_value = module.task_oracle.load_task_registry(
+        third_root, ".codex/task-hooks/registry.json"
+    )
+    assert registry_value["generic-delivery"]["sha256"] == active_digest
+    tracked_registry = registry_path.read_text(encoding="utf-8")
+    changed_registry = json.loads(tracked_registry)
+    changed_registry["families"][0]["revision"] = "v2"
+    registry_path.write_text(json.dumps(changed_registry), encoding="utf-8")
+    with pytest.raises(module.task_oracle.TaskOracleError) as uncommitted_registry:
+        module.task_oracle.load_task_registry(
+            third_root, ".codex/task-hooks/registry.json"
+        )
+    assert uncommitted_registry.value.code == "REVISION_PENDING"
+    registry_path.write_text(tracked_registry, encoding="utf-8")
+    tracked_task = third_task_path.read_text(encoding="utf-8")
+    changed_task = json.loads(tracked_task)
+    changed_task["promotion"]["confirmation_ref"] = "uncommitted-review-change"
+    third_task_path.write_text(json.dumps(changed_task), encoding="utf-8")
+    with pytest.raises(module.task_oracle.TaskOracleError) as uncommitted_task:
+        module.task_oracle.load_task_registry(
+            third_root, ".codex/task-hooks/registry.json"
+        )
+    assert uncommitted_task.value.code == "REVISION_PENDING"
+    third_task_path.write_text(tracked_task, encoding="utf-8")
+
     monkeypatch.setenv("THREECAN_TASK_FAMILY", "generic-delivery")
     monkeypatch.setenv("THREECAN_RUN_ID", "run-third")
     monkeypatch.setenv("THREECAN_TASK_CONFIRMED_BY", "owner")
@@ -1301,13 +1445,22 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         "THREECAN_TASK_BINDINGS_JSON",
         json.dumps({"candidate_path": "outputs/third.txt"}),
     )
-    started = hook(
-        module,
-        third_root,
-        third_contract_path,
-        third_receipt_path,
-        {"hook_event_name": "SessionStart", "source": "startup"},
+    hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    session_hook = hooks["SessionStart"][0]["hooks"][0]
+    command = session_hook["commandWindows" if os.name == "nt" else "command"]
+    native = subprocess.run(
+        command,
+        cwd=scripts_dir,
+        input=json.dumps({"hook_event_name": "SessionStart", "source": source}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        shell=True,
+        timeout=30,
     )
+    assert native.returncode == 0, native.stdout + native.stderr
+    started = json.loads(native.stdout)
     selected = json.loads(third_contract_path.read_text(encoding="utf-8"))
     third = module.verify(
         third_root,
