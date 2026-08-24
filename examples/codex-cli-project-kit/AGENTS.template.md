@@ -150,14 +150,21 @@ Keep `.codex/convergence.json` untracked. Track reusable Task Hooks, their exact
 registry entries, and sanitized qualifying receipts under
 `.codex/task-hooks/evidence/`. In a later worktree, use `select-task` with an
 exact task family, new run ID, and JSON bindings; never hand-carry a prior run's
-paths or defaults into executable fields.
+paths or defaults into executable fields. A launcher may instead declare that
+same exact selection through the documented `THREECAN_TASK_*` environment at
+native `SessionStart`; it is explicit run intent, not prompt inference, and
+never replaces an existing selector.
 
 Declare stable protocol and safety constants as invariants. Declare every
 run-varying asset, path, model/version, tenant/product input, strategy, and
 fallback as a mutable binding. Candidate providers must attest all current
 binding fingerprints and every fallback used; hidden defaults are typed
 `IMPLICIT_MUTABLE_BINDING` or `FALLBACK_NOT_ALLOWED`. Do not use constant grep or
-add domain branches to the Global Hook.
+add domain branches to the Global Hook. A repeatable command provider contains
+only its launcher and versioned adapter in `argv`; all run configuration enters
+through bindings. When correctness depends on artifact lineage, bind a
+project-owned relational or semantic Oracle that compares those bindings with
+the actual candidate manifest.
 
 Changing Goal, Acceptance, Oracle meaning/version, mutable-binding policy, or
 Candidate Provider requires a new pinned Task Hook digest and explicit review;
@@ -165,8 +172,9 @@ old evidence cannot prove the new revision. One-off Task Hooks retire only with
 a retained final receipt whose current candidate and evidence still match.
 Repeatable hooks remain parameterized and require real retained reproduced
 receipts plus review before promotion. Re-pinning changed semantics under the
-same evidenced revision is invalid. `confirmed_by` is an audit assertion, not
-authentication.
+same revision is invalid even across runs or after a local receipt is removed;
+repeatable Task Hooks must be committed so the bounded Git lineage can enforce
+that rule. `confirmed_by` is an audit assertion, not authentication.
 
 Mechanical checks do not prove semantic, visual, or Owner acceptance unless the
 Task Hook binds an appropriate reviewer receipt. Scope covers only the current

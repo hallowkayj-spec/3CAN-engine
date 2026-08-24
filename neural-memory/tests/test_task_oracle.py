@@ -114,6 +114,22 @@ def write_active(
 ) -> tuple[Path, str, dict]:
     task_path = root / ".codex" / "task-hooks" / "generic.json"
     task_path.write_text(json.dumps(task), encoding="utf-8")
+    if task["lifecycle"] == "repeatable":
+        subprocess.run(
+            ["git", "-C", str(root), "add", "--", ".codex/task-hooks/generic.json"],
+            check=True,
+        )
+        staged = subprocess.run(
+            ["git", "-C", str(root), "diff", "--cached", "--quiet"],
+            check=False,
+        )
+        if staged.returncode == 1:
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-qm", "track repeatable Task Hook"],
+                check=True,
+            )
+        else:
+            assert staged.returncode == 0
     digest = module.task_oracle.sha256_json(task)
     contract = {
         "schema": "3can.convergence-contract/v2",
@@ -193,6 +209,43 @@ def test_code_candidate_change_stales_current_receipt(tmp_path):
     assert "stale" in stopped["reason"]
 
 
+def test_stop_recaptures_control_plane_before_allowing_convergence(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    write_active(module, tmp_path, contract, task_hook())
+    module.verify(tmp_path, contract, receipt_path, stage="final", next_objective="")
+    original = module.receipt_is_current
+    calls = 0
+
+    def mutate_after_first_capture(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1 and result:
+            changed = json.loads(receipt_path.read_text(encoding="utf-8"))
+            changed["recorded_at"] = "2099-01-01T00:00:00Z"
+            changed["receipt_sha256"] = module._sha256_bytes(
+                module._json_bytes(
+                    {
+                        key: value
+                        for key, value in changed.items()
+                        if key != "receipt_sha256"
+                    }
+                )
+            )
+            receipt_path.write_text(json.dumps(changed), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(module, "receipt_is_current", mutate_after_first_capture)
+    stopped = hook(module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"})
+
+    assert calls == 1
+    assert stopped["decision"] == "block"
+    assert "stale" in stopped["reason"]
+
+
 def test_protocol_receipt_is_not_part_of_v2_candidate_even_when_unignored(tmp_path):
     module = load_module()
     contract, receipt = init_repo(tmp_path)
@@ -251,6 +304,78 @@ def test_large_generic_artifact_requires_content_addressed_provider(tmp_path):
     assert result["status"] == "fail"
     assert result["state"] == "unverifiable_large"
     assert "manifest" in result["requires"]
+
+
+def test_native_hook_budgets_bound_contracts_evidence_and_dirty_files(tmp_path):
+    module = load_module()
+    contract_path, _ = init_repo(tmp_path)
+    too_many_oracles = task_hook(
+        oracles=[
+            {
+                "id": f"check-{index}",
+                "type": "command",
+                "kind": "DETERMINISTIC",
+                "version": "v1",
+                "argv": ["git", "diff", "--check"],
+                "stages": ["final"],
+            }
+            for index in range(module.task_oracle.MAX_ORACLES + 1)
+        ]
+    )
+    with pytest.raises(module.task_oracle.TaskOracleError, match="bounded limit"):
+        module.task_oracle.validate_task_hook(too_many_oracles, tmp_path)
+
+    too_many_receipts = task_hook(
+        lifecycle="repeatable", status="REUSABLE_CANDIDATE"
+    )
+    too_many_receipts["promotion"] = {
+        "mode": "candidate",
+        "qualifying_receipts": [
+            {} for _ in range(module.task_oracle.MAX_PROMOTION_RECEIPTS + 1)
+        ],
+    }
+    with pytest.raises(module.task_oracle.TaskOracleError, match="bounded limit"):
+        module.task_oracle.validate_task_hook(too_many_receipts, tmp_path)
+
+    artifact_checks = []
+    for index in range(5):
+        relative = f"outputs/proof-{index}.bin"
+        with (tmp_path / relative).open("wb") as handle:
+            handle.seek(module.MAX_HASH_BYTES - 2)
+            handle.write(b"x")
+        artifact_checks.append(
+            {
+                "id": f"proof-{index}",
+                "type": "artifact",
+                "path": relative,
+                "stages": ["final"],
+            }
+        )
+    legacy = {
+        "schema": "3can.convergence-contract/v1",
+        "status": "active",
+        "scope": "current_repository_only",
+        "goal": "Bound aggregate evidence reads.",
+        "non_goals": [],
+        "checks": artifact_checks,
+        "acceptance": [
+            {
+                "id": "all-proof",
+                "text": "All bounded evidence is present.",
+                "evidence": [item["id"] for item in artifact_checks],
+            }
+        ],
+        "guards": [],
+    }
+    normalized = module.validate_contract(legacy, tmp_path)
+    with pytest.raises(module.ContractError, match="aggregate hash budget"):
+        module.evidence_snapshot(normalized, tmp_path)
+
+    for index in range(module.MAX_CHANGED_FILES + 1):
+        (tmp_path / f"dirty-{index}.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(module.ContractError, match="changed files"):
+        module.workspace_fingerprint(tmp_path)
+    assert contract_path.parent == tmp_path / ".codex"
 
 
 def test_acceptance_edit_and_proposed_revision_cannot_self_activate(tmp_path):
@@ -332,6 +457,68 @@ def test_repinning_same_revision_cannot_launder_owner_contract_change(tmp_path):
     assert module.verify(
         tmp_path, contract_path, receipt_path, stage="final", next_objective=""
     )["outcome"] == "CONVERGED"
+
+
+def test_committed_repeatable_revision_meaning_is_immutable_across_runs(tmp_path):
+    module = load_module()
+    contract_path, receipt_path = init_repo(tmp_path)
+    task_path, _, contract = write_active(
+        module,
+        tmp_path,
+        contract_path,
+        task_hook(lifecycle="repeatable"),
+        run_id="run-first",
+    )
+    assert module.verify(
+        tmp_path, contract_path, receipt_path, stage="final", next_objective=""
+    )["outcome"] == "CONVERGED"
+    receipt_path.unlink()
+
+    changed = task_hook(lifecycle="repeatable")
+    changed["acceptance"][0]["text"] = "Changed meaning under the old revision."
+    renamed_task_path = task_path.with_name("renamed.json")
+    task_path.rename(renamed_task_path)
+    renamed_task_path.write_text(json.dumps(changed), encoding="utf-8")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "add",
+            "-A",
+            "--",
+            ".codex/task-hooks/generic.json",
+            ".codex/task-hooks/renamed.json",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-qm", "change old revision"],
+        check=True,
+    )
+    digest = module.task_oracle.sha256_json(changed)
+    contract.update(
+        {
+            "run_id": "run-second",
+            "task_hook": {
+                "path": ".codex/task-hooks/renamed.json",
+                "sha256": digest,
+                "revision": "v1",
+            },
+            "activation": {
+                "task_hook_sha256": digest,
+                "confirmed_revision": "v1",
+                "confirmed_by": "owner",
+                "confirmation_ref": "owner-repinned-second-run",
+            },
+        }
+    )
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+
+    with pytest.raises(module.task_oracle.TaskOracleError) as pending:
+        module.load_contract(tmp_path, contract_path)
+    assert pending.value.code == "REVISION_PENDING"
+    assert "successor revision" in str(pending.value)
 
 
 def test_unknown_safety_field_and_duplicate_promotion_evidence_fail_closed(tmp_path):
@@ -420,6 +607,33 @@ def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path, monkeyp
     first = module.verify(
         tmp_path, contract, receipt, stage="final", next_objective=""
     )
+    wrong_criterion = {**proof, "criterion_id": "another-criterion"}
+    wrong_criterion["receipt_sha256"] = module.task_oracle.sha256_json(
+        {
+            key: value
+            for key, value in wrong_criterion.items()
+            if key != "receipt_sha256"
+        }
+    )
+    proof_path.write_text(json.dumps(wrong_criterion), encoding="utf-8")
+    wrong_criterion_result = module.verify(
+        tmp_path, contract, receipt, stage="final", next_objective=""
+    )
+    missing_criterion = {
+        key: value for key, value in proof.items() if key != "criterion_id"
+    }
+    missing_criterion["receipt_sha256"] = module.task_oracle.sha256_json(
+        {
+            key: value
+            for key, value in missing_criterion.items()
+            if key != "receipt_sha256"
+        }
+    )
+    proof_path.write_text(json.dumps(missing_criterion), encoding="utf-8")
+    missing_criterion_result = module.verify(
+        tmp_path, contract, receipt, stage="final", next_objective=""
+    )
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
     proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
     stale_source = hook(
         module, tmp_path, contract, receipt, {"hook_event_name": "Stop"}
@@ -462,6 +676,8 @@ def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path, monkeyp
     )
 
     assert first["outcome"] == "CONVERGED"
+    assert wrong_criterion_result["outcome"] == "STALE_EVIDENCE"
+    assert missing_criterion_result["outcome"] == "STALE_EVIDENCE"
     assert first["checks"][0]["proof"]["evaluator"]["independence"] == "independent"
     assert stale_source["decision"] == "block"
     assert "stale" in stale_source["reason"]
@@ -570,6 +786,27 @@ def test_repeatable_command_rejects_embedded_run_value_and_long_hot_path(tmp_pat
     assert unbound.value.code == "UNBOUND"
 
 
+@pytest.mark.parametrize("embedded_default", ["x", "7", "stale-default"])
+def test_repeatable_command_rejects_every_undeclared_adapter_argument(
+    tmp_path, embedded_default
+):
+    module = load_module()
+    init_repo(tmp_path)
+    task = task_hook(
+        lifecycle="repeatable",
+        candidate={
+            "type": "command",
+            "argv": [sys.executable, "provider.py", embedded_default],
+            "consumes_bindings": ["asset_id"],
+        },
+        mutable_bindings=["asset_id"],
+    )
+
+    with pytest.raises(module.task_oracle.TaskOracleError) as rejected:
+        module.task_oracle.validate_task_hook(task, tmp_path)
+    assert rejected.value.code == "IMPLICIT_MUTABLE_BINDING"
+
+
 def test_repeatable_command_receives_only_declared_binding_interface(tmp_path):
     module = load_module()
     contract, receipt = init_repo(tmp_path)
@@ -640,6 +877,88 @@ def test_task_digest_validates_and_canonicalizes_key_order(tmp_path, capsys):
 
     assert result == 0
     assert output["task_hook_sha256"] == digest
+
+
+def test_verify_cli_returns_nonzero_until_the_requested_stage_converges(
+    tmp_path, capsys
+):
+    module = load_module()
+    pending_root = tmp_path / "pending"
+    pending_contract, _ = init_repo(pending_root)
+    pending = task_hook(
+        oracles=[
+            {
+                "id": "mechanical-check",
+                "type": "command",
+                "kind": "DETERMINISTIC",
+                "version": "v1",
+                "argv": ["git", "diff", "--check"],
+                "stages": ["episode", "final"],
+                "timeout_seconds": 10,
+            },
+            {
+                "id": "owner-review",
+                "type": "owner_review",
+                "kind": "HUMAN",
+                "independence": "owner",
+                "version": "owner-v1",
+                "stages": ["final"],
+            },
+        ]
+    )
+    write_active(module, pending_root, pending_contract, pending)
+    pending_exit = module.main(
+        ["--root", str(pending_root), "verify", "--stage", "final"]
+    )
+    pending_output = json.loads(capsys.readouterr().out)
+
+    converged_root = tmp_path / "converged"
+    converged_contract, _ = init_repo(converged_root)
+    write_active(module, converged_root, converged_contract, task_hook())
+    converged_exit = module.main(
+        ["--root", str(converged_root), "verify", "--stage", "final"]
+    )
+    converged_output = json.loads(capsys.readouterr().out)
+
+    assert pending_output["outcome"] == "CANDIDATE_READY"
+    assert pending_exit == 2
+    assert converged_output["outcome"] == "CONVERGED"
+    assert converged_exit == 0
+
+
+def test_select_task_cli_parses_bindings_into_the_shared_selector(
+    tmp_path, monkeypatch, capsys
+):
+    module = load_module()
+    observed = {}
+
+    def selected(*args, **kwargs):
+        observed.update(kwargs)
+        return {"ok": True, "status": "selected"}
+
+    monkeypatch.setattr(module, "select_task", selected)
+    exit_code = module.main(
+        [
+            "--root",
+            str(tmp_path),
+            "select-task",
+            "--task-family",
+            "generic-delivery",
+            "--run-id",
+            "run-cli",
+            "--confirmed-by",
+            "owner",
+            "--confirmation-ref",
+            "owner-cli-selection",
+            "--binding",
+            'candidate_path="outputs/result.bin"',
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output["status"] == "selected"
+    assert observed["bindings"] == {"candidate_path": "outputs/result.bin"}
 
 
 def test_one_off_retires_only_with_retained_final_receipt(tmp_path):
@@ -811,7 +1130,7 @@ def test_superseded_revision_requires_explicit_successor_transition(tmp_path):
 
 
 def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
-    tmp_path, capsys
+    tmp_path, monkeypatch
 ):
     module = load_module()
     first_root = tmp_path / "first"
@@ -956,26 +1275,40 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         ),
         encoding="utf-8",
     )
-    assert module.main(
+    subprocess.run(
         [
-            "--root",
+            "git",
+            "-C",
             str(third_root),
-            "select-task",
-            "--registry",
+            "add",
+            "--",
+            ".codex/task-hooks/generic.json",
             ".codex/task-hooks/registry.json",
-            "--task-family",
-            "generic-delivery",
-            "--run-id",
-            "run-third",
-            "--confirmed-by",
-            "owner",
-            "--confirmation-ref",
-            "owner-selected-reusable-family",
-            "--binding",
-            'candidate_path="outputs/third.txt"',
-        ]
-    ) == 0
-    selected = json.loads(capsys.readouterr().out)
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(third_root), "commit", "-qm", "register active Task Hook"],
+        check=True,
+    )
+    monkeypatch.setenv("THREECAN_TASK_FAMILY", "generic-delivery")
+    monkeypatch.setenv("THREECAN_RUN_ID", "run-third")
+    monkeypatch.setenv("THREECAN_TASK_CONFIRMED_BY", "owner")
+    monkeypatch.setenv(
+        "THREECAN_TASK_CONFIRMATION_REF", "owner-selected-reusable-family"
+    )
+    monkeypatch.setenv(
+        "THREECAN_TASK_BINDINGS_JSON",
+        json.dumps({"candidate_path": "outputs/third.txt"}),
+    )
+    started = hook(
+        module,
+        third_root,
+        third_contract_path,
+        third_receipt_path,
+        {"hook_event_name": "SessionStart", "source": "startup"},
+    )
+    selected = json.loads(third_contract_path.read_text(encoding="utf-8"))
     third = module.verify(
         third_root,
         third_contract_path,
@@ -983,8 +1316,36 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         stage="final",
         next_objective="",
     )
-    assert selected["status"] == "selected"
+    assert selected["run_id"] == "run-third"
+    assert "generic-delivery" in started["hookSpecificOutput"]["additionalContext"]
     assert third["outcome"] == "CONVERGED"
+
+    selected.update(
+        {
+            "status": "complete",
+            "closeout": {
+                "task_hook_sha256": active_digest,
+                "final_receipt_sha256": third["receipt_sha256"],
+                "disposition": "reusable_active",
+                "confirmed_by": "owner",
+                "confirmation_ref": "third-run-closeout",
+            },
+        }
+    )
+    third_contract_path.write_text(json.dumps(selected), encoding="utf-8")
+    closed, _ = module.load_contract(third_root, third_contract_path)
+    assert module.closeout_is_valid(
+        closed,
+        third,
+        third_root,
+        third_contract_path,
+        third_receipt_path,
+    ) is True
+
+    (third_root / first_evidence).unlink()
+    with pytest.raises(module.task_oracle.TaskOracleError) as missing_promotion:
+        module.load_contract(third_root, third_contract_path)
+    assert missing_promotion.value.code == "REVISION_PENDING"
 
 
 def test_implementation_change_keeps_revision_but_requires_fresh_proof(tmp_path):

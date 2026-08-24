@@ -44,7 +44,8 @@ The shipped files are examples and are inactive until copied:
 3. Copy `.codex/convergence.example.json` to `.codex/convergence.json`. Pin the
    exact Task Hook path, revision, and digest; choose a unique `run_id`; provide
    every declared mutable binding; and record the real activation review.
-   Keep this per-run selector ignored; track the Task Hook itself.
+   Keep this per-run selector ignored; track the Task Hook itself. A repeatable
+   Task Hook must be committed before activation.
 4. Keep `test-results/3can/` ignored. Review `.codex/hooks.json`, enable Codex
    Hooks, and use `/hooks` to review and trust the exact native definitions.
 
@@ -110,8 +111,9 @@ other domain classifier. It asks a narrower, enforceable question:
   and other run-varying decisions belong in `mutable_bindings`.
 - A command Candidate Provider declares `consumes_bindings`. The helper passes
   only those values through `THREECAN_TASK_BINDINGS_JSON`; a repeatable provider
-  must consume every mutable binding and must not embed a current run value in
-  executable arguments.
+  must consume every mutable binding. Its `argv` contains at most the launcher
+  and versioned adapter; all run configuration, including short, numeric, stale,
+  or current defaults, enters through bindings rather than extra arguments.
 - The provider returns `3can.candidate/v1` with an opaque
   candidate fingerprint, the SHA-256 of every current binding value, and all
   fallbacks actually used.
@@ -121,8 +123,11 @@ other domain classifier. It asks a narrower, enforceable question:
 
 This catches the important class of failure where implementation silently uses
 an old mutable default while QC proves only that the wrong candidate is stable.
-It does not claim to discover every semantic hardcode without a project-owned
-Candidate Provider or Oracle.
+The adapter remains project-owned code: its receipt is not proof that its own
+implementation is honest. When artifact lineage matters, bind a separate
+relational or semantic Oracle that compares the resolved bindings, candidate
+manifest, and actual output. The Global Hook does not claim to infer this
+domain relation from arbitrary source code.
 
 For a high-risk or long task, add a separate requirement/result consistency
 Oracle to that Task Hook (not a second native lifecycle Hook). It compares the
@@ -195,7 +200,10 @@ local concurrency and accidental drift, not hostile mutate-and-revert attacks.
 Stop and declared guards always recompute current identity. Artifact byproducts
 and external receipts are fingerprinted again after their check, so a post-check
 replacement is `CONFLICT`. Old evidence cannot prove a changed Task Hook,
-binding, candidate, artifact, or external proof.
+binding, candidate, artifact, or external proof. Immediately before a
+`CONVERGED` Stop is allowed, the Hook reloads the selector, Task Hook, receipt,
+workspace, candidate, and evidence once more; a control-plane change blocks the
+stop as stale.
 
 Run an episode gate after one evidence-bearing module:
 
@@ -229,6 +237,12 @@ new exact digest receives a new activation and all old candidate proofs are
 ineligible. A superseded file retains a confirmed transition and successor
 revision.
 
+For repeatable Task Hooks this rule also survives a missing prior run receipt:
+the Hook compares the current semantic digest with the bounded tracked history
+for the same task family and revision (up to 64 file-touching commits and
+4 MiB). A same-revision mismatch is `REVISION_PENDING`; a history beyond that
+audit bound requires a successor revision or a deliberate offline audit.
+
 Lifecycle states are:
 
 ```text
@@ -251,6 +265,11 @@ qualifying reference must resolve to a real, self-digest-valid, proof-eligible
 strings and duplicate replay never increase the count. Owner fast-track is
 explicit and may use one retained receipt.
 
+After promotion, a later successful run may close with
+`disposition=reusable_active` while leaving the exact active Task Hook in the
+registry. Its current final receipt must match that active digest, and the
+promotion receipts must still be readable and valid.
+
 Reusable executable fields contain parameter names, not a previous run's path,
 asset, URL, product, or prompt. Historical promotion evidence may reference the
 qualifying run receipts. Each future worktree selects the tracked Task Hook by
@@ -272,6 +291,16 @@ The selector refuses to overwrite an existing run. Once selected, the same
 native Hook automatically loads it at `SessionStart`; there is no thread-ID
 binding.
 
+An external launcher can ask the native `SessionStart` hook to materialize the
+same selector without a separate CLI step. It must supply the exact registered
+family and per-run intent through `THREECAN_TASK_FAMILY`, `THREECAN_RUN_ID`,
+`THREECAN_TASK_CONFIRMED_BY`, `THREECAN_TASK_CONFIRMATION_REF`, and optional
+`THREECAN_TASK_BINDINGS_JSON`, `THREECAN_ALLOWED_FALLBACKS_JSON`, and
+`THREECAN_TASK_REGISTRY`. This path runs only when both selector and prior
+receipt are absent, and it refuses to replace an existing run. These values are
+explicit audit assertions from the launcher, not prompt classification or
+authentication.
+
 Semantic matching of an arbitrary user prompt to a task family remains an
 explicit task-start decision. The offline Global Hook enforces the selected
 contract; it does not pretend to infer applicability without a prompt
@@ -291,7 +320,14 @@ classifier or add a per-prompt LLM hot path.
 
 Native convergence handlers have a 30-second outer budget. Their hot path runs
 no Oracle suite; Git probes and Candidate Provider subprocesses are individually
-bounded to 3 seconds. Long checks run only through explicit `verify` commands.
+bounded to 3 seconds. Contracts are capped at 16 Oracles, 32 Acceptance
+criteria, and 16 promotion receipts; registry size, Git metadata, lineage,
+changed-file count/bytes, and evidence bytes also have named aggregate bounds.
+Long checks run only through explicit `verify` commands.
+
+The `verify` CLI exits zero only for `PASS` at the episode stage or `CONVERGED`
+at the final stage. Every typed incomplete, stale, conflicting, or
+candidate-only outcome exits nonzero while retaining its JSON receipt.
 
 Development-path hook failures are fail-open so safe local work continues.
 Stop failures never fabricate convergence. Contract missing plus prior receipt

@@ -120,17 +120,21 @@ edit/test path. See
 examples only; selecting a Task Hook and trusting the exact native definitions
 remain explicit Owner/project setup actions.
 
-Reusable Task Hooks are selected by exact registry entry with `select-task`;
+Reusable Task Hooks are selected by exact registry entry with `select-task`, or
+by the same explicit `THREECAN_TASK_*` run intent at native `SessionStart`;
 the per-run `.codex/convergence.json` stays untracked while sanitized promotion
 receipts are retained with the Task Hook. The selector does not classify prompts
-or overwrite an active run.
+or overwrite an active run, and repeatable revisions are checked against bounded
+tracked Git lineage.
 
 Every acceptance condition must bind to named evidence. `CANDIDATE_READY`
 means that bound Owner/semantic evidence is still pending and is not an
 `AUTO_CLOSEOUT`. Hidden run-varying defaults are rejected through declared
-mutable-binding and fallback receipts rather than constant grep or domain
-branches. Scope is intentionally limited to the current repository; a dirty
-submodule requires its own contract rather than being silently covered.
+mutable-binding and fallback receipts plus a structural adapter boundary rather
+than constant grep or domain branches. Domain-specific lineage still needs a
+bound relational/semantic Oracle. Scope is intentionally limited to the current
+repository; a dirty submodule requires its own contract rather than being
+silently covered.
 
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then
 `THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint

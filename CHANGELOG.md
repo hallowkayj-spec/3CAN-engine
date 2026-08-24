@@ -63,6 +63,15 @@ claim that any private production graph has been migrated.
   a stable environment contract; embedded run values and undeclared fallbacks
   remain typed failures. No prompt classifier, second runtime, or LLM hot path
   was added.
+- Hardened the reusable path after adversarial review: native `SessionStart`
+  can materialize an exact registry selection from explicit launcher intent;
+  repeatable same-revision meaning is checked against bounded tracked Git
+  lineage even when a prior local receipt is absent; final CLI verification
+  exits nonzero until the requested stage genuinely converges.
+- Replaced current-value substring guessing with a structural command-adapter
+  boundary, bound singular external-receipt criterion IDs, added aggregate
+  native read budgets, recaptured the complete control plane before allowing a
+  converged Stop, and enabled valid closeout of later `REUSABLE_ACTIVE` runs.
 
 ### 2026-08-20 portable public-release packaging
 

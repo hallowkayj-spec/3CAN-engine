@@ -60,6 +60,10 @@ TYPED_INCOMPLETE_OUTCOMES = {
 }
 MAX_CONTEXT_CHARS = 4_000
 MAX_HASH_BYTES = 8 * 1024 * 1024
+MAX_EVIDENCE_HASH_BYTES = 32 * 1024 * 1024
+MAX_WORKSPACE_HASH_BYTES = 64 * 1024 * 1024
+MAX_CHANGED_FILES = 256
+MAX_GIT_METADATA_BYTES = 4 * 1024 * 1024
 
 
 class ContractError(ValueError):
@@ -309,6 +313,8 @@ def validate_contract(value: Any, root: Path) -> dict[str, Any]:
     checks = value.get("checks", [])
     if not isinstance(checks, list) or not checks:
         raise ContractError("checks must be a non-empty list")
+    if len(checks) > task_oracle.MAX_ORACLES:
+        raise ContractError("checks exceed the bounded limit")
     check_ids: set[str] = set()
     check_stages: dict[str, list[str]] = {}
     check_types: dict[str, str] = {}
@@ -359,6 +365,8 @@ def validate_contract(value: Any, root: Path) -> dict[str, Any]:
     acceptance = value.get("acceptance")
     if not isinstance(acceptance, list) or not acceptance:
         raise ContractError("acceptance must be a non-empty list of evidence bindings")
+    if len(acceptance) > task_oracle.MAX_ACCEPTANCE:
+        raise ContractError("acceptance exceeds the bounded limit")
     acceptance_ids: set[str] = set()
     referenced_evidence: set[str] = set()
     for index, condition in enumerate(acceptance):
@@ -537,9 +545,53 @@ def _external_receipt_fingerprint(
     }
 
 
+def _evidence_file_path(
+    contract: dict[str, Any], root: Path, check: dict[str, Any]
+) -> Path:
+    if check.get("type") == "external_receipt":
+        context = contract.get("_task_context")
+        if "receipt_path_binding" in check:
+            if not isinstance(context, dict):
+                raise ContractError("external receipt binding requires a task context")
+            relative = context["bindings"].get(check["receipt_path_binding"])
+        else:
+            relative = check.get("receipt_path")
+        label = f"external receipt {check['id']} path"
+    else:
+        relative = check.get("path")
+        label = f"artifact check {check['id']} path"
+    if not isinstance(relative, str) or not relative.strip():
+        raise ContractError(f"{label} must be a non-empty relative path")
+    return _resolve_under(root, relative, label=label)
+
+
+def _enforce_evidence_budget(
+    contract: dict[str, Any], root: Path, *, role: str | None
+) -> None:
+    paths: set[Path] = set()
+    for check in contract.get("checks", []):
+        check_type = check.get("type")
+        if check_type == "artifact":
+            if role is not None and check.get("role", "candidate") != role:
+                continue
+        elif check_type != "external_receipt" or role is not None:
+            continue
+        paths.add(_evidence_file_path(contract, root, check))
+    total = 0
+    for path in paths:
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError as exc:
+            raise ContractError("evidence metadata is unavailable") from exc
+        if total > MAX_EVIDENCE_HASH_BYTES:
+            raise ContractError("evidence exceeds the aggregate hash budget")
+
+
 def evidence_snapshot(
     contract: dict[str, Any], root: Path, *, role: str | None = None
 ) -> list[dict[str, Any]]:
+    _enforce_evidence_budget(contract, root, role=role)
     evidence = [
         _artifact_fingerprint(root, check)
         for check in contract.get("checks", [])
@@ -606,6 +658,8 @@ def workspace_fingerprint(
     commands = [branch, prefix, status, *(item for item in (head, index) if item)]
     if any(item.returncode != 0 for item in commands):
         raise RuntimeError("Git workspace fingerprint failed")
+    if any(len(item.stdout) > MAX_GIT_METADATA_BYTES for item in commands):
+        raise ContractError("Git workspace metadata exceeds the bounded read budget")
     git_top = Path(top.stdout.decode("utf-8", errors="surrogateescape").strip())
     submodule_output = b""
     if (git_top / ".gitmodules").is_file():
@@ -613,6 +667,8 @@ def workspace_fingerprint(
         if submodules.returncode != 0:
             raise RuntimeError("Git submodule fingerprint failed")
         submodule_output = submodules.stdout
+        if len(submodule_output) > MAX_GIT_METADATA_BYTES:
+            raise ContractError("Git submodule metadata exceeds the bounded read budget")
     prefix_text = (
         prefix.stdout.decode("utf-8", errors="surrogateescape")
         .strip()
@@ -629,6 +685,22 @@ def workspace_fingerprint(
                 normalized = normalized[len(prefix_text) :]
         if not _path_excluded(normalized, exclude_paths):
             relative_paths.append(normalized)
+    relative_paths = sorted(set(relative_paths))
+    if len(relative_paths) > MAX_CHANGED_FILES:
+        raise ContractError("changed files exceed the workspace fingerprint limit")
+    workspace_bytes = 0
+    for relative in relative_paths:
+        try:
+            candidate = _resolve_under(resolved, relative, label="changed path")
+        except ContractError:
+            continue
+        try:
+            if candidate.is_file():
+                workspace_bytes += candidate.stat().st_size
+        except OSError as exc:
+            raise ContractError("changed file metadata is unavailable") from exc
+        if workspace_bytes > MAX_WORKSPACE_HASH_BYTES:
+            raise ContractError("changed files exceed the aggregate fingerprint budget")
     submodule_paths: set[str] = set()
     for item in _submodule_paths(submodule_output):
         normalized = item
@@ -851,6 +923,11 @@ def closeout_is_valid(
         transition = task_hook.get("transition", {})
         return (
             task_state.get("task_hook_sha256") == transition.get("from_sha256")
+            and closeout.get("task_hook_sha256") == context["task_hook_sha256"]
+        )
+    if task_hook["status"] == "REUSABLE_ACTIVE":
+        return (
+            task_state.get("task_hook_sha256") == context["task_hook_sha256"]
             and closeout.get("task_hook_sha256") == context["task_hook_sha256"]
         )
     promotion_receipts = (task_hook.get("promotion") or {}).get(
@@ -1436,6 +1513,15 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
         contract, contract_sha256 = load_contract(root, contract_path)
         if contract is None or contract_sha256 is None:
             previous = read_receipt(root, receipt_path)
+            if (
+                previous is None
+                and event == "SessionStart"
+                and payload.get("source") in {"startup", "resume", "compact"}
+                and _environment_selection(root, contract_path) is not None
+            ):
+                contract, contract_sha256 = load_contract(root, contract_path)
+        if contract is None or contract_sha256 is None:
+            previous = read_receipt(root, receipt_path)
             if previous is None:
                 print("{}")
                 return 0
@@ -1524,22 +1610,50 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
         elif event == "Stop":
             outcome = str((receipt or {}).get("outcome") or "MISSING")
             if current and outcome == "CONVERGED":
-                output = {}
-            elif current and outcome in REPORTABLE_OUTCOMES:
+                final_contract, final_contract_sha256 = load_contract(
+                    root, contract_path
+                )
+                final_receipt = read_receipt(root, receipt_path)
+                if (
+                    final_contract is not None
+                    and final_contract_sha256 == contract_sha256
+                    and final_contract.get("status", "active") == "active"
+                    and final_receipt == receipt
+                ):
+                    final_workspace = contract_workspace_fingerprint(
+                        final_contract, root, contract_path, receipt_path
+                    )
+                    final_evidence = evidence_fingerprint(final_contract, root)
+                    final_task = task_snapshot(final_contract, root, final_workspace)
+                    current = receipt_is_current(
+                        final_receipt,
+                        contract_sha256=final_contract_sha256,
+                        workspace=final_workspace,
+                        evidence_sha256=final_evidence,
+                        task_state=final_task,
+                    )
+                else:
+                    current = False
+                receipt = final_receipt
+                outcome = str((receipt or {}).get("outcome") or "MISSING")
+                output = {} if current and outcome == "CONVERGED" else None
+            else:
+                output = None
+            if output is None and current and outcome in REPORTABLE_OUTCOMES:
                 report = _stop_report(receipt or {}, outcome)
                 output = (
                     {"systemMessage": report}
                     if stop_hook_active
                     else {"decision": "block", "reason": report}
                 )
-            elif stop_hook_active:
+            elif output is None and stop_hook_active:
                 output = {
                     "systemMessage": (
                         "Convergence evidence is missing or stale after one automatic continuation. "
                         "Report PARTIAL with the exact open evidence; do not claim completion."
                     )
                 }
-            else:
+            elif output is None:
                 next_objective = str((receipt or {}).get("next_objective") or "Run the declared checks and record a current receipt.")
                 output = {
                     "decision": "block",
@@ -1645,7 +1759,7 @@ def select_task(
     run_id: str,
     confirmed_by: str,
     confirmation_ref: str,
-    binding_args: list[str],
+    bindings: dict[str, Any],
     allowed_fallbacks: list[str],
 ) -> dict[str, Any]:
     output = _bounded_path(root, contract_path, label="contract path")
@@ -1678,7 +1792,7 @@ def select_task(
             "confirmed_by": confirmed_by,
             "confirmation_ref": confirmation_ref,
         },
-        "bindings": _parse_binding_args(binding_args),
+        "bindings": bindings,
         "allowed_fallbacks": allowed_fallbacks,
         "non_goals": [
             "Owner acceptance, merge, deployment, publication, and 3CAN writeback remain separate decisions."
@@ -1696,6 +1810,49 @@ def select_task(
         "run_id": run_id,
         "contract_path": output.relative_to(root.resolve()).as_posix(),
     }
+
+
+def _environment_selection(
+    root: Path, contract_path: Path
+) -> dict[str, Any] | None:
+    task_family = os.environ.get("THREECAN_TASK_FAMILY", "").strip()
+    if not task_family:
+        return None
+    run_id = os.environ.get("THREECAN_RUN_ID", "").strip()
+    confirmed_by = os.environ.get("THREECAN_TASK_CONFIRMED_BY", "").strip()
+    confirmation_ref = os.environ.get("THREECAN_TASK_CONFIRMATION_REF", "").strip()
+    if not run_id or not confirmed_by or not confirmation_ref:
+        raise ContractError(
+            "explicit task-family startup requires run id, confirmer, and confirmation reference"
+        )
+    raw_bindings = os.environ.get("THREECAN_TASK_BINDINGS_JSON", "{}")
+    raw_fallbacks = os.environ.get("THREECAN_ALLOWED_FALLBACKS_JSON", "[]")
+    if (
+        len(raw_bindings.encode("utf-8")) > task_oracle.MAX_BINDINGS_BYTES
+        or len(raw_fallbacks.encode("utf-8")) > task_oracle.MAX_BINDINGS_BYTES
+    ):
+        raise ContractError("startup selection inputs exceed the bounded size")
+    try:
+        bindings = json.loads(raw_bindings)
+        allowed_fallbacks = json.loads(raw_fallbacks)
+    except json.JSONDecodeError as exc:
+        raise ContractError("startup selection inputs must be valid JSON") from exc
+    if not isinstance(bindings, dict) or not isinstance(allowed_fallbacks, list):
+        raise ContractError("startup bindings must be an object and fallbacks a list")
+    registry_path = Path(
+        os.environ.get("THREECAN_TASK_REGISTRY", str(DEFAULT_TASK_REGISTRY))
+    )
+    return select_task(
+        root,
+        contract_path,
+        registry_path,
+        task_family=task_family,
+        run_id=run_id,
+        confirmed_by=confirmed_by,
+        confirmation_ref=confirmation_ref,
+        bindings=bindings,
+        allowed_fallbacks=allowed_fallbacks,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1771,7 +1928,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_id=args.run_id,
                 confirmed_by=args.confirmed_by,
                 confirmation_ref=args.confirmation_ref,
-                binding_args=args.binding,
+                bindings=_parse_binding_args(args.binding),
                 allowed_fallbacks=args.allowed_fallback,
             )
         elif args.command == "status":
@@ -1798,7 +1955,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             raise ContractError(f"unsupported command: {args.command}")
         print(json.dumps(output, ensure_ascii=False, indent=2))
-        return 0 if output.get("outcome") != "FAIL" else 2
+        if args.command == "verify":
+            expected = "PASS" if args.stage == "episode" else "CONVERGED"
+            return 0 if output.get("outcome") == expected else 2
+        return 0
     except (
         ContractError,
         json.JSONDecodeError,

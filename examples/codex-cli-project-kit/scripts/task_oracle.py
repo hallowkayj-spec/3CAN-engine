@@ -8,6 +8,7 @@ checks that their receipts target the active run, task revision, and candidate.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -50,6 +51,13 @@ ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
 MAX_BINDINGS_BYTES = 16 * 1024
 MAX_PROVIDER_OUTPUT_BYTES = 256 * 1024
 MAX_DIRECT_ARTIFACT_BYTES = 8 * 1024 * 1024
+MAX_ORACLES = 16
+MAX_ACCEPTANCE = 32
+MAX_PROMOTION_RECEIPTS = 16
+MAX_LINEAGE_COMMITS = 64
+MAX_LINEAGE_BYTES = 4 * 1024 * 1024
+MAX_TASK_HOOK_BYTES = 256 * 1024
+MAX_REGISTRY_FAMILIES = 128
 
 
 def _known_fields(value: dict[str, Any], allowed: set[str], label: str) -> None:
@@ -91,6 +99,158 @@ def task_semantics_sha256(task_hook: dict[str, Any]) -> str:
     return sha256_json(semantic)
 
 
+def _git(
+    root: Path, *args: str, input_bytes: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TaskOracleError(
+            "UNAVAILABLE", "Git revision lineage could not be inspected"
+        ) from exc
+
+
+def _lineage_blobs(root: Path, object_names: list[str]) -> list[bytes]:
+    request = "".join(f"{name}\n" for name in object_names).encode("utf-8")
+    checked = _git(root, "cat-file", "--batch-check", input_bytes=request)
+    if checked.returncode != 0:
+        raise TaskOracleError("UNAVAILABLE", "Git revision lineage is unavailable")
+    checked_lines = checked.stdout.splitlines()
+    if len(checked_lines) != len(object_names):
+        raise TaskOracleError("UNAVAILABLE", "Git revision lineage is truncated")
+    available: list[str] = []
+    total_bytes = 0
+    for object_name, raw_line in zip(object_names, checked_lines, strict=True):
+        if raw_line.endswith(b" missing"):
+            continue
+        fields = raw_line.rsplit(b" ", 2)
+        if len(fields) != 3 or fields[1] != b"blob":
+            raise TaskOracleError("UNAVAILABLE", "Git revision lineage is invalid")
+        try:
+            size = int(fields[2])
+        except ValueError as exc:
+            raise TaskOracleError("UNAVAILABLE", "Git revision lineage is invalid") from exc
+        total_bytes += size
+        if total_bytes > MAX_LINEAGE_BYTES:
+            raise TaskOracleError(
+                "UNAVAILABLE", "Git revision lineage exceeds the bounded read budget"
+            )
+        available.append(object_name)
+    if not available:
+        return []
+    request = "".join(f"{name}\n" for name in available).encode("utf-8")
+    loaded = _git(root, "cat-file", "--batch", input_bytes=request)
+    if loaded.returncode != 0:
+        raise TaskOracleError("UNAVAILABLE", "Git revision lineage is unavailable")
+    stream = io.BytesIO(loaded.stdout)
+    blobs: list[bytes] = []
+    for _ in available:
+        header = stream.readline().rstrip(b"\n")
+        fields = header.rsplit(b" ", 2)
+        if len(fields) != 3 or fields[1] != b"blob":
+            raise TaskOracleError("UNAVAILABLE", "Git revision lineage is invalid")
+        try:
+            size = int(fields[2])
+        except ValueError as exc:
+            raise TaskOracleError("UNAVAILABLE", "Git revision lineage is invalid") from exc
+        content = stream.read(size)
+        if len(content) != size or stream.read(1) != b"\n":
+            raise TaskOracleError("UNAVAILABLE", "Git revision lineage is truncated")
+        blobs.append(content)
+    return blobs
+
+
+def validate_revision_lineage(
+    root: Path, task_path: Path, task_hook: dict[str, Any]
+) -> None:
+    """Keep one repeatable revision semantically immutable across Git history."""
+    if task_hook["lifecycle"] != "repeatable":
+        return
+    prefix = _git(root, "rev-parse", "--show-prefix")
+    if prefix.returncode != 0:
+        raise TaskOracleError(
+            "REVISION_PENDING", "repeatable Task Hooks require a Git worktree"
+        )
+    relative = task_path.resolve().relative_to(root.resolve()).as_posix()
+    relative_path = Path(relative)
+    if (
+        relative_path.parent.as_posix() != ".codex/task-hooks"
+        or relative_path.suffix != ".json"
+    ):
+        raise TaskOracleError(
+            "INVALID_TASK_HOOK",
+            "repeatable Task Hooks must be direct JSON files under .codex/task-hooks",
+        )
+    repo_prefix = prefix.stdout.decode(
+        "utf-8", errors="surrogateescape"
+    ).strip().replace("\\", "/")
+    pathspec = f":(top,glob){repo_prefix}.codex/task-hooks/*.json"
+    history = _git(
+        root,
+        "log",
+        "--format=commit:%H",
+        "--raw",
+        "--no-abbrev",
+        f"--max-count={MAX_LINEAGE_COMMITS + 1}",
+        "--",
+        pathspec,
+    )
+    commits = [
+        line.removeprefix(b"commit:").decode("ascii")
+        for line in history.stdout.splitlines()
+        if line.startswith(b"commit:")
+    ]
+    if history.returncode != 0 or not commits:
+        raise TaskOracleError(
+            "REVISION_PENDING",
+            "repeatable Task Hook must be committed before activation",
+        )
+    if len(commits) > MAX_LINEAGE_COMMITS:
+        raise TaskOracleError(
+            "REVISION_PENDING",
+            "repeatable Task Hook lineage exceeds the native audit window; create a successor revision after offline review",
+        )
+    expected = task_semantics_sha256(task_hook)
+    blob_ids: list[str] = []
+    for line in history.stdout.splitlines():
+        if not line.startswith(b":") or b"\t" not in line:
+            continue
+        fields = line.split(b"\t", 1)[0].split()
+        if len(fields) < 5:
+            continue
+        blob_id = fields[3].decode("ascii")
+        if set(blob_id) != {"0"} and blob_id not in blob_ids:
+            blob_ids.append(blob_id)
+    if not blob_ids:
+        raise TaskOracleError("UNAVAILABLE", "Git revision lineage has no readable blobs")
+    for raw in _lineage_blobs(root, blob_ids):
+        try:
+            historical = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TaskOracleError(
+                "REVISION_PENDING", "tracked Task Hook history is invalid"
+            ) from exc
+        if not isinstance(historical, dict):
+            continue
+        if (
+            historical.get("schema") == TASK_HOOK_SCHEMA
+            and historical.get("task_family") == task_hook["task_family"]
+            and historical.get("revision") == task_hook["revision"]
+            and task_semantics_sha256(historical) != expected
+        ):
+            raise TaskOracleError(
+                "REVISION_PENDING",
+                "repeatable Task Hook meaning changed under an existing revision; create a successor revision",
+            )
+
+
 def owner_contract_sha256(task_hook: dict[str, Any]) -> str:
     """Fingerprint the owner-controlled meaning, separate from evaluator mechanics."""
     return sha256_json(
@@ -127,16 +287,6 @@ def _strings(value: Any, label: str, *, required: bool = False) -> list[str]:
     if required and not value:
         raise TaskOracleError("INVALID_TASK_HOOK", f"{label} must not be empty")
     return [item.strip() for item in value]
-
-
-def _binding_leaf_strings(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [leaf for item in value for leaf in _binding_leaf_strings(item)]
-    if isinstance(value, dict):
-        return [leaf for item in value.values() for leaf in _binding_leaf_strings(item)]
-    return []
 
 
 def command_environment(
@@ -338,10 +488,17 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
                 "UNBOUND",
                 "command candidate must consume every mutable binding",
             )
+        if lifecycle == "repeatable" and len(provider["argv"]) > 2:
+            raise TaskOracleError(
+                "IMPLICIT_MUTABLE_BINDING",
+                "repeatable command candidate argv may contain only its launcher and adapter; pass run values through bindings",
+            )
 
     oracles = value.get("oracles")
     if not isinstance(oracles, list) or not oracles:
         raise TaskOracleError("INVALID_TASK_HOOK", "oracles must be non-empty")
+    if len(oracles) > MAX_ORACLES:
+        raise TaskOracleError("INVALID_TASK_HOOK", "oracles exceed the bounded limit")
     oracle_ids: set[str] = set()
     oracle_stages: dict[str, list[str]] = {}
     automated_final = False
@@ -497,6 +654,8 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
     acceptance = value.get("acceptance")
     if not isinstance(acceptance, list) or not acceptance:
         raise TaskOracleError("INVALID_TASK_HOOK", "acceptance must be non-empty")
+    if len(acceptance) > MAX_ACCEPTANCE:
+        raise TaskOracleError("INVALID_TASK_HOOK", "acceptance exceeds the bounded limit")
     acceptance_ids: set[str] = set()
     referenced: set[str] = set()
     for index, criterion in enumerate(acceptance):
@@ -683,6 +842,10 @@ def _validate_lifecycle_evidence(task_hook: dict[str, Any], root: Path) -> None:
             raise TaskOracleError(
                 "REVISION_PENDING", "promotion requires qualifying receipts"
             )
+        if len(receipts) > MAX_PROMOTION_RECEIPTS:
+            raise TaskOracleError(
+                "REVISION_PENDING", "promotion receipts exceed the bounded limit"
+            )
         identities = [
             _validate_receipt_ref(
                 item,
@@ -767,9 +930,12 @@ def load_task_context(
     task_path = _relative(root, reference.get("path"), "task_hook path")
     if not task_path.is_file():
         raise TaskOracleError("UNAVAILABLE", "task hook file is missing")
+    if task_path.stat().st_size > MAX_TASK_HOOK_BYTES:
+        raise TaskOracleError("INVALID_TASK_HOOK", "task hook exceeds the bounded size")
     task_hook = validate_task_hook(
         json.loads(task_path.read_text(encoding="utf-8-sig")), root
     )
+    validate_revision_lineage(root, task_path, task_hook)
     digest = sha256_json(task_hook)
     expected_digest = reference.get("sha256")
     expected_revision = reference.get("revision")
@@ -823,28 +989,6 @@ def load_task_context(
         raise TaskOracleError(
             "UNBOUND", f"binding mismatch; missing={missing}, undeclared={extra}"
         )
-    if task_hook["lifecycle"] == "repeatable":
-        executable_values: list[str] = []
-        provider = task_hook["candidate"]["provider"]
-        if provider["type"] == "command":
-            executable_values.extend(provider["argv"])
-        for oracle in task_hook["oracles"]:
-            if oracle["type"] == "command":
-                executable_values.extend(oracle["argv"])
-        embedded: list[str] = []
-        for binding_name, binding_value in bindings.items():
-            leaf_values = _binding_leaf_strings(binding_value)
-            if any(
-                len(leaf) >= 8 and any(leaf in argument for argument in executable_values)
-                for leaf in leaf_values
-            ):
-                embedded.append(binding_name)
-        if embedded:
-            raise TaskOracleError(
-                "IMPLICIT_MUTABLE_BINDING",
-                "repeatable executable fields embed current binding values: "
-                + ", ".join(sorted(embedded)),
-            )
     fallbacks = _strings(
         convergence.get("allowed_fallbacks", []), "allowed_fallbacks"
     )
@@ -886,6 +1030,8 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
     path = _relative(root, relative, "task registry path")
     if not path.is_file():
         raise TaskOracleError("UNAVAILABLE", "task registry file is missing")
+    if path.stat().st_size > MAX_TASK_HOOK_BYTES:
+        raise TaskOracleError("INVALID_TASK_HOOK", "task registry exceeds the bounded size")
     try:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -899,6 +1045,8 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
     families = value.get("families")
     if not isinstance(families, list):
         raise TaskOracleError("INVALID_TASK_HOOK", "task registry families must be a list")
+    if len(families) > MAX_REGISTRY_FAMILIES:
+        raise TaskOracleError("INVALID_TASK_HOOK", "task registry exceeds the family limit")
     result: dict[str, dict[str, Any]] = {}
     for index, entry in enumerate(families):
         if not isinstance(entry, dict):
@@ -916,6 +1064,10 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
         task_path = _relative(root, entry.get("path"), f"task registry family {family} path")
         if not task_path.is_file():
             raise TaskOracleError("UNAVAILABLE", f"registered task hook is missing: {family}")
+        if task_path.stat().st_size > MAX_TASK_HOOK_BYTES:
+            raise TaskOracleError(
+                "INVALID_TASK_HOOK", f"registered task hook is too large: {family}"
+            )
         try:
             task_hook = validate_task_hook(
                 json.loads(task_path.read_text(encoding="utf-8-sig")), root
@@ -925,6 +1077,7 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
                 "INVALID_TASK_HOOK", f"registered task hook is invalid: {family}"
             ) from exc
         digest = sha256_json(task_hook)
+        validate_revision_lineage(root, task_path, task_hook)
         if (
             task_hook["status"] != "REUSABLE_ACTIVE"
             or task_hook["task_family"] != family
@@ -1193,6 +1346,7 @@ def load_external_proof(
     exact_fields = (
         "schema",
         "criterion_ids",
+        "criterion_id",
         "task_hook_revision",
         "task_hook_sha256",
         "task_semantics_sha256",
@@ -1201,7 +1355,9 @@ def load_external_proof(
         "bindings_sha256",
         "evaluator",
     )
-    if not isinstance(value, dict) or any(value.get(key) != expected[key] for key in exact_fields):
+    if not isinstance(value, dict) or any(
+        value.get(key) != expected.get(key) for key in exact_fields
+    ):
         return proof_receipt(
             oracle,
             context,
