@@ -561,6 +561,14 @@ def test_repeatable_command_rejects_embedded_run_value_and_long_hot_path(tmp_pat
     with pytest.raises(module.task_oracle.TaskOracleError, match="1..3"):
         module.task_oracle.validate_task_hook(too_slow, tmp_path)
 
+    unconsumed = task_hook(
+        candidate={"type": "command", "argv": [sys.executable, "provider.py"]},
+        mutable_bindings=["asset_id"],
+    )
+    with pytest.raises(module.task_oracle.TaskOracleError) as unbound:
+        module.task_oracle.validate_task_hook(unconsumed, tmp_path)
+    assert unbound.value.code == "UNBOUND"
+
 
 def test_repeatable_command_receives_only_declared_binding_interface(tmp_path):
     module = load_module()

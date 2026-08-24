@@ -333,10 +333,10 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
             raise TaskOracleError(
                 "UNBOUND", "candidate provider consumes undeclared bindings"
             )
-        if lifecycle == "repeatable" and set(consumes) != set(mutable_bindings):
+        if set(consumes) != set(mutable_bindings):
             raise TaskOracleError(
                 "UNBOUND",
-                "repeatable command candidate must consume every mutable binding",
+                "command candidate must consume every mutable binding",
             )
 
     oracles = value.get("oracles")
