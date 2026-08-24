@@ -110,12 +110,14 @@ The kit includes optional adapters:
 - `.codex/` hook config
 
 The optional convergence hook uses Codex-native `SessionStart` at
-startup/resume/compaction, `PreToolUse`, and `Stop`. A tracked, content-addressed
-Task Hook defines Goal, Acceptance, Candidate, Oracle, invariant, and mutable
-binding semantics; a run selector supplies only current values. Proof receipts
-bind the exact Task Hook revision, run inputs, evaluator version, and current
-candidate. It does not parse Codex transcripts, run an LLM, or call 3CAN on the
-edit/test path. See
+startup/resume/compaction and `Stop`; the default kit does not launch
+convergence on every tool call. A project may explicitly add a narrowly matched
+`PreToolUse` handler for a measured high-cost guard. A tracked,
+content-addressed Task Hook defines Goal, Acceptance, Candidate, Oracle,
+invariant, and mutable-binding semantics; a run selector supplies only current
+values. Proof receipts bind the exact Task Hook revision, run inputs, evaluator
+version, and current candidate. It does not parse Codex transcripts, run an
+LLM, or call 3CAN on the edit/test path. See
 [`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOOK.md). The tracked files are
 examples only; selecting a Task Hook and trusting the exact native definitions
 remain explicit Owner/project setup actions.
@@ -134,7 +136,9 @@ mutable-binding and fallback receipts plus a structural adapter boundary rather
 than constant grep or domain branches. Domain-specific lineage still needs a
 bound relational/semantic Oracle. Scope is intentionally limited to the current
 repository; a dirty submodule requires its own contract rather than being
-silently covered.
+silently covered. The design-only FAST/EPISODIC reduction is documented in
+[`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md); it is not an
+enabled alternative to the strict path.
 
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then
 `THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint

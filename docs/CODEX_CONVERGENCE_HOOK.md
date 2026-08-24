@@ -48,10 +48,19 @@ The shipped files are examples and are inactive until copied:
    Task Hook must be committed before activation.
 4. Keep `test-results/3can/` ignored. Review `.codex/hooks.json`, enable Codex
    Hooks, and use `/hooks` to review and trust the exact native definitions.
+   The default file installs convergence only at `SessionStart` and `Stop`; it
+   does not launch a convergence process for every tool call.
 
 Do not activate the unchanged example and do not globally enable it as a side
 effect of installation. Missing contract plus missing receipt is a no-op, so
 ordinary safe development has no added ceremony.
+
+The default file deliberately starts no convergence process for ordinary tool
+calls. A project with a measured high-cost operation may explicitly add the
+existing convergence handler under a narrow `PreToolUse` matcher for its
+declared guard. No first-write gate is shipped. The proposed FAST/EPISODIC
+reduction and its unresolved generic-shell boundary are documented separately
+in [`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md).
 
 ## Task Hook
 
@@ -341,8 +350,10 @@ classifier or add a per-prompt LLM hot path.
   current Task Hook revision/status, short Acceptance text, current candidate
   identity, open criteria, current/stale receipt state, critical non-goals, and
   next objective. It never injects full history.
-- Unmatched `PreToolUse` returns before scanning Git. Matching project-declared
-  high-cost guards require current proof-eligible named checks.
+- The default kit starts no convergence `PreToolUse` process. A project may
+  explicitly configure the existing handler under a narrow matcher for a real
+  declared high-cost guard; matching guards require current proof-eligible
+  named checks.
 - `Stop` accepts only a current `CONVERGED` receipt. The first incomplete stop
   requests one bounded continuation; when `stop_hook_active=true`, it emits an
   explicit typed report instead of creating a loop. Before allowing a success
@@ -368,6 +379,30 @@ a small current `UNAVAILABLE` receipt instead; it never leaves an older
 The `verify` CLI exits zero only for `PASS` at the episode stage or `CONVERGED`
 at the final stage. Every typed incomplete, stale, conflicting, or
 candidate-only outcome exits nonzero while retaining its JSON receipt.
+
+## Efficiency is a separate rollout gate
+
+Quality convergence and Harness efficiency are separate axes. Command checks
+retain their own `elapsed_ms`, but the Hook cannot know a truthful no-Hook task
+baseline. It therefore does not invent a universal threshold or convert a
+quality `CONVERGED` result into an efficiency claim.
+
+Dogfood reports only three operational metrics:
+
+1. Escape rate: required problems that the Hook failed to stop.
+2. False-block rate: correct work that the Hook stopped.
+3. Harness tax: `(hooked task time - comparable baseline time) / comparable
+   baseline time`.
+
+Initial development, review, CI, and infrastructure engineering hours are
+reported separately from another Session's business-task Harness tax. Measure
+the latter on paired, comparable real tasks, including one 10--20 minute task,
+before any wider enablement. Native process latency may be benchmarked with the
+exact trusted hook commands, but it is only one component of total task tax.
+See [`CONVERGENCE_HOOK_EFFICIENCY_20260824.md`](./evidence/CONVERGENCE_HOOK_EFFICIENCY_20260824.md)
+for the current typed evidence and
+[`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md) for the design-only
+Lite experiment boundary.
 
 Development-path hook failures are fail-open so safe local work continues.
 Stop failures never fabricate convergence. Contract missing plus prior receipt

@@ -21,6 +21,14 @@ claim that any private production graph has been migrated.
 - Added optional project-declared `PreToolUse` guards for high-cost operations.
   No domain action is hard-coded, command checks run without a shell, and
   captured command output is represented only by byte count and SHA-256.
+- Removed convergence from the default per-tool Hook path and narrowed the PR
+  adapter matcher. The existing strict Task Oracle remains unchanged and
+  independently runnable.
+- Added a design-only adaptive review proposal that keeps Git-frozen candidates,
+  current evidence, honest typed outcomes, and criterion-level strict proof
+  while moving any future Lite experiment outside the existing strict path.
+  Global enablement remains blocked pending adversarial equivalence and real
+  task cost evidence.
 - Kept ordinary development free of per-tool 3CAN calls. The hook makes no
   network call, does not parse Codex transcripts, and only marks 3CAN writeback
   eligible at `AUTO_CLOSEOUT` after every acceptance condition has passing

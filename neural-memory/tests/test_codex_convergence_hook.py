@@ -915,7 +915,8 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
     ]
 
     assert "SessionStart" in hooks and "Stop" in hooks and "PreToolUse" in hooks
-    assert any("3can_convergence.py" in item for item in pre_tool_commands)
+    assert not any("3can_convergence.py" in item for item in pre_tool_commands)
+    assert hooks["PreToolUse"][0]["matcher"] == "Bash|mcp__.*create_pull_request.*"
     assert not any("3can_research_harness.py" in item for item in pre_tool_commands)
     assert "UserPromptSubmit" not in hooks
     assert not any(
