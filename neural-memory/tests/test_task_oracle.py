@@ -274,6 +274,65 @@ def test_stop_rechecks_task_hook_after_second_snapshot(tmp_path, monkeypatch):
     assert "REVISION_PENDING" in stopped["reason"]
 
 
+def test_stop_rechecks_workspace_after_second_task_snapshot(tmp_path, monkeypatch):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    write_active(module, tmp_path, contract, task_hook())
+    module.verify(tmp_path, contract, receipt_path, stage="final", next_objective="")
+    original = module.task_snapshot
+    calls = 0
+
+    def mutate_workspace_after_second_snapshot(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            (tmp_path / "tracked.txt").write_text(
+                "changed after the final task snapshot\n", encoding="utf-8"
+            )
+        return result
+
+    monkeypatch.setattr(module, "task_snapshot", mutate_workspace_after_second_snapshot)
+    stopped = hook(module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"})
+
+    assert calls == 3
+    assert stopped["decision"] == "block"
+    assert "stale" in stopped["reason"]
+
+
+def test_stop_rechecks_ignored_candidate_after_second_task_snapshot(
+    tmp_path, monkeypatch
+):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    candidate_path = tmp_path / "outputs" / "candidate.bin"
+    candidate_path.write_bytes(b"accepted")
+    write_active(
+        module,
+        tmp_path,
+        contract,
+        task_hook(candidate={"type": "artifact", "path": "outputs/candidate.bin"}),
+    )
+    module.verify(tmp_path, contract, receipt_path, stage="final", next_objective="")
+    original = module.task_snapshot
+    calls = 0
+
+    def mutate_candidate_after_second_snapshot(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            candidate_path.write_bytes(b"changed after the final task snapshot")
+        return result
+
+    monkeypatch.setattr(module, "task_snapshot", mutate_candidate_after_second_snapshot)
+    stopped = hook(module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"})
+
+    assert calls == 3
+    assert stopped["decision"] == "block"
+    assert "stale" in stopped["reason"]
+
+
 def test_protocol_receipt_is_not_part_of_v2_candidate_even_when_unignored(tmp_path):
     module = load_module()
     contract, receipt = init_repo(tmp_path)
@@ -414,6 +473,30 @@ def test_native_hook_budgets_bound_contracts_evidence_and_dirty_files(tmp_path):
     with pytest.raises(module.ContractError, match="changed files"):
         module.workspace_fingerprint(tmp_path)
     assert contract_path.parent == tmp_path / ".codex"
+
+
+def test_generated_receipt_cap_rejects_oversized_record_reason(tmp_path, capsys):
+    module = load_module()
+    contract_path, receipt_path = init_repo(tmp_path)
+    write_active(module, tmp_path, contract_path, task_hook())
+
+    exit_code = module.main(
+        [
+            "--root",
+            str(tmp_path),
+            "record",
+            "--status",
+            "PARTIAL",
+            "--reason",
+            "x" * module.MAX_CONTROL_JSON_BYTES,
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["status"] == "UNAVAILABLE"
+    assert "generated receipt" in output["error"]
+    assert not receipt_path.exists()
 
 
 def test_acceptance_edit_and_proposed_revision_cannot_self_activate(tmp_path):
@@ -756,6 +839,46 @@ def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path, monkeyp
         stage="final",
         next_objective="Recreate the reviewer receipt.",
     )
+    near_limit = copy.deepcopy(proof)
+    near_limit["evidence_refs"] = [
+        "x" * (module.task_oracle.MAX_EXTERNAL_PROOF_BYTES - 2_048)
+        + "sha256:"
+        + "3" * 64
+    ]
+    near_limit["receipt_sha256"] = module.task_oracle.sha256_json(
+        {
+            key: value
+            for key, value in near_limit.items()
+            if key != "receipt_sha256"
+        }
+    )
+    proof_path.write_text(json.dumps(near_limit), encoding="utf-8")
+    assert proof_path.stat().st_size <= module.task_oracle.MAX_EXTERNAL_PROOF_BYTES
+    near_limit_result = module.verify(
+        tmp_path, contract, receipt, stage="final", next_objective=""
+    )
+    readable_near_limit_result = module.read_receipt(tmp_path, receipt)
+    oversized = copy.deepcopy(proof)
+    oversized["evidence_refs"] = [
+        "x" * module.task_oracle.MAX_EXTERNAL_PROOF_BYTES + "sha256:" + "2" * 64
+    ]
+    oversized["receipt_sha256"] = module.task_oracle.sha256_json(
+        {
+            key: value
+            for key, value in oversized.items()
+            if key != "receipt_sha256"
+        }
+    )
+    proof_path.write_text(json.dumps(oversized), encoding="utf-8")
+    oversized_result = module.verify(
+        tmp_path,
+        contract,
+        receipt,
+        stage="final",
+        next_objective="Replace the oversized evaluator receipt with digest references.",
+    )
+    readable_oversized_result = module.read_receipt(tmp_path, receipt)
+    oversized_receipt_bytes = receipt.stat().st_size
     proof_path.write_text(json.dumps(proof), encoding="utf-8")
     candidate_path.write_text("version two\n", encoding="utf-8")
     second = module.verify(
@@ -774,8 +897,57 @@ def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path, monkeyp
     assert "stale" in stale_source["reason"]
     assert raced["outcome"] == "CONFLICT"
     assert invalid_digest["outcome"] == "UNVERIFIABLE"
+    assert near_limit_result["outcome"] == "CONVERGED"
+    assert readable_near_limit_result == near_limit_result
+    assert oversized_result["outcome"] == "UNVERIFIABLE"
+    assert readable_oversized_result == oversized_result
+    assert oversized_receipt_bytes <= module.MAX_CONTROL_JSON_BYTES
     assert second["outcome"] == "STALE_EVIDENCE"
     assert second["proof_eligible"] is False
+
+
+def test_multiple_near_limit_external_proofs_produce_readable_receipt(tmp_path):
+    module = load_module()
+    contract, receipt = init_repo(tmp_path)
+    oracles = [
+        {
+            "id": f"review-{index}",
+            "type": "external_receipt",
+            "kind": "SEMANTIC",
+            "independence": "independent",
+            "version": "review-v1",
+            "receipt_path": f"test-results/review-{index}.json",
+            "stages": ["final"],
+        }
+        for index in range(module.task_oracle.MAX_ORACLES)
+    ]
+    write_active(module, tmp_path, contract, task_hook(oracles=oracles))
+    normalized, _ = module.load_contract(tmp_path, contract)
+    workspace = module.contract_workspace_fingerprint(
+        normalized, tmp_path, contract, receipt
+    )
+    candidate = module.task_snapshot(normalized, tmp_path, workspace)["candidate"]
+    for oracle in oracles:
+        proof = module.task_oracle.proof_receipt(
+            oracle,
+            normalized["_task_context"],
+            candidate,
+            status="PASS",
+            reason="Independent evaluator accepted the exact candidate.",
+            evidence_refs=["x" * 6_000 + "sha256:" + "4" * 64],
+        )
+        proof_path = tmp_path / oracle["receipt_path"]
+        proof_path.parent.mkdir(parents=True, exist_ok=True)
+        proof_path.write_text(json.dumps(proof), encoding="utf-8")
+        assert proof_path.stat().st_size <= module.task_oracle.MAX_EXTERNAL_PROOF_BYTES
+
+    result = module.verify(
+        tmp_path, contract, receipt, stage="final", next_objective=""
+    )
+
+    assert result["outcome"] == "CONVERGED"
+    assert module.read_receipt(tmp_path, receipt) == result
+    assert receipt.stat().st_size <= module.MAX_CONTROL_JSON_BYTES
 
 
 @pytest.mark.parametrize(
@@ -1168,6 +1340,66 @@ def test_closeout_recomputes_current_candidate_after_final_receipt(tmp_path):
     stopped = hook(
         module, tmp_path, contract_path, receipt_path, {"hook_event_name": "Stop"}
     )
+    assert stopped["decision"] == "block"
+    assert "REVISION_PENDING" in stopped["reason"]
+
+
+def test_closeout_rechecks_candidate_during_terminal_capture(tmp_path, monkeypatch):
+    module = load_module()
+    contract_path, receipt_path = init_repo(tmp_path)
+    candidate_path = tmp_path / "outputs" / "candidate.bin"
+    candidate_path.write_bytes(b"accepted")
+    active = task_hook(candidate={"type": "artifact", "path": "outputs/candidate.bin"})
+    task_path, active_digest, contract = write_active(
+        module, tmp_path, contract_path, active
+    )
+    final = module.verify(
+        tmp_path, contract_path, receipt_path, stage="final", next_objective=""
+    )
+    retired = copy.deepcopy(active)
+    retired["status"] = "RETIRED"
+    retired["transition"] = {
+        "from_sha256": active_digest,
+        "confirmed_by": "owner",
+        "confirmation_ref": "owner-closeout",
+    }
+    task_path.write_text(json.dumps(retired), encoding="utf-8")
+    retired_digest = module.task_oracle.sha256_json(retired)
+    contract.update(
+        {
+            "status": "complete",
+            "task_hook": {
+                "path": ".codex/task-hooks/generic.json",
+                "sha256": retired_digest,
+                "revision": "v1",
+            },
+            "closeout": {
+                "task_hook_sha256": retired_digest,
+                "final_receipt_sha256": final["receipt_sha256"],
+                "disposition": "retired",
+                "confirmed_by": "owner",
+                "confirmation_ref": "owner-closeout",
+            },
+        }
+    )
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    original = module.task_snapshot
+    calls = 0
+
+    def mutate_after_first_closeout_snapshot(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            candidate_path.write_bytes(b"changed during closeout")
+        return result
+
+    monkeypatch.setattr(module, "task_snapshot", mutate_after_first_closeout_snapshot)
+    stopped = hook(
+        module, tmp_path, contract_path, receipt_path, {"hook_event_name": "Stop"}
+    )
+
+    assert calls == 2
     assert stopped["decision"] == "block"
     assert "REVISION_PENDING" in stopped["reason"]
 

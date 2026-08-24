@@ -50,6 +50,7 @@ PROOF_STATUSES = {
 ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
 MAX_BINDINGS_BYTES = 16 * 1024
 MAX_PROVIDER_OUTPUT_BYTES = 256 * 1024
+MAX_EXTERNAL_PROOF_BYTES = 8 * 1024
 MAX_DIRECT_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_ORACLES = 16
 MAX_ACCEPTANCE = 32
@@ -1339,7 +1340,7 @@ def load_external_proof(
             evidence_refs=[],
         )
     try:
-        if path.stat().st_size > MAX_PROVIDER_OUTPUT_BYTES:
+        if path.stat().st_size > MAX_EXTERNAL_PROOF_BYTES:
             return proof_receipt(
                 oracle,
                 context,

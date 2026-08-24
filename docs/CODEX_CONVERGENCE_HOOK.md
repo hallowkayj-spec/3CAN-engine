@@ -174,9 +174,11 @@ Every generated proof binds:
   `same_agent`, `owner`, or `not_applicable` as appropriate);
 - typed status, reason, and content-addressed evidence references.
 
-An `external_receipt` Oracle reads a bounded `3can.proof-receipt/v1` file. A
-passing external receipt must retain its own canonical digest and at least one
-`sha256:` evidence reference. Its file fingerprint is also part of convergence
+An `external_receipt` Oracle reads a small, bounded `3can.proof-receipt/v1` file
+(at most 8 KiB). Large evaluator payloads stay outside the receipt and are
+represented by `sha256:` evidence references. A passing external receipt must
+retain its own canonical digest and at least one such reference. Its file
+fingerprint is also part of convergence
 freshness: modification, deletion, replacement, or a read-time race makes the
 old convergence receipt stale or `CONFLICT`.
 
@@ -261,9 +263,10 @@ revision:   ACTIVE -> PROPOSED_REVISION -> ACTIVE; old revision -> SUPERSEDED
 
 A one-off closeout must retain the final `CONVERGED` receipt and link the
 `RETIRED` transition to the previously active Task Hook digest. Closeout
-recomputes the current workspace, candidate, bindings, and evidence; changing a
-deliverable after the final receipt cannot be laundered by retiring the hook.
-Deleting the contract is not retirement.
+recomputes the current workspace, candidate, bindings, and evidence twice and
+closes with another control read; changing a deliverable after the final
+receipt or during closeout cannot be laundered by retiring the hook. Deleting
+the contract is not retirement.
 
 The first repeatable success may become `REUSABLE_CANDIDATE`. Default promotion
 to `REUSABLE_ACTIVE` requires two distinct run IDs and two distinct
@@ -325,17 +328,19 @@ classifier or add a per-prompt LLM hot path.
 - `Stop` accepts only a current `CONVERGED` receipt. The first incomplete stop
   requests one bounded continuation; when `stop_hook_active=true`, it emits an
   explicit typed report instead of creating a loop. Before allowing a success
-  stop it compares two complete workspace/evidence/task captures and performs a
-  final contract/receipt control read; a concurrent save becomes stale or
-  `REVISION_PENDING` instead of returning a false success.
+  stop it compares complete workspace/evidence/task captures, performs a
+  terminal full recapture, then closes with another contract/receipt read; a
+  concurrent save becomes stale or `REVISION_PENDING` instead of returning a
+  false success.
 
 Native convergence handlers have a 30-second outer budget. Their hot path runs
 no Oracle suite; Git probes and Candidate Provider subprocesses are individually
 bounded to 3 seconds. Contracts are capped at 16 Oracles, 32 Acceptance
-criteria, and 16 promotion receipts; contract and current-receipt control JSON
-are each capped at 256 KiB. Registry size, Git metadata, lineage, changed-file
-count/bytes, and evidence bytes also have named aggregate bounds. Long checks
-run only through explicit `verify` commands.
+criteria, and 16 promotion receipts; external proof receipts are capped at
+8 KiB, while contract and generated/current receipt control JSON are each
+capped at 256 KiB both before read and before write. Registry size, Git
+metadata, lineage, changed-file count/bytes, and evidence bytes also have named
+aggregate bounds. Long checks run only through explicit `verify` commands.
 
 The `verify` CLI exits zero only for `PASS` at the episode stage or `CONVERGED`
 at the final stage. Every typed incomplete, stale, conflicting, or

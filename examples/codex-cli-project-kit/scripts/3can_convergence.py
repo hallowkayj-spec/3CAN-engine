@@ -92,9 +92,17 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def _write_json_atomic(path: Path, value: Any) -> None:
+def _write_json_atomic(
+    path: Path,
+    value: Any,
+    *,
+    max_bytes: int | None = None,
+    label: str = "JSON output",
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    if max_bytes is not None and len(payload.encode("utf-8")) > max_bytes:
+        raise ContractError(f"{label} exceeds the bounded control-file size")
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
     )
@@ -539,7 +547,7 @@ def _external_receipt_fingerprint(
     if not path.is_file():
         return {**result, "state": "missing"}
     stat = path.stat()
-    if stat.st_size > task_oracle.MAX_PROVIDER_OUTPUT_BYTES:
+    if stat.st_size > task_oracle.MAX_EXTERNAL_PROOF_BYTES:
         return {**result, "state": "unverifiable_large", "bytes": stat.st_size}
     raw = path.read_bytes()
     return {
@@ -912,7 +920,30 @@ def closeout_is_valid(
         contract, root, contract_path, receipt_path
     )
     current_task = task_snapshot(contract, root, workspace)
+    current_evidence = evidence_fingerprint(contract, root)
     if not isinstance(current_task, dict):
+        return False
+    terminal_contract, terminal_contract_sha256 = load_contract(root, contract_path)
+    terminal_receipt = read_receipt(root, receipt_path)
+    if terminal_contract is None or terminal_contract != contract or terminal_receipt != receipt:
+        return False
+    terminal_workspace = contract_workspace_fingerprint(
+        terminal_contract, root, contract_path, receipt_path
+    )
+    terminal_task = task_snapshot(terminal_contract, root, terminal_workspace)
+    terminal_evidence = evidence_fingerprint(terminal_contract, root)
+    closing_contract, closing_contract_sha256 = load_contract(root, contract_path)
+    closing_receipt = read_receipt(root, receipt_path)
+    if (
+        terminal_contract_sha256 is None
+        or closing_contract is None
+        or closing_contract_sha256 != terminal_contract_sha256
+        or closing_contract != terminal_contract
+        or closing_receipt != terminal_receipt
+        or terminal_workspace != workspace
+        or terminal_task != current_task
+        or terminal_evidence != current_evidence
+    ):
         return False
     if (
         task_state.get("run_id") != context["run_id"]
@@ -926,7 +957,7 @@ def closeout_is_valid(
         or task_state.get("candidate") != current_task.get("candidate")
         or receipt.get("workspace", {}).get("fingerprint")
         != workspace.get("fingerprint")
-        or receipt.get("evidence_sha256") != evidence_fingerprint(contract, root)
+        or receipt.get("evidence_sha256") != current_evidence
     ):
         return False
     if task_hook["status"] == "RETIRED":
@@ -1335,7 +1366,12 @@ def verify(
         reason=reason,
         task_state=after_task,
     )
-    _write_json_atomic(_receipt_path(root, receipt_path), value)
+    _write_json_atomic(
+        _receipt_path(root, receipt_path),
+        value,
+        max_bytes=MAX_CONTROL_JSON_BYTES,
+        label="generated receipt",
+    )
     return value
 
 
@@ -1373,7 +1409,12 @@ def record_typed(
         reason=reason.strip(),
         task_state=task_snapshot(contract, root, workspace),
     )
-    _write_json_atomic(_receipt_path(root, receipt_path), value)
+    _write_json_atomic(
+        _receipt_path(root, receipt_path),
+        value,
+        max_bytes=MAX_CONTROL_JSON_BYTES,
+        label="generated receipt",
+    )
     return value
 
 
@@ -1639,6 +1680,28 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
                         root, contract_path
                     )
                     terminal_receipt = read_receipt(root, receipt_path)
+                    terminal_workspace = (
+                        contract_workspace_fingerprint(
+                            terminal_contract, root, contract_path, receipt_path
+                        )
+                        if terminal_contract is not None
+                        else None
+                    )
+                    terminal_evidence = (
+                        evidence_fingerprint(terminal_contract, root)
+                        if terminal_contract is not None
+                        else None
+                    )
+                    terminal_task = (
+                        task_snapshot(terminal_contract, root, terminal_workspace)
+                        if terminal_contract is not None
+                        and terminal_workspace is not None
+                        else None
+                    )
+                    closing_contract, closing_contract_sha256 = load_contract(
+                        root, contract_path
+                    )
+                    closing_receipt = read_receipt(root, receipt_path)
                     current = bool(
                         final_workspace == workspace
                         and final_evidence == current_evidence
@@ -1646,6 +1709,12 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
                         and terminal_contract is not None
                         and terminal_contract_sha256 == final_contract_sha256
                         and terminal_receipt == final_receipt
+                        and terminal_workspace == final_workspace
+                        and terminal_evidence == final_evidence
+                        and terminal_task == final_task
+                        and closing_contract is not None
+                        and closing_contract_sha256 == terminal_contract_sha256
+                        and closing_receipt == terminal_receipt
                         and receipt_is_current(
                             final_receipt,
                             contract_sha256=final_contract_sha256,
@@ -1822,7 +1891,12 @@ def select_task(
         "guards": [],
     }
     validate_contract(contract, root)
-    _write_json_atomic(output, contract)
+    _write_json_atomic(
+        output,
+        contract,
+        max_bytes=MAX_CONTROL_JSON_BYTES,
+        label="generated contract",
+    )
     return {
         "ok": True,
         "status": "selected",
