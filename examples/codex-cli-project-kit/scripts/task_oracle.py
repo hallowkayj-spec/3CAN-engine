@@ -1077,7 +1077,14 @@ def load_task_context(
     }
 
 
-def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
+def load_task_registry(
+    root: Path,
+    relative: str,
+    *,
+    selected_family: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    if selected_family is not None:
+        selected_family = _id(selected_family, "selected task family")
     path = _relative(root, relative, "task registry path")
     if not path.is_file():
         raise TaskOracleError("UNAVAILABLE", "task registry file is missing")
@@ -1103,6 +1110,7 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
     if len(families) > MAX_REGISTRY_FAMILIES:
         raise TaskOracleError("INVALID_TASK_HOOK", "task registry exceeds the family limit")
     result: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
     for index, entry in enumerate(families):
         if not isinstance(entry, dict):
             raise TaskOracleError(
@@ -1114,9 +1122,14 @@ def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
             f"task registry family {index}",
         )
         family = _id(entry.get("task_family"), f"task registry family {index}")
-        if family in result:
+        if family in seen:
             raise TaskOracleError("INVALID_TASK_HOOK", f"duplicate task family: {family}")
+        seen.add(family)
         task_path = _relative(root, entry.get("path"), f"task registry family {family} path")
+        _digest(entry.get("sha256"), f"task registry family {family} sha256")
+        _id(entry.get("revision"), f"task registry family {family} revision")
+        if selected_family is not None and family != selected_family:
+            continue
         if not task_path.is_file():
             raise TaskOracleError("UNAVAILABLE", f"registered task hook is missing: {family}")
         if task_path.stat().st_size > MAX_TASK_HOOK_BYTES:

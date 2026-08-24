@@ -155,6 +155,10 @@ same exact selection through the documented `THREECAN_TASK_*` environment at
 native `SessionStart`; it is explicit run intent, not prompt inference, and
 never replaces an existing selector.
 
+Native selection validates only the explicitly selected family so an unrelated
+registry entry cannot consume the lifecycle timeout. Audit every registered
+family explicitly with `validate-registry` outside a native Hook event.
+
 Declare stable protocol and safety constants as invariants. Declare every
 run-varying asset, path, model/version, tenant/product input, strategy, and
 fallback as a mutable binding. Candidate providers must attest all current

@@ -295,7 +295,7 @@ def test_stop_rechecks_workspace_after_second_task_snapshot(tmp_path, monkeypatc
     monkeypatch.setattr(module, "task_snapshot", mutate_workspace_after_second_snapshot)
     stopped = hook(module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"})
 
-    assert calls == 3
+    assert calls == 2
     assert stopped["decision"] == "block"
     assert "stale" in stopped["reason"]
 
@@ -328,7 +328,48 @@ def test_stop_rechecks_ignored_candidate_after_second_task_snapshot(
     monkeypatch.setattr(module, "task_snapshot", mutate_candidate_after_second_snapshot)
     stopped = hook(module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"})
 
-    assert calls == 3
+    assert calls == 2
+    assert stopped["decision"] == "block"
+    assert "stale" in stopped["reason"]
+
+
+def test_stop_detects_terminal_command_provider_workspace_side_effect(tmp_path):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    provider = tmp_path / "provider.py"
+    provider.write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "counter=Path('outputs/provider-count.txt')\n"
+        "calls=int(counter.read_text()) if counter.exists() else 0\n"
+        "calls += 1\n"
+        "counter.write_text(str(calls))\n"
+        "if calls == 4:\n"
+        "    Path('tracked.txt').write_text('provider terminal drift\\n')\n"
+        "print(json.dumps({'schema':'3can.candidate/v1','fingerprint':'stable-candidate','binding_fingerprints':{},'fallbacks_used':[]}))\n",
+        encoding="utf-8",
+    )
+    write_active(
+        module,
+        tmp_path,
+        contract,
+        task_hook(
+            candidate={
+                "type": "command",
+                "argv": [sys.executable, "provider.py"],
+            }
+        ),
+    )
+    first = module.verify(
+        tmp_path, contract, receipt_path, stage="final", next_objective=""
+    )
+    stopped = hook(
+        module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"}
+    )
+
+    assert first["outcome"] == "CONVERGED"
+    assert (tmp_path / "outputs" / "provider-count.txt").read_text() == "4"
+    assert (tmp_path / "tracked.txt").read_text() == "provider terminal drift\n"
     assert stopped["decision"] == "block"
     assert "stale" in stopped["reason"]
 
@@ -479,6 +520,9 @@ def test_generated_receipt_cap_rejects_oversized_record_reason(tmp_path, capsys)
     module = load_module()
     contract_path, receipt_path = init_repo(tmp_path)
     write_active(module, tmp_path, contract_path, task_hook())
+    first = module.verify(
+        tmp_path, contract_path, receipt_path, stage="final", next_objective=""
+    )
 
     exit_code = module.main(
         [
@@ -492,11 +536,17 @@ def test_generated_receipt_cap_rejects_oversized_record_reason(tmp_path, capsys)
         ]
     )
     output = json.loads(capsys.readouterr().out)
+    stopped = hook(
+        module, tmp_path, contract_path, receipt_path, {"hook_event_name": "Stop"}
+    )
 
+    assert first["outcome"] == "CONVERGED"
     assert exit_code == 2
-    assert output["status"] == "UNAVAILABLE"
-    assert "generated receipt" in output["error"]
-    assert not receipt_path.exists()
+    assert output["outcome"] == "UNAVAILABLE"
+    assert "bounded control-file size" in output["reason"]
+    assert module.read_receipt(tmp_path, receipt_path) == output
+    assert stopped["decision"] == "block"
+    assert "UNAVAILABLE" in stopped["reason"]
 
 
 def test_acceptance_edit_and_proposed_revision_cannot_self_activate(tmp_path):
@@ -1386,15 +1436,15 @@ def test_closeout_rechecks_candidate_during_terminal_capture(tmp_path, monkeypat
     original = module.task_snapshot
     calls = 0
 
-    def mutate_after_first_closeout_snapshot(*args, **kwargs):
+    def mutate_after_terminal_closeout_snapshot(*args, **kwargs):
         nonlocal calls
         result = original(*args, **kwargs)
         calls += 1
-        if calls == 1:
+        if calls == 2:
             candidate_path.write_bytes(b"changed during closeout")
         return result
 
-    monkeypatch.setattr(module, "task_snapshot", mutate_after_first_closeout_snapshot)
+    monkeypatch.setattr(module, "task_snapshot", mutate_after_terminal_closeout_snapshot)
     stopped = hook(
         module, tmp_path, contract_path, receipt_path, {"hook_event_name": "Stop"}
     )
@@ -1601,18 +1651,28 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         retain_receipt(third_root, name, receipt_value)
     active_digest = module.task_oracle.sha256_json(active_hook)
     registry_path = third_root / ".codex" / "task-hooks" / "registry.json"
+    registry_families = [
+        {
+            "task_family": "generic-delivery",
+            "path": ".codex/task-hooks/generic.json",
+            "sha256": active_digest,
+            "revision": "v1",
+        },
+        *[
+            {
+                "task_family": f"unused-{index:03}",
+                "path": f".codex/task-hooks/unused-{index:03}.json",
+                "sha256": "0" * 64,
+                "revision": "v1",
+            }
+            for index in range(module.task_oracle.MAX_REGISTRY_FAMILIES - 1)
+        ],
+    ]
     registry_path.write_text(
         json.dumps(
             {
                 "schema": "3can.task-hook-registry/v1",
-                "families": [
-                    {
-                        "task_family": "generic-delivery",
-                        "path": ".codex/task-hooks/generic.json",
-                        "sha256": active_digest,
-                        "revision": "v1",
-                    }
-                ],
+                "families": registry_families,
             }
         ),
         encoding="utf-8",
@@ -1643,16 +1703,26 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         check=True,
     )
     registry_value = module.task_oracle.load_task_registry(
-        third_root, ".codex/task-hooks/registry.json"
+        third_root,
+        ".codex/task-hooks/registry.json",
+        selected_family="generic-delivery",
     )
     assert registry_value["generic-delivery"]["sha256"] == active_digest
+    assert len(registry_families) == module.task_oracle.MAX_REGISTRY_FAMILIES
+    with pytest.raises(module.task_oracle.TaskOracleError) as offline_full_audit:
+        module.task_oracle.load_task_registry(
+            third_root, ".codex/task-hooks/registry.json"
+        )
+    assert offline_full_audit.value.code == "UNAVAILABLE"
     tracked_registry = registry_path.read_text(encoding="utf-8")
     changed_registry = json.loads(tracked_registry)
     changed_registry["families"][0]["revision"] = "v2"
     registry_path.write_text(json.dumps(changed_registry), encoding="utf-8")
     with pytest.raises(module.task_oracle.TaskOracleError) as uncommitted_registry:
         module.task_oracle.load_task_registry(
-            third_root, ".codex/task-hooks/registry.json"
+            third_root,
+            ".codex/task-hooks/registry.json",
+            selected_family="generic-delivery",
         )
     assert uncommitted_registry.value.code == "REVISION_PENDING"
     registry_path.write_text(tracked_registry, encoding="utf-8")
@@ -1662,7 +1732,9 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
     third_task_path.write_text(json.dumps(changed_task), encoding="utf-8")
     with pytest.raises(module.task_oracle.TaskOracleError) as uncommitted_task:
         module.task_oracle.load_task_registry(
-            third_root, ".codex/task-hooks/registry.json"
+            third_root,
+            ".codex/task-hooks/registry.json",
+            selected_family="generic-delivery",
         )
     assert uncommitted_task.value.code == "REVISION_PENDING"
     third_task_path.write_text(tracked_task, encoding="utf-8")

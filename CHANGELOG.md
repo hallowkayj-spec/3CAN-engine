@@ -77,6 +77,11 @@ claim that any private production graph has been migrated.
   run arguments, capped proof and generated control files, and added a terminal
   full Stop recapture plus exact native environment-selection coverage for
   startup, resume, and compaction.
+- Bracketed every Stop/closeout Candidate Provider call with post-provider
+  data-plane fingerprints, made oversized generated receipts atomically replace
+  prior success with typed `UNAVAILABLE`, and kept 128-family native selection
+  bounded by validating only the explicitly selected family. Complete registry
+  validation remains an explicit offline command.
 
 ### 2026-08-20 portable public-release packaging
 

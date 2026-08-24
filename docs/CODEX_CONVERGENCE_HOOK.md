@@ -298,6 +298,17 @@ python scripts\3can_convergence.py select-task `
   --binding 'candidate_path="outputs/current.bin"'
 ```
 
+Native selection exact-HEAD validates the registry structure and only opens,
+checks lineage for, and activates the requested family. This keeps a legal
+128-family registry inside the 30-second lifecycle budget and isolates an
+unavailable unrelated family. Run the deliberately slower complete audit
+outside a native lifecycle event:
+
+```powershell
+python scripts\3can_convergence.py validate-registry `
+  --registry .codex/task-hooks/registry.json
+```
+
 The selector refuses to overwrite an existing run. Once selected, the same
 native Hook automatically loads it at `SessionStart`; there is no thread-ID
 binding.
@@ -328,10 +339,11 @@ classifier or add a per-prompt LLM hot path.
 - `Stop` accepts only a current `CONVERGED` receipt. The first incomplete stop
   requests one bounded continuation; when `stop_hook_active=true`, it emits an
   explicit typed report instead of creating a loop. Before allowing a success
-  stop it compares complete workspace/evidence/task captures, performs a
-  terminal full recapture, then closes with another contract/receipt read; a
-  concurrent save becomes stale or `REVISION_PENDING` instead of returning a
-  false success.
+  stop and closeout, each Candidate Provider call is bracketed by workspace,
+  evidence, and passive artifact-candidate fingerprints. It then compares a
+  second complete capture and closes with another contract/receipt read. A
+  provider side effect or concurrent save becomes stale or `REVISION_PENDING`
+  instead of returning a false success.
 
 Native convergence handlers have a 30-second outer budget. Their hot path runs
 no Oracle suite; Git probes and Candidate Provider subprocesses are individually
@@ -341,6 +353,9 @@ criteria, and 16 promotion receipts; external proof receipts are capped at
 capped at 256 KiB both before read and before write. Registry size, Git
 metadata, lineage, changed-file count/bytes, and evidence bytes also have named
 aggregate bounds. Long checks run only through explicit `verify` commands.
+If a generated receipt would exceed its read bound, the writer atomically stores
+a small current `UNAVAILABLE` receipt instead; it never leaves an older
+`CONVERGED` receipt authoritative.
 
 The `verify` CLI exits zero only for `PASS` at the episode stage or `CONVERGED`
 at the final stage. Every typed incomplete, stale, conflicting, or

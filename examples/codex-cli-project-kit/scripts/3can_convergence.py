@@ -119,6 +119,47 @@ def _write_json_atomic(
             pass
 
 
+def _compact_unavailable_receipt(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep an oversized receipt current while dropping its bulky details."""
+    compact = {
+        "schema": RECEIPT_SCHEMA,
+        "recorded_at": _now(),
+        "contract_sha256": value.get("contract_sha256"),
+        "evidence_sha256": value.get("evidence_sha256"),
+        "workspace": value.get("workspace"),
+        "task": value.get("task"),
+        "stage": value.get("stage", "current"),
+        "outcome": "UNAVAILABLE",
+        "proof_eligible": False,
+        "checks": [],
+        "acceptance": [],
+        "open_check_ids": [],
+        "open_acceptance_ids": [],
+        "next_objective": "Reduce the receipt inputs and record the typed state again.",
+        "reason": "Generated receipt exceeded the bounded control-file size.",
+        "checkpoint_expectation": "none",
+        "threecan_writeback": {"eligible_trigger": "NONE", "performed": False},
+    }
+    compact["receipt_sha256"] = _sha256_bytes(_json_bytes(compact))
+    return compact
+
+
+def _write_receipt_atomic(path: Path, value: dict[str, Any]) -> dict[str, Any]:
+    payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    bounded = (
+        value
+        if len(payload.encode("utf-8")) <= MAX_CONTROL_JSON_BYTES
+        else _compact_unavailable_receipt(value)
+    )
+    _write_json_atomic(
+        path,
+        bounded,
+        max_bytes=MAX_CONTROL_JSON_BYTES,
+        label="generated receipt",
+    )
+    return bounded
+
+
 def _resolve_under(root: Path, relative: str, *, label: str) -> Path:
     candidate = Path(relative)
     if candidate.is_absolute():
@@ -916,22 +957,17 @@ def closeout_is_valid(
     if not isinstance(context, dict) or not isinstance(task_state, dict):
         return False
     task_hook = context["task_hook"]
-    workspace = contract_workspace_fingerprint(
-        contract, root, contract_path, receipt_path
-    )
-    current_task = task_snapshot(contract, root, workspace)
-    current_evidence = evidence_fingerprint(contract, root)
-    if not isinstance(current_task, dict):
+    current = _stable_current_capture(contract, root, contract_path, receipt_path)
+    current_task = current["task"]
+    if not current["stable"] or not isinstance(current_task, dict):
         return False
     terminal_contract, terminal_contract_sha256 = load_contract(root, contract_path)
     terminal_receipt = read_receipt(root, receipt_path)
     if terminal_contract is None or terminal_contract != contract or terminal_receipt != receipt:
         return False
-    terminal_workspace = contract_workspace_fingerprint(
+    terminal = _stable_current_capture(
         terminal_contract, root, contract_path, receipt_path
     )
-    terminal_task = task_snapshot(terminal_contract, root, terminal_workspace)
-    terminal_evidence = evidence_fingerprint(terminal_contract, root)
     closing_contract, closing_contract_sha256 = load_contract(root, contract_path)
     closing_receipt = read_receipt(root, receipt_path)
     if (
@@ -940,9 +976,10 @@ def closeout_is_valid(
         or closing_contract_sha256 != terminal_contract_sha256
         or closing_contract != terminal_contract
         or closing_receipt != terminal_receipt
-        or terminal_workspace != workspace
-        or terminal_task != current_task
-        or terminal_evidence != current_evidence
+        or not terminal["stable"]
+        or terminal["workspace"] != current["workspace"]
+        or terminal["task"] != current_task
+        or terminal["evidence_sha256"] != current["evidence_sha256"]
     ):
         return False
     if (
@@ -956,8 +993,8 @@ def closeout_is_valid(
         or task_state.get("bindings_sha256") != context["bindings_sha256"]
         or task_state.get("candidate") != current_task.get("candidate")
         or receipt.get("workspace", {}).get("fingerprint")
-        != workspace.get("fingerprint")
-        or receipt.get("evidence_sha256") != current_evidence
+        != current["workspace"].get("fingerprint")
+        or receipt.get("evidence_sha256") != current["evidence_sha256"]
     ):
         return False
     if task_hook["status"] == "RETIRED":
@@ -1006,6 +1043,50 @@ def task_snapshot(
         "run_id": context["run_id"],
         "bindings_sha256": context["bindings_sha256"],
         "candidate": task_oracle.current_candidate(context, root, workspace),
+    }
+
+
+def _stable_current_capture(
+    contract: dict[str, Any],
+    root: Path,
+    contract_path: Path,
+    receipt_path: Path,
+) -> dict[str, Any]:
+    """Bracket a candidate provider with data-plane fingerprints."""
+    before_workspace = contract_workspace_fingerprint(
+        contract, root, contract_path, receipt_path
+    )
+    before_evidence = evidence_fingerprint(contract, root)
+    context = contract.get("_task_context")
+    provider_type = (
+        context["task_hook"]["candidate"]["provider"]["type"]
+        if isinstance(context, dict)
+        else None
+    )
+    before_passive_candidate = (
+        task_oracle.current_candidate(context, root, before_workspace)
+        if isinstance(context, dict) and provider_type != "command"
+        else None
+    )
+    task = task_snapshot(contract, root, before_workspace)
+    after_workspace = contract_workspace_fingerprint(
+        contract, root, contract_path, receipt_path
+    )
+    after_evidence = evidence_fingerprint(contract, root)
+    after_passive_candidate = (
+        task_oracle.current_candidate(context, root, after_workspace)
+        if isinstance(context, dict) and provider_type != "command"
+        else None
+    )
+    return {
+        "stable": (
+            before_workspace == after_workspace
+            and before_evidence == after_evidence
+            and before_passive_candidate == after_passive_candidate
+        ),
+        "workspace": after_workspace,
+        "evidence_sha256": after_evidence,
+        "task": task,
     }
 
 
@@ -1366,12 +1447,7 @@ def verify(
         reason=reason,
         task_state=after_task,
     )
-    _write_json_atomic(
-        _receipt_path(root, receipt_path),
-        value,
-        max_bytes=MAX_CONTROL_JSON_BYTES,
-        label="generated receipt",
-    )
+    value = _write_receipt_atomic(_receipt_path(root, receipt_path), value)
     return value
 
 
@@ -1409,12 +1485,7 @@ def record_typed(
         reason=reason.strip(),
         task_state=task_snapshot(contract, root, workspace),
     )
-    _write_json_atomic(
-        _receipt_path(root, receipt_path),
-        value,
-        max_bytes=MAX_CONTROL_JSON_BYTES,
-        label="generated receipt",
-    )
+    value = _write_receipt_atomic(_receipt_path(root, receipt_path), value)
     return value
 
 
@@ -1623,17 +1694,21 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
             return 0
         receipt = read_receipt(root, receipt_path)
         ensure_revision_boundary(contract, receipt)
-        workspace = contract_workspace_fingerprint(
+        captured = _stable_current_capture(
             contract, root, contract_path, receipt_path
         )
-        current_evidence = evidence_fingerprint(contract, root)
-        current_task = task_snapshot(contract, root, workspace)
-        current = receipt_is_current(
-            receipt,
-            contract_sha256=contract_sha256,
-            workspace=workspace,
-            evidence_sha256=current_evidence,
-            task_state=current_task,
+        workspace = captured["workspace"]
+        current_evidence = captured["evidence_sha256"]
+        current_task = captured["task"]
+        current = bool(
+            captured["stable"]
+            and receipt_is_current(
+                receipt,
+                contract_sha256=contract_sha256,
+                workspace=workspace,
+                evidence_sha256=current_evidence,
+                task_state=current_task,
+            )
         )
 
         if event == "SessionStart" and payload.get("source") in session_sources:
@@ -1671,56 +1746,27 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
                     and final_contract.get("status", "active") == "active"
                     and final_receipt == receipt
                 ):
-                    final_workspace = contract_workspace_fingerprint(
+                    final = _stable_current_capture(
                         final_contract, root, contract_path, receipt_path
-                    )
-                    final_evidence = evidence_fingerprint(final_contract, root)
-                    final_task = task_snapshot(final_contract, root, final_workspace)
-                    terminal_contract, terminal_contract_sha256 = load_contract(
-                        root, contract_path
-                    )
-                    terminal_receipt = read_receipt(root, receipt_path)
-                    terminal_workspace = (
-                        contract_workspace_fingerprint(
-                            terminal_contract, root, contract_path, receipt_path
-                        )
-                        if terminal_contract is not None
-                        else None
-                    )
-                    terminal_evidence = (
-                        evidence_fingerprint(terminal_contract, root)
-                        if terminal_contract is not None
-                        else None
-                    )
-                    terminal_task = (
-                        task_snapshot(terminal_contract, root, terminal_workspace)
-                        if terminal_contract is not None
-                        and terminal_workspace is not None
-                        else None
                     )
                     closing_contract, closing_contract_sha256 = load_contract(
                         root, contract_path
                     )
                     closing_receipt = read_receipt(root, receipt_path)
                     current = bool(
-                        final_workspace == workspace
-                        and final_evidence == current_evidence
-                        and final_task == current_task
-                        and terminal_contract is not None
-                        and terminal_contract_sha256 == final_contract_sha256
-                        and terminal_receipt == final_receipt
-                        and terminal_workspace == final_workspace
-                        and terminal_evidence == final_evidence
-                        and terminal_task == final_task
+                        final["stable"]
+                        and final["workspace"] == workspace
+                        and final["evidence_sha256"] == current_evidence
+                        and final["task"] == current_task
                         and closing_contract is not None
-                        and closing_contract_sha256 == terminal_contract_sha256
-                        and closing_receipt == terminal_receipt
+                        and closing_contract_sha256 == final_contract_sha256
+                        and closing_receipt == final_receipt
                         and receipt_is_current(
                             final_receipt,
                             contract_sha256=final_contract_sha256,
-                            workspace=final_workspace,
-                            evidence_sha256=final_evidence,
-                            task_state=final_task,
+                            workspace=final["workspace"],
+                            evidence_sha256=final["evidence_sha256"],
+                            task_state=final["task"],
                         )
                     )
                 else:
@@ -1860,7 +1906,9 @@ def select_task(
         )
     registry_file = _bounded_path(root, registry_path, label="task registry path")
     registry_relative = registry_file.relative_to(root.resolve()).as_posix()
-    families = task_oracle.load_task_registry(root, registry_relative)
+    families = task_oracle.load_task_registry(
+        root, registry_relative, selected_family=task_family
+    )
     entry = families.get(task_family)
     if entry is None:
         raise task_oracle.TaskOracleError(
@@ -1964,6 +2012,13 @@ def build_parser() -> argparse.ArgumentParser:
         "task-digest", help="Validate a Task Hook and print its canonical digest."
     )
     task_parser.add_argument("--task-hook", type=Path, required=True)
+    registry_parser = sub.add_parser(
+        "validate-registry",
+        help="Run the complete reusable-family registry audit outside native hooks.",
+    )
+    registry_parser.add_argument(
+        "--registry", type=Path, default=DEFAULT_TASK_REGISTRY
+    )
     select_parser = sub.add_parser(
         "select-task",
         help="Select an exact reusable task family for a new run.",
@@ -2015,6 +2070,17 @@ def main(argv: list[str] | None = None) -> int:
                 "revision": validated["revision"],
                 "task_hook_sha256": task_oracle.sha256_json(validated),
             }
+        elif args.command == "validate-registry":
+            registry_path = _bounded_path(
+                root, args.registry, label="task registry path"
+            )
+            registry_relative = registry_path.relative_to(root).as_posix()
+            families = task_oracle.load_task_registry(root, registry_relative)
+            output = {
+                "ok": True,
+                "status": "valid",
+                "family_count": len(families),
+            }
         elif args.command == "select-task":
             output = select_task(
                 root,
@@ -2054,6 +2120,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify":
             expected = "PASS" if args.stage == "episode" else "CONVERGED"
             return 0 if output.get("outcome") == expected else 2
+        if args.command == "record" and output.get("outcome") != args.status:
+            return 2
         return 0
     except (
         ContractError,
