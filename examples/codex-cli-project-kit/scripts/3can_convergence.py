@@ -492,16 +492,61 @@ def _artifact_fingerprint(root: Path, check: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def evidence_fingerprint(
+def _external_receipt_fingerprint(
+    contract: dict[str, Any], root: Path, check: dict[str, Any]
+) -> dict[str, Any]:
+    context = contract.get("_task_context")
+    if "receipt_path_binding" in check:
+        if not isinstance(context, dict):
+            raise ContractError("external receipt binding requires a task context")
+        binding = check["receipt_path_binding"]
+        relative = context["bindings"].get(binding)
+    else:
+        relative = check.get("receipt_path")
+    path = _resolve_under(
+        root, relative, label=f"external receipt {check['id']} path"
+    )
+    result: dict[str, Any] = {
+        "id": check["id"],
+        "type": "external_receipt",
+        "path_sha256": _sha256_bytes(str(relative).replace("\\", "/").encode("utf-8")),
+    }
+    if not path.is_file():
+        return {**result, "state": "missing"}
+    stat = path.stat()
+    if stat.st_size > task_oracle.MAX_PROVIDER_OUTPUT_BYTES:
+        return {**result, "state": "unverifiable_large", "bytes": stat.st_size}
+    raw = path.read_bytes()
+    return {
+        **result,
+        "state": "file",
+        "bytes": len(raw),
+        "sha256": _sha256_bytes(raw),
+    }
+
+
+def evidence_snapshot(
     contract: dict[str, Any], root: Path, *, role: str | None = None
-) -> str:
-    artifacts = [
+) -> list[dict[str, Any]]:
+    evidence = [
         _artifact_fingerprint(root, check)
         for check in contract.get("checks", [])
         if check.get("type") == "artifact"
         and (role is None or check.get("role", "candidate") == role)
     ]
-    return _sha256_bytes(_json_bytes(artifacts))
+    if role is None:
+        evidence.extend(
+            _external_receipt_fingerprint(contract, root, check)
+            for check in contract.get("checks", [])
+            if check.get("type") == "external_receipt"
+        )
+    return evidence
+
+
+def evidence_fingerprint(
+    contract: dict[str, Any], root: Path, *, role: str | None = None
+) -> str:
+    return _sha256_bytes(_json_bytes(evidence_snapshot(contract, root, role=role)))
 
 
 def workspace_fingerprint(root: Path) -> dict[str, Any]:
@@ -642,7 +687,11 @@ def closeout_is_valid(
     if not isinstance(context, dict) or not isinstance(task_state, dict):
         return False
     task_hook = context["task_hook"]
-    if task_state.get("run_id") != context["run_id"]:
+    if (
+        task_state.get("run_id") != context["run_id"]
+        or task_state.get("task_family") != task_hook["task_family"]
+        or task_state.get("revision") != task_hook["revision"]
+    ):
         return False
     if task_hook["status"] == "RETIRED":
         transition = task_hook.get("transition", {})
@@ -653,6 +702,9 @@ def closeout_is_valid(
     return any(
         item.get("receipt_sha256") == digest
         and item.get("run_id") == context["run_id"]
+        and item.get("candidate_fingerprint")
+        == (task_state.get("candidate") or {}).get("fingerprint")
+        and item.get("bindings_sha256") == task_state.get("bindings_sha256")
         for item in promotion_receipts
         if isinstance(item, dict)
     )
@@ -696,13 +748,29 @@ def _run_check(
     if check["type"] == "external_receipt":
         if task_context is None or candidate is None:
             raise ContractError("external receipts require a task-oracle contract")
+        before_source = _external_receipt_fingerprint(
+            {"_task_context": task_context}, root, check
+        )
         proof = task_oracle.load_external_proof(check, task_context, candidate, root)
+        after_source = _external_receipt_fingerprint(
+            {"_task_context": task_context}, root, check
+        )
+        if before_source != after_source:
+            proof = task_oracle.proof_receipt(
+                check,
+                task_context,
+                candidate,
+                status="CONFLICT",
+                reason="external evaluator receipt changed while it was being read",
+                evidence_refs=[],
+            )
         return {
             "id": check_id,
             "type": "external_receipt",
             "status": "pass" if proof["status"] == "PASS" else "fail",
             "proof_status": proof["status"],
             "proof": proof,
+            "source": after_source,
         }
     if check["type"] == "artifact":
         fingerprint = _artifact_fingerprint(root, check)
@@ -932,11 +1000,22 @@ def verify(
         after_contract, root, role="candidate"
     )
     after_evidence = evidence_fingerprint(after_contract, root)
+    after_sources = {
+        item["id"]: item
+        for item in evidence_snapshot(after_contract, root)
+        if item.get("type") == "external_receipt"
+    }
+    checked_sources_match = all(
+        item.get("source") == after_sources.get(item["id"])
+        for item in checks
+        if item.get("type") == "external_receipt"
+    )
     verification_changed = (
         contract_sha256 != after_contract_sha256
         or before_workspace.get("fingerprint") != after_workspace.get("fingerprint")
         or before_evidence != after_candidate_evidence
         or before_task != after_task
+        or not checked_sources_match
     )
     if candidate_status == "PASS" and not any(
         item["type"] != "owner_review" and item["status"] != "skipped" for item in checks
@@ -1356,6 +1435,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("validate", help="Validate the active contract without running checks.")
     sub.add_parser("status", help="Show compact contract and receipt status.")
     sub.add_parser("hook", help="Run as a Codex lifecycle hook; read hook JSON from stdin.")
+    task_parser = sub.add_parser(
+        "task-digest", help="Validate a Task Hook and print its canonical digest."
+    )
+    task_parser.add_argument("--task-hook", type=Path, required=True)
     verify_parser = sub.add_parser("verify", help="Run checks and write an evidence receipt.")
     verify_parser.add_argument("--stage", choices=["episode", "final"], required=True)
     verify_parser.add_argument("--next-objective", default="")
@@ -1375,6 +1458,17 @@ def main(argv: list[str] | None = None) -> int:
             if contract is None:
                 raise ContractError("no convergence contract found")
             output = {"ok": True, "status": "valid", "contract_sha256": digest}
+        elif args.command == "task-digest":
+            task_path = _bounded_path(root, args.task_hook, label="task hook path")
+            task_value = _read_json(task_path)
+            validated = task_oracle.validate_task_hook(task_value, root)
+            output = {
+                "ok": True,
+                "status": "valid",
+                "task_family": validated["task_family"],
+                "revision": validated["revision"],
+                "task_hook_sha256": task_oracle.sha256_json(validated),
+            }
         elif args.command == "status":
             output = _summary(root, args.contract, args.receipt)
         elif args.command == "verify":

@@ -43,6 +43,7 @@ PROOF_STATUSES = {
     "IMPLICIT_MUTABLE_BINDING",
     "FALLBACK_NOT_ALLOWED",
     "UNVERIFIABLE",
+    "CONFLICT",
 }
 ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
 MAX_BINDINGS_BYTES = 16 * 1024
@@ -854,6 +855,25 @@ def load_external_proof(
             candidate,
             status="MISSING",
             reason="external evaluator receipt is missing",
+            evidence_refs=[],
+        )
+    try:
+        if path.stat().st_size > MAX_PROVIDER_OUTPUT_BYTES:
+            return proof_receipt(
+                oracle,
+                context,
+                candidate,
+                status="UNVERIFIABLE",
+                reason="external evaluator receipt exceeds the bounded size",
+                evidence_refs=[],
+            )
+    except OSError:
+        return proof_receipt(
+            oracle,
+            context,
+            candidate,
+            status="UNVERIFIABLE",
+            reason="external evaluator receipt metadata is unavailable",
             evidence_refs=[],
         )
     try:

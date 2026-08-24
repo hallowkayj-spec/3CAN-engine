@@ -231,6 +231,25 @@ def test_compact_session_reinjects_only_contract_and_receipt(convergence):
     assert len(context) <= module.MAX_CONTEXT_CHARS
 
 
+@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
+def test_session_start_restores_contract_for_supported_sources(convergence, source):
+    module, root, contract, receipt = convergence
+    write_contract(contract)
+
+    output = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "SessionStart", "source": source},
+    )
+
+    assert "additionalContext" in output["hookSpecificOutput"]
+    assert "Deliver one reusable convergence foundation." in output[
+        "hookSpecificOutput"
+    ]["additionalContext"]
+
+
 def test_stop_blocks_once_then_requires_honest_partial(convergence):
     module, root, contract, receipt = convergence
     write_contract(contract)

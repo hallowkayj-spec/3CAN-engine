@@ -241,7 +241,36 @@ def test_acceptance_edit_and_proposed_revision_cannot_self_activate(tmp_path):
     assert not_active.value.code == "REVISION_PENDING"
 
 
-def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path):
+def test_unknown_safety_field_and_duplicate_promotion_evidence_fail_closed(tmp_path):
+    module = load_module()
+    contract, _ = init_repo(tmp_path)
+    unknown = task_hook()
+    unknown["unimplemented_safety_gate"] = True
+    with pytest.raises(module.task_oracle.TaskOracleError) as unsupported:
+        module.task_oracle.validate_task_hook(unknown, tmp_path)
+    assert unsupported.value.code == "INVALID_TASK_HOOK"
+
+    repeatable = task_hook(lifecycle="repeatable", status="REUSABLE_ACTIVE")
+    reference = {
+        "run_id": "run-one",
+        "candidate_fingerprint": "1" * 64,
+        "bindings_sha256": "2" * 64,
+        "receipt_sha256": "3" * 64,
+        "outcome": "CONVERGED",
+    }
+    repeatable["promotion"] = {
+        "mode": "reproduced",
+        "qualifying_receipts": [reference, copy.deepcopy(reference)],
+        "confirmed_by": "owner",
+        "confirmation_ref": "review",
+    }
+    write_active(module, tmp_path, contract, repeatable)
+    with pytest.raises(module.task_oracle.TaskOracleError) as duplicate:
+        module.task_oracle.validate_task_hook(repeatable, tmp_path)
+    assert duplicate.value.code == "REVISION_PENDING"
+
+
+def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path, monkeypatch):
     module = load_module()
     contract, receipt = init_repo(tmp_path)
     candidate_path = tmp_path / "outputs" / "report.txt"
@@ -281,6 +310,38 @@ def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path):
     first = module.verify(
         tmp_path, contract, receipt, stage="final", next_objective=""
     )
+    proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
+    stale_source = hook(
+        module, tmp_path, contract, receipt, {"hook_event_name": "Stop"}
+    )
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
+    original_loader = module.task_oracle.load_external_proof
+
+    def racing_loader(*args, **kwargs):
+        loaded = original_loader(*args, **kwargs)
+        proof_path.write_text(json.dumps(proof) + " ", encoding="utf-8")
+        return loaded
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(module.task_oracle, "load_external_proof", racing_loader)
+        raced = module.verify(
+            tmp_path,
+            contract,
+            receipt,
+            stage="final",
+            next_objective="Retry against a stable reviewer receipt.",
+        )
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
+    tampered = {**proof, "reason": "Changed without recomputing the digest."}
+    proof_path.write_text(json.dumps(tampered), encoding="utf-8")
+    invalid_digest = module.verify(
+        tmp_path,
+        contract,
+        receipt,
+        stage="final",
+        next_objective="Recreate the reviewer receipt.",
+    )
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
     candidate_path.write_text("version two\n", encoding="utf-8")
     second = module.verify(
         tmp_path,
@@ -291,6 +352,10 @@ def test_external_proof_is_bound_to_exact_candidate_and_digest(tmp_path):
     )
 
     assert first["outcome"] == "CONVERGED"
+    assert stale_source["decision"] == "block"
+    assert "stale" in stale_source["reason"]
+    assert raced["outcome"] == "CONFLICT"
+    assert invalid_digest["outcome"] == "UNVERIFIABLE"
     assert second["outcome"] == "STALE_EVIDENCE"
     assert second["proof_eligible"] is False
 
@@ -363,6 +428,29 @@ def test_legitimate_invariant_does_not_create_hardcode_violation(tmp_path):
     assert normalized["_task_context"]["task_hook"]["invariants"] == task["invariants"]
 
 
+def test_task_digest_validates_and_canonicalizes_key_order(tmp_path, capsys):
+    module = load_module()
+    contract, _ = init_repo(tmp_path)
+    task = task_hook()
+    task_path, digest, _ = write_active(module, tmp_path, contract, task)
+    reordered = {key: task[key] for key in reversed(list(task))}
+    task_path.write_text(json.dumps(reordered), encoding="utf-8")
+
+    result = module.main(
+        [
+            "--root",
+            str(tmp_path),
+            "task-digest",
+            "--task-hook",
+            ".codex/task-hooks/generic.json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert output["task_hook_sha256"] == digest
+
+
 def test_one_off_retires_only_with_retained_final_receipt(tmp_path):
     module = load_module()
     contract_path, receipt_path = init_repo(tmp_path)
@@ -411,6 +499,31 @@ def test_one_off_retires_only_with_retained_final_receipt(tmp_path):
     )
     assert rejected["decision"] == "block"
     assert "REVISION_PENDING" in rejected["reason"]
+
+
+def test_superseded_revision_requires_explicit_successor_transition(tmp_path):
+    module = load_module()
+    init_repo(tmp_path)
+    active = task_hook(lifecycle="repeatable")
+    active_digest = module.task_oracle.sha256_json(active)
+    proposed = copy.deepcopy(active)
+    proposed.update(
+        {"revision": "v2", "parent_revision": "v1", "status": "PROPOSED_REVISION"}
+    )
+    module.task_oracle.validate_task_hook(proposed, tmp_path)
+
+    superseded = copy.deepcopy(active)
+    superseded["status"] = "SUPERSEDED"
+    superseded["transition"] = {
+        "from_sha256": active_digest,
+        "successor_revision": "v2",
+        "confirmed_by": "owner",
+        "confirmation_ref": "owner-approved-v2",
+    }
+
+    assert module.task_oracle.validate_task_hook(superseded, tmp_path)[
+        "status"
+    ] == "SUPERSEDED"
 
 
 def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(tmp_path):
