@@ -1339,10 +1339,11 @@ def verify(
     if contract is None or contract_sha256 is None:
         raise ContractError("no convergence contract found")
     ensure_revision_boundary(contract, read_receipt(root, receipt_path))
-    before_workspace = contract_workspace_fingerprint(
+    before = _stable_current_capture(
         contract, root, contract_path, receipt_path
     )
-    before_task = task_snapshot(contract, root, before_workspace)
+    before_workspace = before["workspace"]
+    before_task = before["task"]
     before_evidence = evidence_fingerprint(contract, root, role="candidate")
     task_context = contract.get("_task_context")
     candidate = (before_task or {}).get("candidate")
@@ -1368,14 +1369,15 @@ def verify(
     after_contract, after_contract_sha256 = load_contract(root, contract_path)
     if after_contract is None or after_contract_sha256 is None:
         raise ContractError("convergence contract disappeared during verification")
-    after_workspace = contract_workspace_fingerprint(
+    after = _stable_current_capture(
         after_contract, root, contract_path, receipt_path
     )
-    after_task = task_snapshot(after_contract, root, after_workspace)
+    after_workspace = after["workspace"]
+    after_task = after["task"]
     after_candidate_evidence = evidence_fingerprint(
         after_contract, root, role="candidate"
     )
-    after_evidence = evidence_fingerprint(after_contract, root)
+    after_evidence = after["evidence_sha256"]
     after_sources = {
         item["id"]: item
         for item in evidence_snapshot(after_contract, root)
@@ -1388,7 +1390,9 @@ def verify(
         and "source" in item
     )
     verification_changed = (
-        contract_sha256 != after_contract_sha256
+        not before["stable"]
+        or not after["stable"]
+        or contract_sha256 != after_contract_sha256
         or before_workspace.get("fingerprint") != after_workspace.get("fingerprint")
         or before_evidence != after_candidate_evidence
         or before_task != after_task
@@ -1470,20 +1474,26 @@ def record_typed(
     # A typed incomplete report must not launder checks that passed against an
     # older candidate into current evidence. Only verify() can create PASS.
     previous_acceptance = _evaluate_acceptance(contract, [], "current")
-    workspace = contract_workspace_fingerprint(
+    captured = _stable_current_capture(
         contract, root, contract_path, receipt_path
+    )
+    recorded_outcome = outcome if captured["stable"] else "CONFLICT"
+    recorded_reason = (
+        reason.strip()
+        if captured["stable"]
+        else "Workspace, evidence, or candidate changed while recording the typed state."
     )
     value = _receipt(
         contract_sha256=contract_sha256,
-        workspace=workspace,
-        evidence_sha256=evidence_fingerprint(contract, root),
+        workspace=captured["workspace"],
+        evidence_sha256=captured["evidence_sha256"],
         stage=str(previous.get("stage") or "current"),
-        outcome=outcome,
+        outcome=recorded_outcome,
         checks=[],
         acceptance=previous_acceptance,
         next_objective=next_objective.strip(),
-        reason=reason.strip(),
-        task_state=task_snapshot(contract, root, workspace),
+        reason=recorded_reason,
+        task_state=captured["task"],
     )
     value = _write_receipt_atomic(_receipt_path(root, receipt_path), value)
     return value
@@ -1847,25 +1857,26 @@ def _summary(
         }
     receipt = read_receipt(root, receipt_path)
     ensure_revision_boundary(contract, receipt)
-    workspace = contract_workspace_fingerprint(
+    captured = _stable_current_capture(
         contract, root, contract_path, receipt_path
     )
-    current_evidence = evidence_fingerprint(contract, root)
-    current_task = task_snapshot(contract, root, workspace)
     return {
         "ok": True,
         "status": contract.get("status", "active"),
         "goal": contract["goal"],
         "contract_sha256": contract_sha256,
         "receipt_outcome": (receipt or {}).get("outcome", "MISSING"),
-        "receipt_current": receipt_is_current(
-            receipt,
-            contract_sha256=contract_sha256,
-            workspace=workspace,
-            evidence_sha256=current_evidence,
-            task_state=current_task,
+        "receipt_current": bool(
+            captured["stable"]
+            and receipt_is_current(
+                receipt,
+                contract_sha256=contract_sha256,
+                workspace=captured["workspace"],
+                evidence_sha256=captured["evidence_sha256"],
+                task_state=captured["task"],
+            )
         ),
-        "task": current_task,
+        "task": captured["task"],
         "threecan_writeback": (receipt or {}).get(
             "threecan_writeback", {"eligible_trigger": "NONE", "performed": False}
         ),

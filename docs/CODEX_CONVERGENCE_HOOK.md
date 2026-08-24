@@ -133,6 +133,12 @@ relational or semantic Oracle that compares the resolved bindings, candidate
 manifest, and actual output. The Global Hook does not claim to infer this
 domain relation from arbitrary source code.
 
+A command Candidate Provider is expected to be synchronous and read-only. The
+stable capture detects workspace, declared evidence, and passive artifact
+changes completed before that provider exits. It cannot sandbox a deliberately
+detached child that writes after return; project review must reject such an
+adapter instead of adding a second process supervisor.
+
 For a high-risk or long task, add a separate requirement/result consistency
 Oracle to that Task Hook (not a second native lifecycle Hook). It compares the
 current Goal and Acceptance IDs with the Git diff, resolved run bindings, actual
@@ -300,9 +306,10 @@ python scripts\3can_convergence.py select-task `
 
 Native selection exact-HEAD validates the registry structure and only opens,
 checks lineage for, and activates the requested family. This keeps a legal
-128-family registry inside the 30-second lifecycle budget and isolates an
-unavailable unrelated family. Run the deliberately slower complete audit
-outside a native lifecycle event:
+128-family registry inside the 30-second lifecycle budget and does not require
+an unrelated family file to be currently available. Registry structural errors
+and unreadable committed Task Hook history still fail closed. Run the
+deliberately slower complete audit outside a native lifecycle event:
 
 ```powershell
 python scripts\3can_convergence.py validate-registry `
@@ -339,11 +346,12 @@ classifier or add a per-prompt LLM hot path.
 - `Stop` accepts only a current `CONVERGED` receipt. The first incomplete stop
   requests one bounded continuation; when `stop_hook_active=true`, it emits an
   explicit typed report instead of creating a loop. Before allowing a success
-  stop and closeout, each Candidate Provider call is bracketed by workspace,
-  evidence, and passive artifact-candidate fingerprints. It then compares a
-  second complete capture and closes with another contract/receipt read. A
-  provider side effect or concurrent save becomes stale or `REVISION_PENDING`
-  instead of returning a false success.
+  stop and closeout, every `verify`/`status`/`record`/Stop/closeout Candidate
+  Provider call is bracketed by workspace, evidence, and passive
+  artifact-candidate fingerprints. It then compares a second complete capture
+  and closes with another contract/receipt read. A provider side effect or
+  concurrent save becomes stale, `CONFLICT`, or `REVISION_PENDING` instead of
+  returning a false success.
 
 Native convergence handlers have a 30-second outer budget. Their hot path runs
 no Oracle suite; Git probes and Candidate Provider subprocesses are individually

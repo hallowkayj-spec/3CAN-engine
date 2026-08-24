@@ -59,6 +59,20 @@ def init_repo(root: Path) -> tuple[Path, Path]:
     )
 
 
+def write_mutating_provider(root: Path, *, trigger_call: int, drift: str) -> None:
+    provider = root / "provider.py"
+    provider.write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "counter=Path('outputs/provider-count.txt')\n"
+        "calls=int(counter.read_text()) if counter.exists() else 0\n"
+        "calls += 1\n"
+        "counter.write_text(str(calls))\n"
+        f"if calls == {trigger_call}:\n"
+        f"    Path('tracked.txt').write_text({drift!r})\n"
+        "print(json.dumps({'schema':'3can.candidate/v1','fingerprint':'stable-candidate','binding_fingerprints':{},'fallbacks_used':[]}))\n",
+        encoding="utf-8",
+    )
 def task_hook(
     *,
     lifecycle: str = "one_off",
@@ -336,18 +350,8 @@ def test_stop_rechecks_ignored_candidate_after_second_task_snapshot(
 def test_stop_detects_terminal_command_provider_workspace_side_effect(tmp_path):
     module = load_module()
     contract, receipt_path = init_repo(tmp_path)
-    provider = tmp_path / "provider.py"
-    provider.write_text(
-        "import json\n"
-        "from pathlib import Path\n"
-        "counter=Path('outputs/provider-count.txt')\n"
-        "calls=int(counter.read_text()) if counter.exists() else 0\n"
-        "calls += 1\n"
-        "counter.write_text(str(calls))\n"
-        "if calls == 4:\n"
-        "    Path('tracked.txt').write_text('provider terminal drift\\n')\n"
-        "print(json.dumps({'schema':'3can.candidate/v1','fingerprint':'stable-candidate','binding_fingerprints':{},'fallbacks_used':[]}))\n",
-        encoding="utf-8",
+    write_mutating_provider(
+        tmp_path, trigger_call=4, drift="provider terminal drift\n"
     )
     write_active(
         module,
@@ -372,6 +376,118 @@ def test_stop_detects_terminal_command_provider_workspace_side_effect(tmp_path):
     assert (tmp_path / "tracked.txt").read_text() == "provider terminal drift\n"
     assert stopped["decision"] == "block"
     assert "stale" in stopped["reason"]
+
+
+def test_verify_detects_final_command_provider_workspace_side_effect(tmp_path, capsys):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    write_mutating_provider(
+        tmp_path, trigger_call=2, drift="provider verify drift\n"
+    )
+    write_active(
+        module,
+        tmp_path,
+        contract,
+        task_hook(
+            candidate={
+                "type": "command",
+                "argv": [sys.executable, "provider.py"],
+            }
+        ),
+    )
+
+    exit_code = module.main(
+        ["--root", str(tmp_path), "verify", "--stage", "final"]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["outcome"] == "CONFLICT"
+    assert (tmp_path / "outputs" / "provider-count.txt").read_text() == "2"
+    assert (tmp_path / "tracked.txt").read_text() == "provider verify drift\n"
+    assert module.read_receipt(tmp_path, receipt_path) == output
+
+
+def test_status_marks_receipt_stale_on_command_provider_workspace_side_effect(
+    tmp_path, capsys
+):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    write_mutating_provider(
+        tmp_path, trigger_call=3, drift="provider status drift\n"
+    )
+    write_active(
+        module,
+        tmp_path,
+        contract,
+        task_hook(
+            candidate={
+                "type": "command",
+                "argv": [sys.executable, "provider.py"],
+            }
+        ),
+    )
+    first = module.verify(
+        tmp_path, contract, receipt_path, stage="final", next_objective=""
+    )
+
+    exit_code = module.main(["--root", str(tmp_path), "status"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert first["outcome"] == "CONVERGED"
+    assert exit_code == 0
+    assert output["receipt_current"] is False
+    assert (tmp_path / "outputs" / "provider-count.txt").read_text() == "3"
+    assert (tmp_path / "tracked.txt").read_text() == "provider status drift\n"
+
+
+def test_record_conflicts_on_command_provider_workspace_side_effect(tmp_path, capsys):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    write_mutating_provider(
+        tmp_path, trigger_call=3, drift="provider record drift\n"
+    )
+    write_active(
+        module,
+        tmp_path,
+        contract,
+        task_hook(
+            candidate={
+                "type": "command",
+                "argv": [sys.executable, "provider.py"],
+            }
+        ),
+    )
+    first = module.verify(
+        tmp_path, contract, receipt_path, stage="final", next_objective=""
+    )
+
+    exit_code = module.main(
+        [
+            "--root",
+            str(tmp_path),
+            "record",
+            "--status",
+            "PARTIAL",
+            "--reason",
+            "An explicit gap remains.",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert first["outcome"] == "CONVERGED"
+    assert exit_code == 2
+    assert output["outcome"] == "CONFLICT"
+    assert "changed while recording" in output["reason"]
+    assert (tmp_path / "outputs" / "provider-count.txt").read_text() == "3"
+    assert (tmp_path / "tracked.txt").read_text() == "provider record drift\n"
+    assert module.read_receipt(tmp_path, receipt_path) == output
+
+    stopped = hook(
+        module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"}
+    )
+    assert stopped["decision"] == "block"
+    assert "CONFLICT" in stopped["reason"]
 
 
 def test_protocol_receipt_is_not_part_of_v2_candidate_even_when_unignored(tmp_path):
