@@ -56,7 +56,9 @@ enabled, SessionStart reinjects RUN_INTENT; Stop emits a non-owning reminder
 while final semantic review is due, non-successful, or stale. Recording final
 `PASS` requires a clean Git checkpoint. It is silent only while HEAD still
 matches that checkpoint and the worktree remains clean; later changes produce a
-semantic-review reminder. SessionStart uses native
+semantic-review reminder. SessionStart uses the same currentness check and
+reinjects the review as `STALE`, never as the persisted `PASS`, after either
+change. SessionStart uses native
 `hookSpecificOutput.additionalContext` with a bounded matching handler limit, so
 the context reaches the model rather than only the UI event stream. RuntimeHook
 never returns a Stop allow/block decision.

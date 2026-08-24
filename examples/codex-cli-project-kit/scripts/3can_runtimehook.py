@@ -237,7 +237,9 @@ def _load_state(root: Path) -> dict[str, Any] | None:
     return _validate_state(value)
 
 
-def _context(state: dict[str, Any]) -> str:
+def _context(
+    state: dict[str, Any], *, review_result: str | None = None
+) -> str:
     intent = state["run_intent"]
     acceptance = "; ".join(
         f"{item['id']}={item['text']}" for item in intent["acceptance"]
@@ -247,7 +249,7 @@ def _context(state: dict[str, Any]) -> str:
     episode = state.get("current_episode")
     episode_text = f" Current episode: {episode}." if episode else ""
     review = state["semantic_review"]
-    review_text = f" Semantic review: {review['result']}"
+    review_text = f" Semantic review: {review_result or review['result']}"
     if review["result"] != "PENDING":
         review_text += f" ({review['stage']}, {review['reference']})"
     message = (
@@ -264,6 +266,18 @@ def _context(state: dict[str, Any]) -> str:
     if len(message) > MAX_CONTEXT_CHARS:
         raise RuntimeHookError("RUN_INTENT is too large for native Hook reinjection")
     return message
+
+
+def _stale_review_reasons(root: Path, review: dict[str, Any]) -> list[str]:
+    if review["result"] != "PASS" or review.get("stage") != "final":
+        return []
+    current_head, dirty = _git_checkpoint(root)
+    reasons = []
+    if current_head != review["reviewed_git_head"]:
+        reasons.append("Git HEAD changed")
+    if dirty:
+        reasons.append("the worktree is dirty")
+    return reasons
 
 
 def _write_state(root: Path, value: dict[str, Any]) -> None:
@@ -457,12 +471,18 @@ def hook(args: argparse.Namespace) -> int:
             "clear",
             "compact",
         }:
+            stale_reasons = _stale_review_reasons(
+                root, state["semantic_review"]
+            )
             print(
                 json.dumps(
                     {
                         "hookSpecificOutput": {
                             "hookEventName": "SessionStart",
-                            "additionalContext": _context(state),
+                            "additionalContext": _context(
+                                state,
+                                review_result="STALE" if stale_reasons else None,
+                            ),
                         }
                     },
                     ensure_ascii=False,
@@ -484,12 +504,7 @@ def hook(args: argparse.Namespace) -> int:
                     "convergence hook remain authoritative for completion."
                 )
             else:
-                current_head, dirty = _git_checkpoint(root)
-                stale_reasons = []
-                if current_head != review["reviewed_git_head"]:
-                    stale_reasons.append("Git HEAD changed")
-                if dirty:
-                    stale_reasons.append("the worktree is dirty")
+                stale_reasons = _stale_review_reasons(root, review)
                 if not stale_reasons:
                     return 0
                 message = (

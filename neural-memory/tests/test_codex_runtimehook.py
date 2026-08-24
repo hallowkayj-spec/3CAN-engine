@@ -244,9 +244,11 @@ def test_runtimehook_final_pass_requires_clean_git_checkpoint(runtimehook_projec
     assert state["semantic_review"]["result"] == "PENDING"
 
 
-@pytest.mark.parametrize("change", ["dirty", "new-head"])
-def test_runtimehook_stop_marks_post_review_git_change_stale(
-    runtimehook_project, change: str
+@pytest.mark.parametrize(
+    ("change", "session_source"), [("dirty", "resume"), ("new-head", "compact")]
+)
+def test_runtimehook_marks_post_review_git_change_stale(
+    runtimehook_project, change: str, session_source: str
 ):
     installed, _hooks, command, native_hook = runtimehook_project
     _activate(command)
@@ -271,8 +273,15 @@ def test_runtimehook_stop_marks_post_review_git_change_stale(
             check=True,
         )
 
+    started = native_hook(
+        "SessionStart",
+        {"hook_event_name": "SessionStart", "source": session_source},
+    )
     stopped = native_hook("Stop", {"hook_event_name": "Stop"})
 
+    context = started["hookSpecificOutput"]["additionalContext"]
+    assert "Semantic review: STALE" in context
+    assert "Semantic review: PASS" not in context
     assert "STALE" in stopped["systemMessage"]
     expected_reason = "worktree is dirty" if change == "dirty" else "Git HEAD changed"
     assert expected_reason in stopped["systemMessage"]
