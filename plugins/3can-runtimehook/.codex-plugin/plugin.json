@@ -1,0 +1,36 @@
+{
+  "name": "3can-runtimehook",
+  "version": "0.1.0",
+  "description": "Keep task intent and semantic review current across long Codex sessions.",
+  "author": {
+    "name": "hallowkayj-spec",
+    "url": "https://github.com/hallowkayj-spec"
+  },
+  "homepage": "https://github.com/hallowkayj-spec/3CAN-engine/blob/main/docs/RUNTIMEHOOK.md",
+  "repository": "https://github.com/hallowkayj-spec/3CAN-engine",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": [
+    "codex",
+    "hooks",
+    "semantic-review",
+    "task-convergence"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "3CAN RuntimeHook",
+    "shortDescription": "Keep intent and semantic review current",
+    "longDescription": "An offline semantic supervisor for long Codex tasks. It restores Owner Intent after resume or compaction and reminds the Agent when goal, hardcoding, fallback, stale-state, or unrequested-behavior review is due.",
+    "developerName": "hallowkayj-spec",
+    "category": "Productivity",
+    "capabilities": [
+      "semantic-supervision",
+      "lifecycle-context"
+    ],
+    "websiteURL": "https://github.com/hallowkayj-spec/3CAN-engine",
+    "defaultPrompt": [
+      "Use 3CAN RuntimeHook for this task with the lightest useful review intensity.",
+      "Run this long cross-module task with 3CAN RuntimeHook.",
+      "Turn off 3CAN RuntimeHook for the current worktree."
+    ]
+  }
+}

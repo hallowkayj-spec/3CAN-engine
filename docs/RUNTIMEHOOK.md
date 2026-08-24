@@ -26,12 +26,13 @@ separate worktrees so one task cannot replace another task's Intent.
 
 ## Use
 
-The user need not choose a profile or run a command. Once the Skill and project
-kit are installed, Codex may invoke `$3can-runtimehook` implicitly for a long,
-multi-stage, drift-prone, or explicitly requested task. Natural requests such as
+The user need not choose a profile or run a controller command. Once the Plugin
+is installed and its exact Hook definition is trusted, Codex may invoke
+`$3can-runtimehook` implicitly for a long, multi-stage, drift-prone, or
+explicitly requested task. Natural requests such as
 `这个任务按 RuntimeHook 执行` and `关闭 RuntimeHook` are supported.
 
-Codex has a fixed built-in slash-command set. This kit does not register or
+Codex has a fixed built-in slash-command set. RuntimeHook does not register or
 simulate `/3CAN`; it is only product shorthand. The real explicit route is
 `$3can-runtimehook` or `/skills`. See the official
 [Codex skills](https://learn.chatgpt.com/docs/build-skills),
@@ -50,8 +51,10 @@ duration, file-count, domain, command-name, or Oracle-name classifier.
 
 ## Independence and OFF behavior
 
-The native project hooks run RuntimeHook and `3can_convergence.py` independently.
-With no enabled RuntimeHook state, the semantic hook exits silently. When
+The Plugin bundles RuntimeHook only. Existing project-owned convergence,
+credential, security, deployment, or publication gates remain independent and
+all matching native Hooks continue to run. With no enabled RuntimeHook state,
+the Plugin Hook exits silently, including outside Git repositories. When
 enabled, SessionStart reinjects RUN_INTENT; Stop emits a non-owning reminder
 while final semantic review is due, non-successful, or stale. Recording final
 `PASS` requires a clean Git checkpoint. It is silent only while HEAD still
@@ -69,37 +72,53 @@ deployment, publication, security, or the independent PR15 convergence gate.
 
 ## Install and remove
 
-From the 3CAN-engine release root on Windows, install the discoverable Skill:
+RuntimeHook is distributed as the repository Plugin at
+`plugins/3can-runtimehook` and is exposed by
+`.agents/plugins/marketplace.json`. It requires Git and Python 3, but no 3CAN
+Runtime, graph, credentials, network service, or 9700 restart.
 
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.agents\skills" | Out-Null
-Copy-Item -Recurse examples\codex-cli-project-kit\installable-skills\3can-runtimehook "$HOME\.agents\skills\3can-runtimehook"
+Add the public repository as a Codex marketplace and install the Plugin:
+
+```text
+codex plugin marketplace add hallowkayj-spec/3CAN-engine --ref main
 ```
 
-Copy the project kit into each governed repository through that project's normal
-reviewed installation path. This PR ships but does not install the global Skill
-or change global hooks.
+Restart the ChatGPT desktop app, open the Plugins Directory, choose the
+`3CAN Engine` marketplace source, and install `3CAN RuntimeHook`. In Codex CLI,
+open `/plugins` and install it from the configured marketplace, then start a new
+session. Review the exact bundled Hook definition and trust it before use; in
+Codex CLI, `/hooks` is the native inspection and trust surface. Installation
+does not activate a task. The Plugin stays silent until Codex semantically
+selects the Skill or the Owner asks for RuntimeHook.
 
-To remove the Skill, first say `关闭 RuntimeHook` in any active governed worktree,
-then remove only its exact global directory:
+The first activation in a Git repository adds only
+`/.codex/runtimehook/` to that repository's local Git exclude when an existing
+ignore does not already cover it. This keeps state untracked without editing
+`.gitignore` or any project source file. A tracked, redirected, or unsafe state
+root remains typed `UNAVAILABLE`.
 
-```powershell
-Remove-Item -Recurse -LiteralPath "$HOME\.agents\skills\3can-runtimehook"
-```
+To update, upgrade the `3can-engine` marketplace and reinstall the Plugin from
+that source. To remove it, first say `关闭 RuntimeHook` in active worktrees, then
+disable or uninstall it through the Plugins browser. Uninstalling deliberately
+does not delete retained project-local state or rewrite a repository's Git
+exclude file.
 
-That is a global Skill uninstall. Full project-kit removal should revert its
-reviewed installation commit; do not delete `.codex/hooks.json` wholesale
-because it may contain unrelated hooks.
+The legacy project-kit copy remains a compatibility and clean-clone test fixture;
+new users do not need to copy it into each repository. Distribution is governed
+by the repository's PolyForm Noncommercial license. It is public
+source-available software, not an OSI-approved open-source license.
 
 ## Short smoke
 
-From a disposable project-kit worktree, the internal command path is:
+From a disposable Git worktree in a source checkout, the internal command path
+is:
 
 ```powershell
 $root = (git rev-parse --show-toplevel).Trim()
-python (Join-Path $root 'scripts\3can_runtimehook.py') --root $root on --goal 'Deliver the requested bounded result.' --acceptance 'A01=The requested result is complete.' --intensity light --reason 'Small and clear.'
-python (Join-Path $root 'scripts\3can_runtimehook.py') --root $root review --stage final --result PASS --reference 'git:reviewed-commit'
-python (Join-Path $root 'scripts\3can_runtimehook.py') --root $root off
+$cli = Join-Path $root 'plugins\3can-runtimehook\skills\3can-runtimehook\scripts\3can_runtimehook.py'
+python $cli --root $root on --goal 'Deliver the requested bounded result.' --acceptance 'A01=The requested result is complete.' --intensity light --reason 'Small and clear.'
+python $cli --root $root review --stage final --result PASS --reference 'git:reviewed-commit'
+python $cli --root $root off
 ```
 
 This smoke tests semantic state only. Existing convergence tests separately
