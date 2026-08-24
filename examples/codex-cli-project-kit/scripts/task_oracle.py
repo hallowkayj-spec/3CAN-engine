@@ -207,6 +207,10 @@ def validate_revision_lineage(
         for line in history.stdout.splitlines()
         if line.startswith(b"commit:")
     ]
+    if len(history.stdout) > MAX_LINEAGE_BYTES:
+        raise TaskOracleError(
+            "UNAVAILABLE", "Git revision lineage exceeds the bounded read budget"
+        )
     if history.returncode != 0 or not commits:
         raise TaskOracleError(
             "REVISION_PENDING",
