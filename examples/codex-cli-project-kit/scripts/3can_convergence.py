@@ -1668,7 +1668,7 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
             if (
                 previous is None
                 and event == "SessionStart"
-                and payload.get("source") in {"startup", "resume", "compact"}
+                and payload.get("source") in {"startup", "resume", "clear", "compact"}
                 and _environment_selection(root, contract_path) is not None
             ):
                 contract, contract_sha256 = load_contract(root, contract_path)
@@ -1715,7 +1715,7 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
         ):
             print("{}")
             return 0
-        session_sources = {"startup", "resume", "compact"}
+        session_sources = {"startup", "resume", "clear", "compact"}
         if event == "SessionStart" and payload.get("source") not in session_sources:
             print("{}")
             return 0

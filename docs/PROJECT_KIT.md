@@ -103,14 +103,15 @@ The kit includes optional adapters:
 - `scripts/codex-3can.*`
 - `scripts/3can_codex.py`
 - `scripts/3can_pr_harness.py`
+- `scripts/3can_runtimehook.py`
 - `scripts/3can_convergence.py`
 - `scripts/task_oracle.py`
 - standing-order and task-ledger helpers
-- the 3CAN deep-research skill
-- `.codex/` hook config
+- the 3CAN deep-research skill and one globally installable RuntimeHook skill
+- `.codex/` native hook configuration
 
 The optional convergence hook uses Codex-native `SessionStart` at
-startup/resume/compaction and `Stop`; the default kit does not launch
+startup/resume/clear/compaction and `Stop`; the default kit does not launch
 convergence on every tool call. A project may explicitly add a narrowly matched
 `PreToolUse` handler for a measured high-cost guard. A tracked,
 content-addressed Task Hook defines Goal, Acceptance, Candidate, Oracle,
@@ -121,6 +122,12 @@ LLM, or call 3CAN on the edit/test path. See
 [`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOOK.md). The tracked files are
 examples only; selecting a Task Hook and trusting the exact native definitions
 remain explicit Owner/project setup actions.
+
+For RuntimeHook's implicit/natural-language UX, installation/removal commands,
+one-file semantic state, and current custom-slash limitation, see
+[`RUNTIMEHOOK.md`](./RUNTIMEHOOK.md). Its light/medium/max value records
+Agent-selected review timing; it is not a user-facing mode and does not own the
+convergence selector or Stop gate.
 
 Reusable Task Hooks are selected by exact registry entry with `select-task`, or
 by the same explicit `THREECAN_TASK_*` run intent at native `SessionStart`;
@@ -136,9 +143,9 @@ mutable-binding and fallback receipts plus a structural adapter boundary rather
 than constant grep or domain branches. Domain-specific lineage still needs a
 bound relational/semantic Oracle. Scope is intentionally limited to the current
 repository; a dirty submodule requires its own contract rather than being
-silently covered. The design-only FAST/EPISODIC reduction is documented in
-[`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md); it is not an
-enabled alternative to the strict path.
+silently covered. The isolated adaptive experiment is documented in
+[`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md); global rollout
+remains blocked.
 
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then
 `THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint

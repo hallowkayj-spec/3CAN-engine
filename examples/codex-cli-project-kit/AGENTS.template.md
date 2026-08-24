@@ -142,7 +142,7 @@ For long tasks, create a tracked versioned Task Hook from
 `.codex/task-hooks/generic-delivery.example.json`, validate its canonical digest,
 then copy `.codex/convergence.example.json` to `.codex/convergence.json` and pin
 that exact revision for one run. The single convergence hook restores the
-selected boundary at startup, resume, and compaction, evaluates only declared
+selected boundary at startup, resume, clear, and compaction, evaluates only declared
 high-cost guards, and requires a current candidate-bound evidence receipt before
 a success stop.
 

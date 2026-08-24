@@ -2,12 +2,18 @@
 
 The project kit ships one optional, local Codex lifecycle hook for long tasks.
 It keeps the task boundary outside model context, restores it at session start
-and after compaction, and refuses to call stale or unrelated evidence
-`CONVERGED`.
+after resume, clear, or compaction, and refuses to call stale or unrelated
+evidence `CONVERGED`.
 
 The hook is deliberately local, offline, and bounded. It does not schedule work, parse
 session JSONL, call an LLM, call 3CAN, manage a runtime, commit, merge, deploy,
 publish, or write back to the graph.
+
+[`3CAN RuntimeHook`](./RUNTIMEHOOK.md) is an independent semantic supervisor. It
+records current Owner Intent, internal review timing, and a semantic review
+reference, while this convergence engine remains the sole owner of candidate
+freshness, proof receipts, and Stop decisions. RuntimeHook does not create or
+wrap this engine's selector lifecycle.
 
 ## Authority and two-layer contract
 
@@ -347,7 +353,7 @@ classifier or add a per-prompt LLM hot path.
 
 ## Native events and bounded behavior
 
-- `SessionStart` for `startup`, `resume`, and `compact` injects only Goal,
+- `SessionStart` for `startup`, `resume`, `clear`, and `compact` injects only Goal,
   current Task Hook revision/status, short Acceptance text, current candidate
   identity, open criteria, current/stale receipt state, critical non-goals, and
   next objective. It never injects full history.

@@ -77,6 +77,7 @@ jobs:
           python -m pytest
           neural-memory/tests/test_codex_convergence_hook.py::test_installed_project_kit_executes_exact_native_hook_command
           neural-memory/tests/test_codex_convergence_hook.py::test_installed_project_kit_exact_stop_blocks_stale_and_allows_current
+          neural-memory/tests/test_codex_runtimehook.py
           -q
 
       - name: Cold-start, exercise, and stop isolated 9701

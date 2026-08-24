@@ -1870,6 +1870,10 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
     scripts_dir = third_root / "scripts"
     scripts_dir.mkdir()
     shutil.copy2(SCRIPT, scripts_dir / "3can_convergence.py")
+    shutil.copy2(
+        SCRIPT.parent / "3can_runtimehook.py",
+        scripts_dir / "3can_runtimehook.py",
+    )
     shutil.copy2(SCRIPT.parent / "task_oracle.py", scripts_dir / "task_oracle.py")
     hooks_path = third_root / ".codex" / "hooks.json"
     shutil.copy2(SCRIPT.parents[1] / ".codex" / "hooks.json", hooks_path)
@@ -1884,6 +1888,7 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
             ".codex/task-hooks/registry.json",
             ".codex/hooks.json",
             "scripts/3can_convergence.py",
+            "scripts/3can_runtimehook.py",
             "scripts/task_oracle.py",
         ],
         check=True,

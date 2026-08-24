@@ -13,6 +13,19 @@ claim that any private production graph has been migrated.
 
 ### 2026-08-23 Codex convergence hook
 
+- Added the optional `3CAN RuntimeHook` Skill and one local control adapter.
+  Natural-language or implicit activation records one ignored semantic state:
+  Owner Intent, the Agent-selected light/medium/max review timing and reason,
+  optional episode, and semantic review result/reference. It does not create a
+  Task Hook, selector, proof lifecycle, candidate-freshness path, or Stop
+  decision; those remain independently owned by the existing convergence engine
+  and Git. Owner off retains the state as `disabled_by_owner` and cannot bypass
+  another gate.
+- Kept `/3CAN` as an unimplemented target shorthand because Codex exposes a
+  fixed native slash-command set. The supported explicit entry is
+  `$3can-runtimehook` (or `/skills`), with implicit Chinese/English aliases; no
+  slash parser, daemon, network call, graph dependency, or global enablement
+  was added.
 - Added one standard-library, project-local convergence helper that records a
   small goal/acceptance contract and current Git/workspace-bound evidence
   receipt. Native `SessionStart(compact)` restores the accepted boundary after
@@ -62,7 +75,7 @@ claim that any private production graph has been migrated.
   plus explicit review before promotion.
 - Added explicit proposed/superseded/retired lifecycle states and retained
   closeout receipts. SessionStart restores an active selector at startup,
-  resume, and compaction; local receipt files remain unsigned coordination
+  resume, clear, and compaction; local receipt files remain unsigned coordination
   evidence rather than authentication.
 - Rejected large generic artifacts as unverifiable instead of trusting
   size/mtime. Large outputs use a content-addressed manifest or project-owned
@@ -89,7 +102,7 @@ claim that any private production graph has been migrated.
   registry value, distinguished reviewed invariant launcher flags from mutable
   run arguments, capped proof and generated control files, and added a terminal
   full Stop recapture plus exact native environment-selection coverage for
-  startup, resume, and compaction.
+  startup, resume, clear, and compaction.
 - Bracketed every verify/status/record/Stop/closeout Candidate Provider call
   with post-provider data-plane fingerprints and a closing control-plane read,
   made oversized generated receipts atomically replace prior success with typed

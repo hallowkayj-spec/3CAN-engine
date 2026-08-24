@@ -53,9 +53,7 @@ def convergence(tmp_path: Path) -> tuple[object, Path, Path, Path]:
     subprocess.run(
         ["git", "-C", str(tmp_path), "add", ".gitignore", "tracked.txt"], check=True
     )
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "commit", "-qm", "fixture"], check=True
-    )
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "fixture"], check=True)
     return module, tmp_path, codex_dir / "convergence.json", receipt
 
 
@@ -231,7 +229,7 @@ def test_compact_session_reinjects_only_contract_and_receipt(convergence):
     assert len(context) <= module.MAX_CONTEXT_CHARS
 
 
-@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
+@pytest.mark.parametrize("source", ["startup", "resume", "clear", "compact"])
 def test_session_start_restores_contract_for_supported_sources(convergence, source):
     module, root, contract, receipt = convergence
     write_contract(contract)
@@ -245,9 +243,10 @@ def test_session_start_restores_contract_for_supported_sources(convergence, sour
     )
 
     assert "additionalContext" in output["hookSpecificOutput"]
-    assert "Deliver one reusable convergence foundation." in output[
-        "hookSpecificOutput"
-    ]["additionalContext"]
+    assert (
+        "Deliver one reusable convergence foundation."
+        in output["hookSpecificOutput"]["additionalContext"]
+    )
 
 
 def test_stop_blocks_once_then_requires_honest_partial(convergence):
@@ -494,7 +493,9 @@ def test_ignored_artifact_change_stales_converged_receipt(convergence):
     module, root, contract, receipt = convergence
     (root / ".gitignore").write_text("test-results/\nartifacts/\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True)
-    subprocess.run(["git", "-C", str(root), "commit", "-qm", "ignore artifacts"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-qm", "ignore artifacts"], check=True
+    )
     artifact = root / "artifacts" / "candidate.bin"
     artifact.parent.mkdir()
     artifact.write_bytes(b"candidate-one")
@@ -571,7 +572,9 @@ def test_byproduct_is_checked_after_commands_regardless_of_json_order(convergenc
     )
 
     assert result["outcome"] == "FAIL"
-    artifact_result = next(item for item in result["checks"] if item["id"] == "artifact")
+    artifact_result = next(
+        item for item in result["checks"] if item["id"] == "artifact"
+    )
     assert artifact_result["status"] == "fail"
     assert result["proof_eligible"] is False
 
@@ -647,9 +650,9 @@ def test_verification_race_records_conflict_and_cannot_unlock_guard(convergence)
         },
     )
     assert guarded["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "eligible evidence" in guarded["hookSpecificOutput"][
-        "permissionDecisionReason"
-    ]
+    assert (
+        "eligible evidence" in guarded["hookSpecificOutput"]["permissionDecisionReason"]
+    )
 
 
 def test_typed_receipt_cannot_launder_old_passed_checks(convergence):
@@ -821,7 +824,14 @@ def test_dirty_submodule_is_rejected_by_current_repository_scope(tmp_path):
     for repository, name in ((child, "Child"), (parent, "Parent")):
         subprocess.run(["git", "init", "-q", str(repository)], check=True)
         subprocess.run(
-            ["git", "-C", str(repository), "config", "user.email", "test@example.invalid"],
+            [
+                "git",
+                "-C",
+                str(repository),
+                "config",
+                "user.email",
+                "test@example.invalid",
+            ],
             check=True,
         )
         subprocess.run(
@@ -848,10 +858,10 @@ def test_dirty_submodule_is_rejected_by_current_repository_scope(tmp_path):
         check=True,
         capture_output=True,
     )
-    subprocess.run(["git", "-C", str(parent), "commit", "-qam", "submodule"], check=True)
-    (parent / "modules" / "child" / "child.txt").write_text(
-        "dirty\n", encoding="utf-8"
+    subprocess.run(
+        ["git", "-C", str(parent), "commit", "-qam", "submodule"], check=True
     )
+    (parent / "modules" / "child" / "child.txt").write_text("dirty\n", encoding="utf-8")
 
     with pytest.raises(module.ContractError, match="dirty submodules are unsupported"):
         module.workspace_fingerprint(parent)
@@ -905,7 +915,7 @@ def installed_project_kit(tmp_path):
     return installed, run_hook
 
 
-@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
+@pytest.mark.parametrize("source", ["startup", "resume", "clear", "compact"])
 def test_installed_project_kit_executes_exact_native_hook_command(
     installed_project_kit, source
 ):
@@ -957,9 +967,7 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
     hooks = json.loads(HOOKS.read_text(encoding="utf-8"))["hooks"]
     manifest = set(json.loads(MANIFEST.read_text(encoding="utf-8"))["required_paths"])
     pre_tool_commands = [
-        hook["command"]
-        for group in hooks["PreToolUse"]
-        for hook in group["hooks"]
+        hook["command"] for group in hooks["PreToolUse"] for hook in group["hooks"]
     ]
 
     assert "SessionStart" in hooks and "Stop" in hooks and "PreToolUse" in hooks
@@ -978,8 +986,15 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
         for event in ("SessionStart", "PreToolUse", "Stop")
         for group in hooks[event]
         for hook in group["hooks"]
-        if "3can_convergence.py" in hook["command"]
+        if "3can_runtimehook.py" in hook["command"]
     )
+    runtimehook_hooks = [
+        hook
+        for event in ("SessionStart", "PreToolUse", "Stop")
+        for group in hooks[event]
+        for hook in group["hooks"]
+        if "3can_runtimehook.py" in hook["command"]
+    ]
     convergence_hooks = [
         hook
         for event in ("SessionStart", "PreToolUse", "Stop")
@@ -994,6 +1009,8 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
         if "3can_pr_harness.py" in hook["command"]
     ]
     assert all(item["timeout"] == 30 for item in convergence_hooks)
+    assert all(item["timeout"] == 10 for item in runtimehook_hooks)
+    assert len(convergence_hooks) == len(runtimehook_hooks) == 2
     assert all(item["timeout"] == 10 for item in pr_hooks)
     assert {
         "docs/CODEX_CONVERGENCE_HOOK.md",
@@ -1001,9 +1018,13 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
         "examples/codex-cli-project-kit/.codex/task-hooks/generic-delivery.example.json",
         "examples/codex-cli-project-kit/.codex/task-hooks/registry.example.json",
         "examples/codex-cli-project-kit/.codex/hooks.json",
+        "examples/codex-cli-project-kit/installable-skills/3can-runtimehook/SKILL.md",
+        "examples/codex-cli-project-kit/installable-skills/3can-runtimehook/agents/openai.yaml",
+        "examples/codex-cli-project-kit/scripts/3can_runtimehook.py",
         "examples/codex-cli-project-kit/scripts/3can_convergence.py",
         "examples/codex-cli-project-kit/scripts/task_oracle.py",
         "neural-memory/tests/test_codex_convergence_hook.py",
+        "neural-memory/tests/test_codex_runtimehook.py",
         "neural-memory/tests/test_task_oracle.py",
     } <= manifest
 
