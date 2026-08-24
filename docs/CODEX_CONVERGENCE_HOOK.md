@@ -348,10 +348,10 @@ classifier or add a per-prompt LLM hot path.
   explicit typed report instead of creating a loop. Before allowing a success
   stop and closeout, every `verify`/`status`/`record`/Stop/closeout Candidate
   Provider call is bracketed by workspace, evidence, and passive
-  artifact-candidate fingerprints. It then compares a second complete capture
-  and closes with another contract/receipt read. A provider side effect or
-  concurrent save becomes stale, `CONFLICT`, or `REVISION_PENDING` instead of
-  returning a false success.
+  artifact-candidate fingerprints and followed by another control-plane read.
+  Stop and closeout then compare a second complete capture before one final
+  contract/receipt read. A provider side effect or concurrent save becomes
+  stale, `CONFLICT`, or `REVISION_PENDING` instead of returning a false success.
 
 Native convergence handlers have a 30-second outer budget. Their hot path runs
 no Oracle suite; Git probes and Candidate Provider subprocesses are individually

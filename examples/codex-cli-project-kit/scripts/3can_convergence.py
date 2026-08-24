@@ -1338,7 +1338,8 @@ def verify(
     contract, contract_sha256 = load_contract(root, contract_path)
     if contract is None or contract_sha256 is None:
         raise ContractError("no convergence contract found")
-    ensure_revision_boundary(contract, read_receipt(root, receipt_path))
+    initial_receipt = read_receipt(root, receipt_path)
+    ensure_revision_boundary(contract, initial_receipt)
     before = _stable_current_capture(
         contract, root, contract_path, receipt_path
     )
@@ -1389,9 +1390,18 @@ def verify(
         if item.get("type") in {"artifact", "external_receipt"}
         and "source" in item
     )
+    closing_contract, closing_contract_sha256 = load_contract(root, contract_path)
+    closing_receipt = read_receipt(root, receipt_path)
+    control_changed = bool(
+        closing_contract is None
+        or closing_contract_sha256 != after_contract_sha256
+        or closing_contract != after_contract
+        or closing_receipt != initial_receipt
+    )
     verification_changed = (
         not before["stable"]
         or not after["stable"]
+        or control_changed
         or contract_sha256 != after_contract_sha256
         or before_workspace.get("fingerprint") != after_workspace.get("fingerprint")
         or before_evidence != after_candidate_evidence
@@ -1469,7 +1479,8 @@ def record_typed(
         raise ContractError("no convergence contract found")
     if not reason.strip():
         raise ContractError("typed incomplete state requires a non-empty reason")
-    previous = read_receipt(root, receipt_path) or {}
+    previous_receipt = read_receipt(root, receipt_path)
+    previous = previous_receipt or {}
     ensure_revision_boundary(contract, previous)
     # A typed incomplete report must not launder checks that passed against an
     # older candidate into current evidence. Only verify() can create PASS.
@@ -1477,11 +1488,20 @@ def record_typed(
     captured = _stable_current_capture(
         contract, root, contract_path, receipt_path
     )
-    recorded_outcome = outcome if captured["stable"] else "CONFLICT"
+    closing_contract, closing_contract_sha256 = load_contract(root, contract_path)
+    closing_receipt = read_receipt(root, receipt_path)
+    capture_current = bool(
+        captured["stable"]
+        and closing_contract is not None
+        and closing_contract_sha256 == contract_sha256
+        and closing_contract == contract
+        and closing_receipt == previous_receipt
+    )
+    recorded_outcome = outcome if capture_current else "CONFLICT"
     recorded_reason = (
         reason.strip()
-        if captured["stable"]
-        else "Workspace, evidence, or candidate changed while recording the typed state."
+        if capture_current
+        else "Control plane, workspace, evidence, or candidate changed while recording the typed state."
     )
     value = _receipt(
         contract_sha256=contract_sha256,
@@ -1860,6 +1880,14 @@ def _summary(
     captured = _stable_current_capture(
         contract, root, contract_path, receipt_path
     )
+    closing_contract, closing_contract_sha256 = load_contract(root, contract_path)
+    closing_receipt = read_receipt(root, receipt_path)
+    control_current = bool(
+        closing_contract is not None
+        and closing_contract_sha256 == contract_sha256
+        and closing_contract == contract
+        and closing_receipt == receipt
+    )
     return {
         "ok": True,
         "status": contract.get("status", "active"),
@@ -1868,6 +1896,7 @@ def _summary(
         "receipt_outcome": (receipt or {}).get("outcome", "MISSING"),
         "receipt_current": bool(
             captured["stable"]
+            and control_current
             and receipt_is_current(
                 receipt,
                 contract_sha256=contract_sha256,

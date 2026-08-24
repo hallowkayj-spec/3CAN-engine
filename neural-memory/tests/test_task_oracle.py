@@ -59,8 +59,18 @@ def init_repo(root: Path) -> tuple[Path, Path]:
     )
 
 
-def write_mutating_provider(root: Path, *, trigger_call: int, drift: str) -> None:
+def write_mutating_provider(
+    root: Path, *, trigger_call: int, drift: str, control_plane: bool = False
+) -> None:
     provider = root / "provider.py"
+    mutation = (
+        "    selector=Path('.codex/convergence.json')\n"
+        "    selector_value=json.loads(selector.read_text())\n"
+        f"    selector_value['run_id']={drift!r}\n"
+        "    selector.write_text(json.dumps(selector_value))\n"
+        if control_plane
+        else f"    Path('tracked.txt').write_text({drift!r})\n"
+    )
     provider.write_text(
         "import json\n"
         "from pathlib import Path\n"
@@ -69,10 +79,12 @@ def write_mutating_provider(root: Path, *, trigger_call: int, drift: str) -> Non
         "calls += 1\n"
         "counter.write_text(str(calls))\n"
         f"if calls == {trigger_call}:\n"
-        f"    Path('tracked.txt').write_text({drift!r})\n"
-        "print(json.dumps({'schema':'3can.candidate/v1','fingerprint':'stable-candidate','binding_fingerprints':{},'fallbacks_used':[]}))\n",
+        + mutation
+        + "print(json.dumps({'schema':'3can.candidate/v1','fingerprint':'stable-candidate','binding_fingerprints':{},'fallbacks_used':[]}))\n",
         encoding="utf-8",
     )
+
+
 def task_hook(
     *,
     lifecycle: str = "one_off",
@@ -488,6 +500,68 @@ def test_record_conflicts_on_command_provider_workspace_side_effect(tmp_path, ca
     )
     assert stopped["decision"] == "block"
     assert "CONFLICT" in stopped["reason"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "trigger_call"),
+    [("verify", 2), ("status", 3), ("record", 3)],
+)
+def test_command_provider_control_plane_side_effect_cannot_report_current(
+    tmp_path, capsys, operation, trigger_call
+):
+    module = load_module()
+    contract, receipt_path = init_repo(tmp_path)
+    write_mutating_provider(
+        tmp_path,
+        trigger_call=trigger_call,
+        drift="run-drift",
+        control_plane=True,
+    )
+    write_active(
+        module,
+        tmp_path,
+        contract,
+        task_hook(
+            candidate={
+                "type": "command",
+                "argv": [sys.executable, "provider.py"],
+            }
+        ),
+    )
+    if operation != "verify":
+        first = module.verify(
+            tmp_path, contract, receipt_path, stage="final", next_objective=""
+        )
+        assert first["outcome"] == "CONVERGED"
+
+    command = {
+        "verify": ["verify", "--stage", "final"],
+        "status": ["status"],
+        "record": [
+            "record",
+            "--status",
+            "PARTIAL",
+            "--reason",
+            "An explicit gap remains.",
+        ],
+    }[operation]
+    exit_code = module.main(["--root", str(tmp_path), *command])
+    output = json.loads(capsys.readouterr().out)
+    selector = json.loads(contract.read_text(encoding="utf-8"))
+
+    assert selector["run_id"] == "run-drift"
+    if operation == "status":
+        assert exit_code == 0
+        assert output["receipt_current"] is False
+    else:
+        assert exit_code == 2
+        assert output["outcome"] == "CONFLICT"
+        assert module.read_receipt(tmp_path, receipt_path) == output
+
+    stopped = hook(
+        module, tmp_path, contract, receipt_path, {"hook_event_name": "Stop"}
+    )
+    assert stopped["decision"] == "block"
 
 
 def test_protocol_receipt_is_not_part_of_v2_candidate_even_when_unignored(tmp_path):
