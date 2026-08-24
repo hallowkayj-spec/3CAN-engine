@@ -104,20 +104,27 @@ The kit includes optional adapters:
 - `scripts/3can_codex.py`
 - `scripts/3can_pr_harness.py`
 - `scripts/3can_convergence.py`
+- `scripts/task_oracle.py`
 - standing-order and task-ledger helpers
 - the 3CAN deep-research skill
 - `.codex/` hook config
 
-The optional convergence hook uses Codex-native `SessionStart(compact)`,
-`PreToolUse`, and `Stop` events with a project-local acceptance contract and a
-task-local evidence receipt. It does not parse Codex transcripts or call 3CAN
-on the edit/test path. See [`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOOK.md).
-The tracked file is an example only; enabling it and trusting the exact hook
-definitions remain explicit Owner/project setup actions.
+The optional convergence hook uses Codex-native `SessionStart` at
+startup/resume/compaction, `PreToolUse`, and `Stop`. A tracked, content-addressed
+Task Hook defines Goal, Acceptance, Candidate, Oracle, invariant, and mutable
+binding semantics; a run selector supplies only current values. Proof receipts
+bind the exact Task Hook revision, run inputs, evaluator version, and current
+candidate. It does not parse Codex transcripts, run an LLM, or call 3CAN on the
+edit/test path. See
+[`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOOK.md). The tracked files are
+examples only; selecting a Task Hook and trusting the exact native definitions
+remain explicit Owner/project setup actions.
 
 Every acceptance condition must bind to named evidence. `CANDIDATE_READY`
 means that bound Owner/semantic evidence is still pending and is not an
-`AUTO_CLOSEOUT`. V1 is intentionally limited to the current repository; a dirty
+`AUTO_CLOSEOUT`. Hidden run-varying defaults are rejected through declared
+mutable-binding and fallback receipts rather than constant grep or domain
+branches. Scope is intentionally limited to the current repository; a dirty
 submodule requires its own contract rather than being silently covered.
 
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then

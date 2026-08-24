@@ -39,6 +39,22 @@ claim that any private production graph has been migrated.
 - Added an installed-project smoke that executes the exact Windows or POSIX
   `SessionStart` command from `hooks.json`, rather than proving only that the
   referenced script file exists.
+- Added a versioned, content-addressed Task Hook layer without adding another
+  native lifecycle hook or runtime. Run bindings, current candidate identity,
+  evaluator version/kind, and external proof receipts now form one freshness
+  chain; old candidate or revision evidence cannot unlock convergence.
+- Classified hardcoding through undeclared mutable decisions and hidden
+  fallbacks rather than constant grep or domain branches. Repeatable Task Hooks
+  remain parameterized across worktrees and require reproduced receipt evidence
+  plus explicit review before promotion.
+- Added explicit proposed/superseded/retired lifecycle states and retained
+  closeout receipts. SessionStart restores an active selector at startup,
+  resume, and compaction; local receipt files remain unsigned coordination
+  evidence rather than authentication.
+- Rejected large generic artifacts as unverifiable instead of trusting
+  size/mtime. Large outputs use a content-addressed manifest or project-owned
+  command provider, while external reviewer receipt changes participate in
+  current-evidence and verification-race checks.
 
 ### 2026-08-20 portable public-release packaging
 

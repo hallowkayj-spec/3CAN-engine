@@ -138,16 +138,34 @@ Hook examples under `.codex/` and the Claude Code examples are optional
 policy adapters. Enable only the bounded hooks a project needs; they are not
 engine dependencies.
 
-For long tasks, copy `.codex/convergence.example.json` to
-`.codex/convergence.json` and replace every example field. The convergence hook
-re-injects the accepted goal after native Codex compaction, evaluates only
-project-declared high-cost guards, and requires a current local evidence receipt
-before a success stop. Every acceptance condition must bind to named evidence;
-mechanical checks do not prove semantic, visual, or Owner acceptance unless the
-contract names an appropriate reviewer receipt. The v1 scope covers only the
-current repository and rejects dirty submodules. It never parses session JSONL,
-calls 3CAN, commits, merges, deploys, or publishes. `CANDIDATE_READY` still
-requires Owner review and is not eligible for `AUTO_CLOSEOUT`.
+For long tasks, create a tracked versioned Task Hook from
+`.codex/task-hooks/generic-delivery.example.json`, validate its canonical digest,
+then copy `.codex/convergence.example.json` to `.codex/convergence.json` and pin
+that exact revision for one run. The single convergence hook restores the
+selected boundary at startup, resume, and compaction, evaluates only declared
+high-cost guards, and requires a current candidate-bound evidence receipt before
+a success stop.
+
+Declare stable protocol and safety constants as invariants. Declare every
+run-varying asset, path, model/version, tenant/product input, strategy, and
+fallback as a mutable binding. Candidate providers must attest all current
+binding fingerprints and every fallback used; hidden defaults are typed
+`IMPLICIT_MUTABLE_BINDING` or `FALLBACK_NOT_ALLOWED`. Do not use constant grep or
+add domain branches to the Global Hook.
+
+Changing Goal, Acceptance, Oracle meaning/version, mutable-binding policy, or
+Candidate Provider requires a new pinned Task Hook digest and explicit review;
+old evidence cannot prove the new revision. One-off Task Hooks retire only with
+a retained final receipt. Repeatable hooks remain parameterized and require
+real reproduced receipts plus review before promotion. `confirmed_by` is an
+audit assertion, not authentication.
+
+Mechanical checks do not prove semantic, visual, or Owner acceptance unless the
+Task Hook binds an appropriate reviewer receipt. Scope covers only the current
+repository and rejects dirty submodules. The Hook never parses session JSONL,
+calls an LLM or 3CAN, commits, merges, deploys, publishes, or performs writeback.
+`CANDIDATE_READY` still requires the named pending review and is not eligible
+for `AUTO_CLOSEOUT`.
 Review and trust exact definitions with `/hooks`; global enablement is not
 implied by copying this template.
 

@@ -1,126 +1,183 @@
 # Codex Convergence Hook
 
-The project kit includes an optional, local convergence hook for long Codex
-tasks. It keeps an accepted goal and observable acceptance conditions outside
-the model context, re-injects that compact contract immediately after Codex
-compaction, and checks current evidence before a task stops or a project-declared
-high-cost operation runs.
+The project kit ships one optional, local Codex lifecycle hook for long tasks.
+It keeps the task boundary outside model context, restores it at session start
+and after compaction, and refuses to call stale or unrelated evidence
+`CONVERGED`.
 
-It is not a second Agent runtime. It does not schedule work, parse Codex session
-JSONL, inspect chain-of-thought, call an LLM, call 3CAN, commit Git changes, merge,
-deploy, or publish.
+The hook is deliberately small and offline. It does not schedule work, parse
+session JSONL, call an LLM, call 3CAN, manage a runtime, commit, merge, deploy,
+publish, or write back to the graph.
 
-## Authority Boundary
+## Authority and two-layer contract
 
-- Codex `/goal` owns the thread-level objective and continuation budget.
-- `.codex/convergence.json` owns the small project acceptance contract.
-- Git owns exact source state; declared commands and artifacts prove behavior.
-- The local receipt records evidence for the current Git/workspace fingerprint.
-- 3CAN receives durable meaning only after `CONVERGED` makes an
-  `AUTO_CLOSEOUT` eligible, or at an explicit
-  `OWNER_REQUESTED` checkpoint. Hook execution never performs that writeback.
-- `CANDIDATE_READY` is not Owner acceptance, merge, deployment, or publication.
+- Codex `/goal` owns thread-level continuation.
+- Git owns exact source state and Task Hook history.
+- `.codex/task-hooks/*.json` owns versioned task-family meaning: Goal,
+  Acceptance, Candidate Provider, Oracle bindings, invariants, and named mutable
+  bindings.
+- `.codex/convergence.json` selects one exact Task Hook digest for one run and
+  supplies only that run's bindings and explicitly allowed fallbacks.
+- Declared tools and reviewer receipts prove behavior for the current candidate.
+- `test-results/3can/convergence/receipt.json` records the current local result.
+- 3CAN is outside the hot path. A `CONVERGED` receipt only makes
+  `AUTO_CLOSEOUT` eligible; the hook always records `performed=false`.
 
-Missing configuration is a no-op because convergence is opt-in. Invalid
-configuration or hook I/O fails open during development so safe local work can
-continue. At `Stop`, the same failure requests one bounded correction and can
-only finish with an explicit `UNAVAILABLE`/`PARTIAL` report, never proved
-convergence.
+`authorized_by`, `confirmed_by`, and `confirmation_ref` fields are audit
+assertions, not authentication or cryptographic approval. They never bypass
+repository, credential, tenant, destructive-action, or exact-ticket gates.
 
-## Enable It Deliberately
+## Enable it deliberately
 
-1. Copy `.codex/convergence.example.json` to `.codex/convergence.json`.
-2. Replace the example goal, acceptance list, checks, and optional guards.
-3. Keep the receipt path ignored. The project-kit `.gitignore.template` already
-   ignores `test-results/3can/`.
-4. Review `.codex/hooks.json`, enable Codex Hooks, and use `/hooks` to review and
-   trust the exact definitions. A changed hook definition requires fresh trust.
+The shipped files are examples and are inactive until copied:
 
-Do not enable the example contract unchanged. Global machine activation is a
-separate Owner decision; this repository only ships the reviewed project-local
-configuration.
+1. Copy `.codex/task-hooks/generic-delivery.example.json` to a new tracked Task
+   Hook file. Replace Goal, applicability, Acceptance, Candidate Provider, and
+   Oracles with the current task contract.
+2. Validate the Task Hook and obtain its canonical digest:
 
-## Contract
+   ```powershell
+   python scripts\3can_convergence.py task-digest `
+     --task-hook .codex/task-hooks/my-task-v1.json
+   ```
 
-```json
-{
-  "schema": "3can.convergence-contract/v1",
-  "status": "active",
-  "scope": "current_repository_only",
-  "goal": "Deliver one independently reviewable module.",
-  "acceptance": [
-    {
-      "id": "mechanical-integrity",
-      "text": "The focused test suite passes and the result has verified lineage.",
-      "evidence": ["focused-tests", "result-artifact"]
-    },
-    {
-      "id": "owner-acceptance",
-      "text": "The Owner accepts the final result.",
-      "evidence": ["owner-review"]
-    }
-  ],
-  "non_goals": [
-    "Do not merge, deploy, or publish."
-  ],
-  "checks": [
-    {
-      "id": "focused-tests",
-      "type": "command",
-      "argv": ["python", "-m", "pytest", "-q", "tests/test_module.py"],
-      "stages": ["episode", "final"],
-      "timeout_seconds": 120
-    },
-    {
-      "id": "result-artifact",
-      "type": "artifact",
-      "path": "test-results/module/receipt.json",
-      "min_bytes": 1,
-      "stages": ["final"]
-    },
-    {
-      "id": "owner-review",
-      "type": "owner_review",
-      "stages": ["final"]
-    }
-  ],
-  "guards": []
-}
-```
+3. Copy `.codex/convergence.example.json` to `.codex/convergence.json`. Pin the
+   exact Task Hook path, revision, and digest; choose a unique `run_id`; provide
+   every declared mutable binding; and record the real activation review.
+4. Keep `test-results/3can/` ignored. Review `.codex/hooks.json`, enable Codex
+   Hooks, and use `/hooks` to review and trust the exact native definitions.
 
-Every acceptance condition must have a stable ID, human-readable text, and one
-or more evidence check IDs. All referenced evidence runs at the final stage.
-Unbound or legacy string acceptance is invalid and cannot produce
-`CANDIDATE_READY` or `CONVERGED`. The hook verifies coverage and evidence state;
-it does not pretend that a mechanical check proves visual quality, product
-fitness, or taste. Those conditions must bind to an appropriate review receipt
-or `owner_review` check selected by the project.
+Do not activate the unchanged example and do not globally enable it as a side
+effect of installation. Missing contract plus missing receipt is a no-op, so
+ordinary safe development has no added ceremony.
 
-Commands are argv arrays and run without a shell. Artifact paths must stay
-inside the project root. Command output is not persisted; the receipt stores
-only byte counts and SHA-256 digests. This reduces accidental credential or
-private-payload capture.
+## Task Hook
 
-`guards` are optional and project-declared. No provider, renderer, deployment,
-or domain action is hard-coded into the hook:
+The minimum tracked contract is domain-neutral:
 
 ```json
 {
-  "tool_name_glob": "exec_command",
-  "input_contains": "replace-with-the-exact-expensive-operation",
-  "requires_check_ids": ["focused-tests"]
+  "schema": "3can.task-hook/v1",
+  "task_family": "generic-delivery",
+  "status": "EPHEMERAL_ACTIVE",
+  "lifecycle": "one_off",
+  "revision": "v1",
+  "parent_revision": null,
+  "goal": "Produce the exact observable result.",
+  "applicability": "An explicitly selected run of this task family.",
+  "candidate": {"provider": {"type": "workspace"}},
+  "acceptance": [{
+    "id": "mechanical-integrity",
+    "text": "The current candidate passes its declared checks.",
+    "oracle_ids": ["focused-tests"]
+  }],
+  "oracles": [{
+    "id": "focused-tests",
+    "type": "command",
+    "kind": "DETERMINISTIC",
+    "version": "v1",
+    "argv": ["python", "-m", "pytest", "-q", "tests/test_module.py"],
+    "stages": ["episode", "final"],
+    "timeout_seconds": 120
+  }],
+  "invariants": [],
+  "mutable_bindings": [],
+  "fallback_policy": "explicit_only",
+  "allowed_fallback_ids": []
 }
 ```
 
-A matching `PreToolUse` is denied until the named checks passed in a receipt
-whose contract and workspace fingerprints are still current. Broad patterns
-create friction and should not be used. This is an efficiency/proof-order guard,
-not a security or authorization boundary; equivalent commands can bypass a
-substring convention.
+Every Acceptance criterion binds stable IDs to one or more final-stage Oracles.
+An Oracle has an explicit type, kind, and version. Mechanical checks do not
+prove visual quality, semantic consistency, product fitness, or Owner
+acceptance unless the Task Hook binds an appropriate external or human Oracle.
 
-## Episode Loop
+Unknown fields fail closed. Optional experimental metadata belongs under an
+`extensions` object and never changes an allow decision by being ignored.
 
-Run the smallest meaningful checks after an evidence-bearing episode:
+## Hardcoding association rule
+
+The hook does not grep for constants and contains no `if video`, `if seo`, or
+other domain classifier. It asks a narrower, enforceable question:
+
+> Did the current candidate explicitly attest every decision declared mutable
+> for this run, and did it use only a fallback allowed by both the Task Hook and
+> the current run?
+
+- Stable protocol, schema, interface, and safety bounds belong in `invariants`.
+- Asset paths, model/version choices, tenant or product inputs, strategy values,
+  and other run-varying decisions belong in `mutable_bindings`.
+- A command Candidate Provider returns `3can.candidate/v1` with an opaque
+  candidate fingerprint, the SHA-256 of every current binding value, and all
+  fallbacks actually used.
+- A missing binding is `IMPLICIT_MUTABLE_BINDING`.
+- A used but unapproved fallback is `FALLBACK_NOT_ALLOWED`.
+- A constant is not a violation merely because it is a literal.
+
+This catches the important class of failure where implementation silently uses
+an old mutable default while QC proves only that the wrong candidate is stable.
+It does not claim to discover every semantic hardcode without a project-owned
+Candidate Provider or Oracle.
+
+## Candidate Providers
+
+The Task Hook declares exactly how to identify the current deliverable:
+
+- `workspace`: the current repository HEAD, branch, dirty paths, and bounded
+  content fingerprints. Use for code tasks without run-specific bindings.
+- `artifact`: a small file, either a one-off literal path or a repeatable
+  `path_binding`. Files up to 8 MiB are content-hashed.
+- `command`: a project adapter that returns a bounded `3can.candidate/v1` JSON
+  receipt. Use for multi-file outputs, large media, resolved mutable references,
+  or domain-specific lineage manifests.
+
+Large generic artifacts deliberately fail as `unverifiable_large`; size and
+mtime are not proof because same-size content can restore an old timestamp.
+Use a content-addressed manifest or command provider instead. The Global Hook
+does not add media-specific hashing logic.
+
+## Proof Receipts
+
+Every generated proof binds:
+
+- Task Hook revision and canonical digest;
+- run ID and bindings digest;
+- current candidate fingerprint;
+- Acceptance criterion IDs;
+- evaluator ID, version, and kind;
+- typed status, reason, and content-addressed evidence references.
+
+An `external_receipt` Oracle reads a bounded `3can.proof-receipt/v1` file. A
+passing external receipt must retain its own canonical digest and at least one
+`sha256:` evidence reference. Its file fingerprint is also part of convergence
+freshness: modification, deletion, replacement, or a read-time race makes the
+old convergence receipt stale or `CONFLICT`.
+
+These are unsigned local bookkeeping receipts, not in-toto attestations. If the
+threat model includes a hostile actor with the same filesystem write access,
+use a separately authenticated signer and verifier; that is intentionally not
+part of this lightweight hook.
+
+## Verification and race boundary
+
+One verification performs:
+
+```text
+load pinned Task Hook
+capture contract + workspace + current candidate
+run applicable Oracles
+validate proof byproducts
+recapture contract + workspace + candidate + proof sources
+changed => CONFLICT
+stable => atomically write convergence receipt
+```
+
+It uses no lock, daemon, database, or transaction manager. This protects normal
+local concurrency and accidental drift, not hostile mutate-and-revert attacks.
+Stop and declared guards always recompute current identity. Old evidence cannot
+prove a changed Task Hook, binding, candidate, artifact, or external proof.
+
+Run an episode gate after one evidence-bearing module:
 
 ```powershell
 python scripts\3can_convergence.py verify `
@@ -128,7 +185,7 @@ python scripts\3can_convergence.py verify `
   --next-objective "Implement the next bounded acceptance gap."
 ```
 
-Run final checks only when the module is a genuine candidate:
+Run final Oracles only for a genuine candidate:
 
 ```powershell
 python scripts\3can_convergence.py verify `
@@ -136,77 +193,112 @@ python scripts\3can_convergence.py verify `
   --next-objective "Await Owner review."
 ```
 
-Outcomes are intentionally distinct:
+## Revisions and lifecycle
 
-- `PASS`: the current episode checks pass; work continues toward the next
-  objective. It is evidence, not a Git checkpoint. Before the next destructive
-  episode, preserve an accepted episode through the project's normal reviewed
-  Git checkpoint.
-- `FAIL`: at least one automated check failed.
-- `CANDIDATE_READY`: automated final evidence passes, but at least one bound
-  acceptance condition (normally Owner review) remains pending. It is not
-  eligible for `AUTO_CLOSEOUT`.
-- `CONVERGED`: every bound acceptance condition has passing evidence. Only this
-  outcome is eligible for `AUTO_CLOSEOUT`; the hook still performs no writeback.
-- `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, `CONFLICT`: honest non-success terminal
-  states for the current turn, recorded with an exact reason.
+Changing implementation does not require a Task Hook revision; it changes the
+candidate and therefore requires fresh evidence. Changing Goal, Acceptance,
+Oracle meaning/version, mutable-binding policy, or Candidate Provider creates a
+new content digest and normally a new revision.
 
-Record an incomplete state without pretending that it passed:
+An active digest is pinned by `.codex/convergence.json`. In-place edits make the
+run `REVISION_PENDING`; a `PROPOSED_REVISION` cannot execute. After review, the
+new exact digest receives a new activation and all old candidate proofs are
+ineligible. A superseded file retains a confirmed transition and successor
+revision.
+
+Lifecycle states are:
+
+```text
+one-off:    EPHEMERAL_ACTIVE -> RETIRED
+repeatable: EPHEMERAL_ACTIVE -> REUSABLE_CANDIDATE -> REUSABLE_ACTIVE
+revision:   ACTIVE -> PROPOSED_REVISION -> ACTIVE; old revision -> SUPERSEDED
+```
+
+A one-off closeout must retain the final `CONVERGED` receipt and link the
+`RETIRED` transition to the previously active Task Hook digest. Deleting the
+contract is not retirement.
+
+The first repeatable success may become `REUSABLE_CANDIDATE`. Default promotion
+to `REUSABLE_ACTIVE` requires two distinct run IDs and two distinct
+candidate/binding subjects, content-addressed qualifying receipts, plus Owner
+or independent-review confirmation. Owner fast-track is explicit and may use
+one receipt. Duplicate replay never increases the count.
+
+Reusable executable fields contain parameter names, not a previous run's path,
+asset, URL, product, or prompt. Historical promotion evidence may reference the
+qualifying run receipts. Each future worktree selects the tracked Task Hook by
+exact digest and supplies a new run ID and bindings. The same native Hook loads
+that active selector at `SessionStart`; there is no thread-ID binding.
+
+Semantic matching of an arbitrary user prompt to a task family remains an
+explicit task-start decision. The offline Global Hook enforces the selected
+contract; it does not pretend to infer applicability without a prompt
+classifier or add a per-prompt LLM hot path.
+
+## Native events and bounded behavior
+
+- `SessionStart` for `startup`, `resume`, and `compact` injects only Goal,
+  current Task Hook revision/status, short Acceptance text, current candidate
+  identity, open criteria, current/stale receipt state, critical non-goals, and
+  next objective. It never injects full history.
+- Unmatched `PreToolUse` returns before scanning Git. Matching project-declared
+  high-cost guards require current proof-eligible named checks.
+- `Stop` accepts only a current `CONVERGED` receipt. The first incomplete stop
+  requests one bounded continuation; when `stop_hook_active=true`, it emits an
+  explicit typed report instead of creating a loop.
+
+Development-path hook failures are fail-open so safe local work continues.
+Stop failures never fabricate convergence. Contract missing plus prior receipt
+is `UNAVAILABLE`; contract missing plus receipt missing is the opt-out no-op.
+
+## Outcomes
+
+- `PASS`: episode evidence passed; work continues.
+- `FAIL`: an automated Oracle failed.
+- `CANDIDATE_READY`: automated evidence passed but bound human/Owner evidence
+  remains pending.
+- `CONVERGED`: every bound criterion passed for the current task/candidate.
+- `MISSING`, `PARTIAL`, `CONTRADICTS`, `UNREQUESTED`, `STALE_EVIDENCE`,
+  `UNBOUND`, `IMPLICIT_MUTABLE_BINDING`, `FALLBACK_NOT_ALLOWED`,
+  `UNVERIFIABLE`, `REVISION_PENDING`, `BLOCKED`, `UNAVAILABLE`, and `CONFLICT`
+  are explicit non-success states.
+
+Manual incomplete reporting remains available:
 
 ```powershell
 python scripts\3can_convergence.py record `
   --status BLOCKED `
-  --reason "Owner must choose between two incompatible acceptance paths." `
+  --reason "Owner must choose between incompatible acceptance paths." `
   --next-objective "Wait for the scoped Owner decision."
 ```
 
-`Stop` requests at most one automatic continuation per turn. Current
-`CANDIDATE_READY`, `PARTIAL`, `BLOCKED`, `UNAVAILABLE`, and `CONFLICT` receipts
-are never silently accepted: the first Stop is blocked with the exact typed
-state and open evidence; the second receives the same developer-system warning
-and may stop without creating an infinite loop. The hook does not inspect the
-assistant message, so it guarantees the correction signal, not linguistic
-compliance through transcript parsing.
+## Compatibility and scope
 
-## Native Hook Events
+`3can.convergence-contract/v1` remains supported for simple project-local
+contracts. New task-specific work should use v2. Receipt schema v2 adds the
+content digest and Task Hook/candidate identity; older receipts become stale
+and must be regenerated.
 
-- `SessionStart` with `source=compact`: injects only goal, acceptance, non-goals,
-  latest typed receipt, open checks, and next objective.
-- `PreToolUse`: evaluates only explicitly declared guards.
-- `Stop`: silently accepts only current `CONVERGED`; every incomplete or
-  candidate state requests one bounded explicit report.
+Scope remains `current_repository_only`. Dirty submodules are rejected rather
+than silently treated as covered. Use a separate contract inside the owning
+repository; this Hook is not a cross-repository orchestrator.
 
-The hook deliberately ignores the assistant message and transcript path. Codex
-does not guarantee transcript file shape or location as a stable integration
-contract.
+## Design sources
 
-The v1 scope is deliberately `current_repository_only`. A dirty Git submodule
-is rejected as unsupported rather than treated as covered evidence. Run a
-separate convergence contract inside that repository; this hook is not a
-cross-repository orchestrator.
+The implementation borrows structures, not runtimes:
 
-Efficiency counters beyond check elapsed time are deliberately deferred. First
-dogfood the contract on several real tasks; add a budget only if measured
-failures show that a new field changes decisions.
+- [OpenAI Codex Hooks](https://developers.openai.com/codex/hooks): native event
+  and bounded Stop semantics.
+- [GitHub Spec Kit](https://github.com/github/spec-kit): separation of intent,
+  requirements, implementation, and consistency review.
+- [Inspect AI tasks and scorers](https://inspect.aisi.org.uk/tasks.html): task,
+  execution, and evaluator separation with versioned parameters.
+- [in-toto Attestation validation](https://github.com/in-toto/attestation/blob/main/docs/validation.md)
+  and [SLSA provenance](https://slsa.dev/spec/v1.2/build-provenance): subject,
+  input, evaluator, and current-digest binding. No signing subsystem is added.
+- [Hypothesis stateful testing](https://hypothesis.readthedocs.io/en/latest/stateful.html):
+  lifecycle invariants are exercised in tests, not added to runtime.
 
-## Why This Shape
-
-The design reuses Codex native lifecycle hooks rather than adding a daemon or
-workflow engine. Its convergence vocabulary follows the useful parts of
-Spec Kit's missing/partial/contradictory gap model, Autoresearch's bounded
-keep/discard experiment loop, and long-horizon harness work that separates
-execution from independent evidence. Larger issue-orchestration runtimes such
-as Symphony remain appropriate for fleets of isolated issue workspaces, not
-for this small per-project completion contract.
-
-Primary references:
-
-- [OpenAI Codex Hooks](https://learn.chatgpt.com/docs/hooks)
-- [OpenAI Codex goals](https://learn.chatgpt.com/use-cases/follow-goals)
-- [OpenAI long-running work](https://learn.chatgpt.com/docs/long-running-work)
-- [OpenAI Symphony specification](https://github.com/openai/symphony/blob/main/SPEC.md)
-- [GitHub Spec Kit](https://github.com/github/spec-kit)
-- [Karpathy Autoresearch](https://github.com/karpathy/autoresearch)
-- [Lost in Compaction](https://arxiv.org/abs/2608.11242)
-- [LoopsBench](https://arxiv.org/abs/2608.00267)
-- [LongHorizon Harness](https://github.com/AMAP-ML/LongHorizon-Harness)
+Controller platforms, evaluation frameworks, LLM judges, queues, and a second
+runtime were rejected because the standard library plus tracked JSON and one
+atomic receipt satisfies this contract with fewer moving parts.
