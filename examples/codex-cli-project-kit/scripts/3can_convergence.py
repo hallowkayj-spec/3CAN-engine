@@ -570,6 +570,7 @@ def _receipt(
         item["id"] for item in acceptance if item.get("status") != "pass"
     ]
     writeback = "AUTO_CLOSEOUT" if outcome == "CONVERGED" else "NONE"
+    proof_eligible = outcome in {"PASS", "CANDIDATE_READY", "CONVERGED"}
     return {
         "schema": RECEIPT_SCHEMA,
         "recorded_at": _now(),
@@ -578,6 +579,7 @@ def _receipt(
         "workspace": workspace,
         "stage": stage,
         "outcome": outcome,
+        "proof_eligible": proof_eligible,
         "checks": checks,
         "acceptance": acceptance,
         "open_check_ids": open_checks,
@@ -754,6 +756,7 @@ def _guard_denial(
         for item in (receipt or {}).get("checks", [])
         if isinstance(item, dict) and item.get("status") == "pass"
     }
+    proof_eligible = bool((receipt or {}).get("proof_eligible"))
     for guard in contract.get("guards", []):
         tool_glob = guard.get("tool_name_glob")
         input_contains = guard.get("input_contains")
@@ -763,8 +766,12 @@ def _guard_denial(
             continue
         required = set(guard.get("requires_check_ids", []))
         missing = sorted(required - passed)
-        if not current or missing:
-            detail = ", ".join(missing) if missing else "current evidence receipt"
+        if not current or not proof_eligible or missing:
+            detail = (
+                ", ".join(missing)
+                if missing
+                else "current eligible evidence receipt"
+            )
             return f"Convergence guard requires {detail} before this declared high-cost operation."
     return None
 

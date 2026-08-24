@@ -520,9 +520,16 @@ def test_contract_disappearance_after_activation_is_not_noop(convergence):
     assert "PARTIAL" in second["systemMessage"]
 
 
-def test_verification_race_records_conflict(convergence):
+def test_verification_race_records_conflict_and_cannot_unlock_guard(convergence):
     module, root, contract, receipt = convergence
-    write_contract(contract, owner_review=False)
+    guards = [
+        {
+            "tool_name_glob": "exec_command",
+            "input_contains": "expensive-operation",
+            "requires_check_ids": ["diff-check"],
+        }
+    ]
+    write_contract(contract, owner_review=False, guards=guards)
     value = json.loads(contract.read_text(encoding="utf-8"))
     value["checks"][0]["argv"] = [
         sys.executable,
@@ -540,10 +547,26 @@ def test_verification_race_records_conflict(convergence):
     )
 
     assert result["outcome"] == "CONFLICT"
+    assert result["proof_eligible"] is False
     assert "changed while checks were running" in result["reason"]
     stopped = hook(module, root, contract, receipt, {"hook_event_name": "Stop"})
     assert stopped["decision"] == "block"
     assert "CONFLICT" in stopped["reason"]
+    guarded = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "expensive-operation"},
+        },
+    )
+    assert guarded["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "eligible evidence" in guarded["hookSpecificOutput"][
+        "permissionDecisionReason"
+    ]
 
 
 def test_typed_receipt_cannot_launder_old_passed_checks(convergence):
