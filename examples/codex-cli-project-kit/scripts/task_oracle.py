@@ -17,6 +17,7 @@ from typing import Any
 
 
 TASK_HOOK_SCHEMA = "3can.task-hook/v1"
+TASK_REGISTRY_SCHEMA = "3can.task-hook-registry/v1"
 CANDIDATE_SCHEMA = "3can.candidate/v1"
 PROOF_RECEIPT_SCHEMA = "3can.proof-receipt/v1"
 EXECUTABLE_STATUSES = {
@@ -58,11 +59,6 @@ def _known_fields(value: dict[str, Any], allowed: set[str], label: str) -> None:
             "INVALID_TASK_HOOK",
             f"{label} has unsupported fields: {', '.join(unknown)}",
         )
-    extensions = value.get("extensions")
-    if extensions is not None and not isinstance(extensions, dict):
-        raise TaskOracleError(
-            "INVALID_TASK_HOOK", f"{label} extensions must be an object"
-        )
 
 
 class TaskOracleError(ValueError):
@@ -86,6 +82,33 @@ def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def task_semantics_sha256(task_hook: dict[str, Any]) -> str:
+    semantic = {
+        key: value
+        for key, value in task_hook.items()
+        if key not in {"status", "promotion", "transition"}
+    }
+    return sha256_json(semantic)
+
+
+def owner_contract_sha256(task_hook: dict[str, Any]) -> str:
+    """Fingerprint the owner-controlled meaning, separate from evaluator mechanics."""
+    return sha256_json(
+        {
+            "task_family": task_hook["task_family"],
+            "lifecycle": task_hook["lifecycle"],
+            "goal": task_hook["goal"],
+            "applicability": task_hook["applicability"],
+            "candidate": task_hook["candidate"],
+            "acceptance": task_hook["acceptance"],
+            "invariants": task_hook.get("invariants", []),
+            "mutable_bindings": task_hook.get("mutable_bindings", []),
+            "fallback_policy": task_hook["fallback_policy"],
+            "allowed_fallback_ids": task_hook.get("allowed_fallback_ids", []),
+        }
+    )
+
+
 def _id(value: Any, label: str) -> str:
     if not isinstance(value, str) or not ID_PATTERN.fullmatch(value):
         raise TaskOracleError("INVALID_TASK_HOOK", f"{label} has an invalid id")
@@ -104,6 +127,34 @@ def _strings(value: Any, label: str, *, required: bool = False) -> list[str]:
     if required and not value:
         raise TaskOracleError("INVALID_TASK_HOOK", f"{label} must not be empty")
     return [item.strip() for item in value]
+
+
+def _binding_leaf_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [leaf for item in value for leaf in _binding_leaf_strings(item)]
+    if isinstance(value, dict):
+        return [leaf for item in value.values() for leaf in _binding_leaf_strings(item)]
+    return []
+
+
+def command_environment(
+    context: dict[str, Any], consumes_bindings: list[str]
+) -> dict[str, str]:
+    """Give an adapter only its declared run inputs through one stable interface."""
+    bindings = {
+        key: context["bindings"][key]
+        for key in consumes_bindings
+    }
+    return {
+        **os.environ,
+        "THREECAN_CONVERGENCE_RUN_ID": context["run_id"],
+        "THREECAN_TASK_BINDINGS_JSON": canonical_json_bytes(bindings).decode("utf-8"),
+        "THREECAN_ALLOWED_FALLBACKS_JSON": canonical_json_bytes(
+            context["allowed_fallbacks"]
+        ).decode("utf-8"),
+    }
 
 
 def _relative(root: Path, value: Any, label: str) -> Path:
@@ -144,20 +195,18 @@ def _validate_provider(
     *,
     label: str,
     lifecycle: str,
+    max_timeout: float = 3_600,
 ) -> dict[str, Any]:
     if not isinstance(provider, dict):
         raise TaskOracleError("INVALID_TASK_HOOK", f"{label} must be an object")
-    _known_fields(
-        provider,
-        {"type", "path", "path_binding", "argv", "timeout_seconds", "extensions"},
-        label,
-    )
     provider_type = provider.get("type")
     if provider_type not in {"workspace", "artifact", "command"}:
         raise TaskOracleError("INVALID_TASK_HOOK", f"{label} has unsupported type")
     if provider_type == "workspace":
+        _known_fields(provider, {"type"}, label)
         return provider
     if provider_type == "artifact":
+        _known_fields(provider, {"type", "path", "path_binding"}, label)
         has_path = "path" in provider
         has_binding = "path_binding" in provider
         if has_path == has_binding:
@@ -175,14 +224,21 @@ def _validate_provider(
         else:
             _id(provider["path_binding"], f"{label} path_binding")
         return provider
+    _known_fields(
+        provider,
+        {"type", "argv", "timeout_seconds", "consumes_bindings"},
+        label,
+    )
     argv = provider.get("argv")
     if not isinstance(argv, list) or not argv or any(
         not isinstance(item, str) or not item for item in argv
     ):
         raise TaskOracleError("INVALID_TASK_HOOK", f"{label} command requires argv")
-    timeout = provider.get("timeout_seconds", 30)
-    if not isinstance(timeout, (int, float)) or not 0 < timeout <= 3600:
-        raise TaskOracleError("INVALID_TASK_HOOK", f"{label} timeout must be 1..3600")
+    timeout = provider.get("timeout_seconds", min(30, max_timeout))
+    if not isinstance(timeout, (int, float)) or not 0 < timeout <= max_timeout:
+        raise TaskOracleError(
+            "INVALID_TASK_HOOK", f"{label} timeout must be 1..{max_timeout:g}"
+        )
     return provider
 
 
@@ -211,7 +267,6 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
             "allowed_fallback_ids",
             "promotion",
             "transition",
-            "extensions",
         },
         "task hook",
     )
@@ -249,9 +304,13 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
     candidate = value.get("candidate")
     if not isinstance(candidate, dict):
         raise TaskOracleError("INVALID_TASK_HOOK", "candidate must be an object")
-    _known_fields(candidate, {"provider", "extensions"}, "candidate")
+    _known_fields(candidate, {"provider"}, "candidate")
     provider = _validate_provider(
-        candidate.get("provider"), root, label="candidate provider", lifecycle=lifecycle
+        candidate.get("provider"),
+        root,
+        label="candidate provider",
+        lifecycle=lifecycle,
+        max_timeout=3,
     )
     if mutable_bindings and provider.get("type") == "workspace":
         raise TaskOracleError(
@@ -265,6 +324,20 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
                 "UNBOUND",
                 "artifact candidate can attest only its declared path binding",
             )
+    elif provider.get("type") == "command":
+        consumes = _strings(
+            provider.get("consumes_bindings", []),
+            "candidate provider consumes_bindings",
+        )
+        if len(set(consumes)) != len(consumes) or set(consumes) - set(mutable_bindings):
+            raise TaskOracleError(
+                "UNBOUND", "candidate provider consumes undeclared bindings"
+            )
+        if lifecycle == "repeatable" and set(consumes) != set(mutable_bindings):
+            raise TaskOracleError(
+                "UNBOUND",
+                "repeatable command candidate must consume every mutable binding",
+            )
 
     oracles = value.get("oracles")
     if not isinstance(oracles, list) or not oracles:
@@ -275,36 +348,54 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
     for index, oracle in enumerate(oracles):
         if not isinstance(oracle, dict):
             raise TaskOracleError("INVALID_TASK_HOOK", f"oracle {index} must be an object")
-        _known_fields(
-            oracle,
-            {
-                "id",
-                "type",
-                "kind",
-                "version",
-                "stages",
-                "argv",
-                "timeout_seconds",
-                "path",
-                "path_binding",
-                "min_bytes",
-                "role",
-                "receipt_path",
-                "receipt_path_binding",
-                "extensions",
-            },
-            f"oracle {index}",
-        )
         oracle_id = _id(oracle.get("id"), f"oracle {index}")
         if oracle_id in oracle_ids:
             raise TaskOracleError("INVALID_TASK_HOOK", f"duplicate oracle: {oracle_id}")
         oracle_ids.add(oracle_id)
-        if oracle.get("kind") not in ORACLE_KINDS:
+        oracle_kind = oracle.get("kind")
+        if oracle_kind not in ORACLE_KINDS:
             raise TaskOracleError("INVALID_TASK_HOOK", f"oracle {oracle_id} kind is invalid")
         oracle_type = oracle.get("type")
         if oracle_type not in ORACLE_TYPES:
             raise TaskOracleError("INVALID_TASK_HOOK", f"oracle {oracle_id} type is invalid")
+        common_fields = {
+            "id",
+            "type",
+            "kind",
+            "independence",
+            "version",
+            "stages",
+        }
+        specific_fields = {
+            "command": {"argv", "timeout_seconds", "consumes_bindings"},
+            "artifact": {"path", "path_binding", "min_bytes", "role"},
+            "external_receipt": {"receipt_path", "receipt_path_binding"},
+            "owner_review": set(),
+        }[oracle_type]
+        _known_fields(
+            oracle,
+            common_fields | specific_fields,
+            f"oracle {oracle_id}",
+        )
         _id(oracle.get("version"), f"oracle {oracle_id} version")
+        independence = oracle.get("independence")
+        if oracle_type == "owner_review":
+            if independence != "owner":
+                raise TaskOracleError(
+                    "INVALID_TASK_HOOK",
+                    f"owner review {oracle_id} independence must be owner",
+                )
+        elif oracle_kind in {"SEMANTIC", "HUMAN"}:
+            if independence not in {"independent", "same_agent"}:
+                raise TaskOracleError(
+                    "INVALID_TASK_HOOK",
+                    f"oracle {oracle_id} must declare independent or same_agent review",
+                )
+        elif independence not in {None, "not_applicable"}:
+            raise TaskOracleError(
+                "INVALID_TASK_HOOK",
+                f"oracle {oracle_id} independence must be not_applicable",
+            )
         stages = _strings(oracle.get("stages", ["final"]), f"oracle {oracle_id} stages", required=True)
         if set(stages) - {"episode", "final"}:
             raise TaskOracleError("INVALID_TASK_HOOK", f"oracle {oracle_id} stages are invalid")
@@ -316,22 +407,11 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
             _validate_provider(
                 {
                     key: oracle[key]
-                    for key in ("type", "argv", "timeout_seconds", "extensions")
-                    if key in oracle
-                },
-                root,
-                label=f"oracle {oracle_id}",
-                lifecycle=lifecycle,
-            )
-        elif oracle_type == "artifact":
-            _validate_provider(
-                {
-                    key: oracle[key]
                     for key in (
                         "type",
-                        "path",
-                        "path_binding",
-                        "extensions",
+                        "argv",
+                        "timeout_seconds",
+                        "consumes_bindings",
                     )
                     if key in oracle
                 },
@@ -339,6 +419,42 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
                 label=f"oracle {oracle_id}",
                 lifecycle=lifecycle,
             )
+            consumes = _strings(
+                oracle.get("consumes_bindings", []),
+                f"oracle {oracle_id} consumes_bindings",
+            )
+            if len(set(consumes)) != len(consumes) or set(consumes) - set(
+                mutable_bindings
+            ):
+                raise TaskOracleError(
+                    "UNBOUND", f"oracle {oracle_id} consumes undeclared bindings"
+                )
+        elif oracle_type == "artifact":
+            if "consumes_bindings" in oracle:
+                raise TaskOracleError(
+                    "INVALID_TASK_HOOK",
+                    f"artifact oracle {oracle_id} binds through path_binding",
+                )
+            _validate_provider(
+                {
+                    key: oracle[key]
+                    for key in (
+                        "type",
+                        "path",
+                        "path_binding",
+                    )
+                    if key in oracle
+                },
+                root,
+                label=f"oracle {oracle_id}",
+                lifecycle=lifecycle,
+            )
+            path_binding = oracle.get("path_binding")
+            if path_binding and path_binding not in mutable_bindings:
+                raise TaskOracleError(
+                    "UNBOUND",
+                    f"oracle {oracle_id} path binding is not declared mutable",
+                )
             if oracle.get("role", "byproduct") not in {"candidate", "byproduct"}:
                 raise TaskOracleError("INVALID_TASK_HOOK", f"oracle {oracle_id} role is invalid")
             min_bytes = oracle.get("min_bytes", 1)
@@ -388,7 +504,7 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
             raise TaskOracleError("INVALID_TASK_HOOK", f"acceptance {index} must be an object")
         _known_fields(
             criterion,
-            {"id", "text", "oracle_ids", "extensions"},
+            {"id", "text", "oracle_ids"},
             f"acceptance {index}",
         )
         criterion_id = _id(criterion.get("id"), f"acceptance {index}")
@@ -428,7 +544,7 @@ def validate_task_hook(value: Any, root: Path) -> dict[str, Any]:
         raise TaskOracleError(
             "INVALID_TASK_HOOK", "one-off task hooks cannot become reusable"
         )
-    _validate_lifecycle_evidence(value)
+    _validate_lifecycle_evidence(value, root)
     return value
 
 
@@ -438,7 +554,12 @@ def _digest(value: Any, label: str) -> str:
     return value
 
 
-def _validate_receipt_ref(value: Any, label: str) -> tuple[str, str, str]:
+def _validate_receipt_ref(
+    value: Any,
+    label: str,
+    root: Path,
+    task_hook: dict[str, Any],
+) -> tuple[str, str, str]:
     if not isinstance(value, dict):
         raise TaskOracleError("INVALID_TASK_HOOK", f"{label} must be an object")
     _known_fields(
@@ -448,8 +569,12 @@ def _validate_receipt_ref(value: Any, label: str) -> tuple[str, str, str]:
             "candidate_fingerprint",
             "bindings_sha256",
             "receipt_sha256",
+            "receipt_path",
+            "task_family",
+            "task_hook_revision",
+            "task_hook_sha256",
+            "task_semantics_sha256",
             "outcome",
-            "extensions",
         },
         label,
     )
@@ -459,9 +584,65 @@ def _validate_receipt_ref(value: Any, label: str) -> tuple[str, str, str]:
     )
     bindings = _digest(value.get("bindings_sha256"), f"{label} bindings_sha256")
     _digest(value.get("receipt_sha256"), f"{label} receipt_sha256")
+    _id(value.get("task_family"), f"{label} task_family")
+    _id(value.get("task_hook_revision"), f"{label} task_hook_revision")
+    _digest(value.get("task_hook_sha256"), f"{label} task_hook_sha256")
+    _digest(
+        value.get("task_semantics_sha256"),
+        f"{label} task_semantics_sha256",
+    )
+    receipt_path = _relative(root, value.get("receipt_path"), f"{label} receipt_path")
+    evidence_root = (root / ".codex" / "task-hooks" / "evidence").resolve()
+    try:
+        receipt_path.relative_to(evidence_root)
+    except ValueError as exc:
+        raise TaskOracleError(
+            "INVALID_TASK_HOOK",
+            f"{label} receipt_path must be under .codex/task-hooks/evidence",
+        ) from exc
     if value.get("outcome") != "CONVERGED":
         raise TaskOracleError(
             "INVALID_TASK_HOOK", f"{label} must reference a CONVERGED receipt"
+        )
+    if not receipt_path.is_file() or receipt_path.stat().st_size > MAX_PROVIDER_OUTPUT_BYTES:
+        raise TaskOracleError(
+            "REVISION_PENDING", f"{label} retained receipt is missing or oversized"
+        )
+    try:
+        retained = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskOracleError(
+            "REVISION_PENDING", f"{label} retained receipt is invalid"
+        ) from exc
+    if not isinstance(retained, dict):
+        raise TaskOracleError(
+            "REVISION_PENDING", f"{label} retained receipt must be an object"
+        )
+    unsigned = {
+        key: item for key, item in retained.items() if key != "receipt_sha256"
+    }
+    retained_task = retained.get("task") or {}
+    retained_candidate = retained_task.get("candidate") or {}
+    if (
+        retained.get("schema") != "3can.convergence-receipt/v2"
+        or retained.get("receipt_sha256") != value["receipt_sha256"]
+        or sha256_json(unsigned) != value["receipt_sha256"]
+        or retained.get("outcome") != "CONVERGED"
+        or retained.get("proof_eligible") is not True
+        or retained_task.get("run_id") != run_id
+        or retained_task.get("bindings_sha256") != bindings
+        or retained_candidate.get("fingerprint") != candidate
+        or retained_task.get("task_family") != value["task_family"]
+        or retained_task.get("revision") != value["task_hook_revision"]
+        or retained_task.get("task_hook_sha256") != value["task_hook_sha256"]
+        or retained_task.get("task_semantics_sha256")
+        != value["task_semantics_sha256"]
+        or value["task_family"] != task_hook["task_family"]
+        or value["task_hook_revision"] != task_hook["revision"]
+        or value["task_semantics_sha256"] != task_semantics_sha256(task_hook)
+    ):
+        raise TaskOracleError(
+            "REVISION_PENDING", f"{label} does not match its retained receipt"
         )
     return run_id, candidate, bindings
 
@@ -478,7 +659,7 @@ def _validate_confirmation(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
-def _validate_lifecycle_evidence(task_hook: dict[str, Any]) -> None:
+def _validate_lifecycle_evidence(task_hook: dict[str, Any], root: Path) -> None:
     status = task_hook["status"]
     promotion = task_hook.get("promotion")
     transition = task_hook.get("transition")
@@ -494,7 +675,6 @@ def _validate_lifecycle_evidence(task_hook: dict[str, Any]) -> None:
                 "qualifying_receipts",
                 "confirmed_by",
                 "confirmation_ref",
-                "extensions",
             },
             "promotion",
         )
@@ -504,7 +684,12 @@ def _validate_lifecycle_evidence(task_hook: dict[str, Any]) -> None:
                 "REVISION_PENDING", "promotion requires qualifying receipts"
             )
         identities = [
-            _validate_receipt_ref(item, f"promotion receipt {index}")
+            _validate_receipt_ref(
+                item,
+                f"promotion receipt {index}",
+                root,
+                task_hook,
+            )
             for index, item in enumerate(receipts)
         ]
         if len(set(identities)) != len(identities):
@@ -551,7 +736,6 @@ def _validate_lifecycle_evidence(task_hook: dict[str, Any]) -> None:
                 "confirmed_by",
                 "confirmation_ref",
                 "successor_revision",
-                "extensions",
             },
             "transition",
         )
@@ -639,6 +823,28 @@ def load_task_context(
         raise TaskOracleError(
             "UNBOUND", f"binding mismatch; missing={missing}, undeclared={extra}"
         )
+    if task_hook["lifecycle"] == "repeatable":
+        executable_values: list[str] = []
+        provider = task_hook["candidate"]["provider"]
+        if provider["type"] == "command":
+            executable_values.extend(provider["argv"])
+        for oracle in task_hook["oracles"]:
+            if oracle["type"] == "command":
+                executable_values.extend(oracle["argv"])
+        embedded: list[str] = []
+        for binding_name, binding_value in bindings.items():
+            leaf_values = _binding_leaf_strings(binding_value)
+            if any(
+                len(leaf) >= 8 and any(leaf in argument for argument in executable_values)
+                for leaf in leaf_values
+            ):
+                embedded.append(binding_name)
+        if embedded:
+            raise TaskOracleError(
+                "IMPLICIT_MUTABLE_BINDING",
+                "repeatable executable fields embed current binding values: "
+                + ", ".join(sorted(embedded)),
+            )
     fallbacks = _strings(
         convergence.get("allowed_fallbacks", []), "allowed_fallbacks"
     )
@@ -660,6 +866,8 @@ def load_task_context(
         "run_id": run_id,
         "task_hook_path": reference["path"].replace("\\", "/"),
         "task_hook_sha256": digest,
+        "task_semantics_sha256": task_semantics_sha256(task_hook),
+        "owner_contract_sha256": owner_contract_sha256(task_hook),
         "task_hook": task_hook,
         "bindings": bindings,
         "binding_fingerprints": {
@@ -674,6 +882,63 @@ def load_task_context(
     }
 
 
+def load_task_registry(root: Path, relative: str) -> dict[str, dict[str, Any]]:
+    path = _relative(root, relative, "task registry path")
+    if not path.is_file():
+        raise TaskOracleError("UNAVAILABLE", "task registry file is missing")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskOracleError("INVALID_TASK_HOOK", "task registry is invalid") from exc
+    if not isinstance(value, dict) or value.get("schema") != TASK_REGISTRY_SCHEMA:
+        raise TaskOracleError(
+            "INVALID_TASK_HOOK",
+            f"task registry schema must be {TASK_REGISTRY_SCHEMA}",
+        )
+    _known_fields(value, {"schema", "families"}, "task registry")
+    families = value.get("families")
+    if not isinstance(families, list):
+        raise TaskOracleError("INVALID_TASK_HOOK", "task registry families must be a list")
+    result: dict[str, dict[str, Any]] = {}
+    for index, entry in enumerate(families):
+        if not isinstance(entry, dict):
+            raise TaskOracleError(
+                "INVALID_TASK_HOOK", f"task registry family {index} must be an object"
+            )
+        _known_fields(
+            entry,
+            {"task_family", "path", "sha256", "revision"},
+            f"task registry family {index}",
+        )
+        family = _id(entry.get("task_family"), f"task registry family {index}")
+        if family in result:
+            raise TaskOracleError("INVALID_TASK_HOOK", f"duplicate task family: {family}")
+        task_path = _relative(root, entry.get("path"), f"task registry family {family} path")
+        if not task_path.is_file():
+            raise TaskOracleError("UNAVAILABLE", f"registered task hook is missing: {family}")
+        try:
+            task_hook = validate_task_hook(
+                json.loads(task_path.read_text(encoding="utf-8-sig")), root
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskOracleError(
+                "INVALID_TASK_HOOK", f"registered task hook is invalid: {family}"
+            ) from exc
+        digest = sha256_json(task_hook)
+        if (
+            task_hook["status"] != "REUSABLE_ACTIVE"
+            or task_hook["task_family"] != family
+            or task_hook["revision"] != entry.get("revision")
+            or digest != entry.get("sha256")
+        ):
+            raise TaskOracleError(
+                "REVISION_PENDING",
+                f"registered task family is not the exact reusable active revision: {family}",
+            )
+        result[family] = dict(entry)
+    return result
+
+
 def _unverifiable(context: dict[str, Any], reason: str) -> dict[str, Any]:
     return {
         "status": "UNVERIFIABLE",
@@ -682,7 +947,7 @@ def _unverifiable(context: dict[str, Any], reason: str) -> dict[str, Any]:
         "fingerprint": sha256_json(
             {
                 "unverifiable": reason,
-                "task_hook_sha256": context["task_hook_sha256"],
+                "task_semantics_sha256": context["task_semantics_sha256"],
                 "bindings_sha256": context["bindings_sha256"],
             }
         ),
@@ -726,8 +991,11 @@ def current_candidate(
                 stderr=subprocess.PIPE,
                 check=False,
                 shell=False,
-                timeout=float(provider.get("timeout_seconds", 30)),
-                env={**os.environ, "THREECAN_CONVERGENCE_RUN_ID": context["run_id"]},
+                timeout=float(provider.get("timeout_seconds", 3)),
+                env=command_environment(
+                    context,
+                    provider.get("consumes_bindings", []),
+                ),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return _unverifiable(context, f"candidate provider failed: {type(exc).__name__}")
@@ -753,7 +1021,6 @@ def current_candidate(
                     "binding_fingerprints",
                     "fallbacks_used",
                     "metadata",
-                    "extensions",
                 },
                 "candidate receipt",
             )
@@ -786,7 +1053,7 @@ def current_candidate(
     effective = sha256_json(
         {
             "provider_fingerprint": provider_fingerprint,
-            "task_hook_sha256": context["task_hook_sha256"],
+            "task_semantics_sha256": context["task_semantics_sha256"],
             "bindings_sha256": context["bindings_sha256"],
             "fallbacks_used": sorted(fallbacks_used),
             "metadata_sha256": metadata_sha256,
@@ -820,6 +1087,7 @@ def proof_receipt(
         "criterion_ids": criteria,
         "task_hook_revision": context["task_hook"]["revision"],
         "task_hook_sha256": context["task_hook_sha256"],
+        "task_semantics_sha256": context["task_semantics_sha256"],
         "run_id": context["run_id"],
         "candidate_fingerprint": candidate["fingerprint"],
         "bindings_sha256": context["bindings_sha256"],
@@ -827,6 +1095,7 @@ def proof_receipt(
             "id": oracle["id"],
             "version": oracle["version"],
             "kind": oracle["kind"],
+            "independence": oracle.get("independence", "not_applicable"),
         },
         "status": status,
         "reason": reason,
@@ -894,6 +1163,7 @@ def load_external_proof(
             "criterion_id",
             "task_hook_revision",
             "task_hook_sha256",
+            "task_semantics_sha256",
             "run_id",
             "candidate_fingerprint",
             "bindings_sha256",
@@ -925,6 +1195,7 @@ def load_external_proof(
         "criterion_ids",
         "task_hook_revision",
         "task_hook_sha256",
+        "task_semantics_sha256",
         "run_id",
         "candidate_fingerprint",
         "bindings_sha256",

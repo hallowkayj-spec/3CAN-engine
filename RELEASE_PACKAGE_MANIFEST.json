@@ -49,6 +49,7 @@
     "examples/codex-cli-project-kit/AGENTS.template.md",
     "examples/codex-cli-project-kit/.codex/convergence.example.json",
     "examples/codex-cli-project-kit/.codex/task-hooks/generic-delivery.example.json",
+    "examples/codex-cli-project-kit/.codex/task-hooks/registry.example.json",
     "examples/codex-cli-project-kit/.codex/hooks.json",
     "examples/codex-cli-project-kit/.agents/project.template.json",
     "examples/codex-cli-project-kit/.gitignore.template",

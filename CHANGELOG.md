@@ -55,6 +55,14 @@ claim that any private production graph has been migrated.
   size/mtime. Large outputs use a content-addressed manifest or project-owned
   command provider, while external reviewer receipt changes participate in
   current-evidence and verification-race checks.
+- Closed lifecycle laundering gaps: same-revision semantic re-pinning is
+  rejected, closeout recomputes the current candidate and proof sources, and
+  promotion references must resolve to retained self-validating receipts.
+- Added one deterministic reusable-family registry selector for later
+  worktrees. Repeatable command adapters receive only declared bindings through
+  a stable environment contract; embedded run values and undeclared fallbacks
+  remain typed failures. No prompt classifier, second runtime, or LLM hot path
+  was added.
 
 ### 2026-08-20 portable public-release packaging
 

@@ -50,6 +50,7 @@
       "id": "owner-review",
       "type": "owner_review",
       "kind": "HUMAN",
+      "independence": "owner",
       "version": "owner-v1",
       "stages": [
         "final"

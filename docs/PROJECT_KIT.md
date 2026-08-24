@@ -120,6 +120,11 @@ edit/test path. See
 examples only; selecting a Task Hook and trusting the exact native definitions
 remain explicit Owner/project setup actions.
 
+Reusable Task Hooks are selected by exact registry entry with `select-task`;
+the per-run `.codex/convergence.json` stays untracked while sanitized promotion
+receipts are retained with the Task Hook. The selector does not classify prompts
+or overwrite an active run.
+
 Every acceptance condition must bind to named evidence. `CANDIDATE_READY`
 means that bound Owner/semantic evidence is still pending and is not an
 `AUTO_CLOSEOUT`. Hidden run-varying defaults are rejected through declared

@@ -857,7 +857,8 @@ def test_dirty_submodule_is_rejected_by_current_repository_scope(tmp_path):
         module.workspace_fingerprint(parent)
 
 
-def test_installed_project_kit_executes_exact_native_hook_command(tmp_path):
+@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
+def test_installed_project_kit_executes_exact_native_hook_command(tmp_path, source):
     project_kit = SCRIPT.parents[1]
     installed = tmp_path / "installed-project"
     shutil.copytree(project_kit, installed)
@@ -887,7 +888,7 @@ def test_installed_project_kit_executes_exact_native_hook_command(tmp_path):
     result = subprocess.run(
         command,
         cwd=installed / "scripts",
-        input=json.dumps({"hook_event_name": "SessionStart", "source": "compact"}),
+        input=json.dumps({"hook_event_name": "SessionStart", "source": source}),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -930,10 +931,26 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
         for hook in group["hooks"]
         if "3can_convergence.py" in hook["command"]
     )
+    convergence_hooks = [
+        hook
+        for event in ("SessionStart", "PreToolUse", "Stop")
+        for group in hooks[event]
+        for hook in group["hooks"]
+        if "3can_convergence.py" in hook["command"]
+    ]
+    pr_hooks = [
+        hook
+        for group in hooks["PreToolUse"]
+        for hook in group["hooks"]
+        if "3can_pr_harness.py" in hook["command"]
+    ]
+    assert all(item["timeout"] == 30 for item in convergence_hooks)
+    assert all(item["timeout"] == 10 for item in pr_hooks)
     assert {
         "docs/CODEX_CONVERGENCE_HOOK.md",
         "examples/codex-cli-project-kit/.codex/convergence.example.json",
         "examples/codex-cli-project-kit/.codex/task-hooks/generic-delivery.example.json",
+        "examples/codex-cli-project-kit/.codex/task-hooks/registry.example.json",
         "examples/codex-cli-project-kit/.codex/hooks.json",
         "examples/codex-cli-project-kit/scripts/3can_convergence.py",
         "examples/codex-cli-project-kit/scripts/task_oracle.py",

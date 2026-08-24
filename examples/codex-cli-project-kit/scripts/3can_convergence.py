@@ -32,6 +32,7 @@ import task_oracle  # noqa: E402
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTRACT = Path(".codex/convergence.json")
 DEFAULT_RECEIPT = Path("test-results/3can/convergence/receipt.json")
+DEFAULT_TASK_REGISTRY = Path(".codex/task-hooks/registry.json")
 CONTRACT_SCHEMA = "3can.convergence-contract/v1"
 TASK_CONTRACT_SCHEMA = "3can.convergence-contract/v2"
 RECEIPT_SCHEMA = "3can.convergence-receipt/v2"
@@ -172,6 +173,29 @@ def _validate_guards(
     return guards
 
 
+def _task_checks(context: dict[str, Any]) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for oracle in context["task_hook"]["oracles"]:
+        check = dict(oracle)
+        if check.get("type") == "artifact":
+            check.setdefault("role", "byproduct")
+            if "path_binding" in check:
+                check["path"] = context["bindings"][check["path_binding"]]
+        checks.append(check)
+    return checks
+
+
+def _task_acceptance(context: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": item["id"],
+            "text": item["text"],
+            "evidence": item["oracle_ids"],
+        }
+        for item in context["task_hook"]["acceptance"]
+    ]
+
+
 def _normalize_task_contract(value: dict[str, Any], root: Path) -> dict[str, Any]:
     allowed = {
         "schema",
@@ -185,17 +209,12 @@ def _normalize_task_contract(value: dict[str, Any], root: Path) -> dict[str, Any
         "non_goals",
         "guards",
         "closeout",
-        "extensions",
     }
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ContractError(
             "task convergence contract has unsupported fields: " + ", ".join(unknown)
         )
-    if value.get("extensions") is not None and not isinstance(
-        value.get("extensions"), dict
-    ):
-        raise ContractError("contract extensions must be an object")
     if value.get("status", "active") not in {"active", "complete"}:
         raise ContractError("task convergence status must be active or complete")
     if value.get("scope") != "current_repository_only":
@@ -242,31 +261,20 @@ def _normalize_task_contract(value: dict[str, Any], root: Path) -> dict[str, Any
             raise task_oracle.TaskOracleError(
                 "REVISION_PENDING", "closeout does not confirm the final disposition"
             )
+        checks = _task_checks(context)
         return {
             **value,
             "goal": "Inactive convergence contract.",
-            "acceptance": [],
+            "acceptance": _task_acceptance(context),
             "non_goals": [],
-            "checks": [],
+            "checks": checks,
             "guards": [],
             "_task_context": context,
         }
     context = task_oracle.load_task_context(root, value)
     task_hook = context["task_hook"]
-    checks: list[dict[str, Any]] = []
-    for oracle in task_hook["oracles"]:
-        check = dict(oracle)
-        if check.get("type") == "artifact" and "path_binding" in check:
-            check["path"] = context["bindings"][check["path_binding"]]
-        checks.append(check)
-    acceptance = [
-        {
-            "id": item["id"],
-            "text": item["text"],
-            "evidence": item["oracle_ids"],
-        }
-        for item in task_hook["acceptance"]
-    ]
+    checks = _task_checks(context)
+    acceptance = _task_acceptance(context)
     non_goals = _string_list(value.get("non_goals", []), label="non_goals")
     guards = _validate_guards(value.get("guards", []), {item["id"] for item in checks})
     return {
@@ -417,7 +425,7 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
-        timeout=20,
+        timeout=3,
     )
 
 
@@ -475,7 +483,11 @@ def _artifact_fingerprint(root: Path, check: dict[str, Any]) -> dict[str, Any]:
     check_id = check["id"]
     relative = check["path"].replace("\\", "/")
     path = _resolve_under(root, relative, label=f"artifact check {check_id} path")
-    result: dict[str, Any] = {"id": check_id, "path": relative}
+    result: dict[str, Any] = {
+        "id": check_id,
+        "type": "artifact",
+        "path": relative,
+    }
     if not path.is_file():
         result["state"] = "missing"
         return result
@@ -549,7 +561,23 @@ def evidence_fingerprint(
     return _sha256_bytes(_json_bytes(evidence_snapshot(contract, root, role=role)))
 
 
-def workspace_fingerprint(root: Path) -> dict[str, Any]:
+def _path_excluded(relative: str, exclusions: tuple[str, ...]) -> bool:
+    normalized = relative.replace("\\", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    if os.name == "nt":
+        normalized = normalized.casefold()
+        exclusions = tuple(item.casefold() for item in exclusions)
+    return any(
+        normalized == item.rstrip("/")
+        or (item.endswith("/") and normalized.startswith(item))
+        for item in exclusions
+    )
+
+
+def workspace_fingerprint(
+    root: Path, *, exclude_paths: tuple[str, ...] = ()
+) -> dict[str, Any]:
     resolved = root.resolve()
     top = _git(resolved, "rev-parse", "--show-toplevel")
     if top.returncode != 0:
@@ -559,7 +587,7 @@ def workspace_fingerprint(root: Path) -> dict[str, Any]:
         }
     prefix = _git(resolved, "rev-parse", "--show-prefix")
     branch = _git(resolved, "branch", "--show-current")
-    head = _git(resolved, "rev-parse", "HEAD")
+    head = None if exclude_paths else _git(resolved, "rev-parse", "HEAD")
     status = _git(
         resolved,
         "status",
@@ -570,7 +598,13 @@ def workspace_fingerprint(root: Path) -> dict[str, Any]:
         "--",
         ".",
     )
-    if any(item.returncode != 0 for item in (branch, head, prefix, status)):
+    index = (
+        _git(resolved, "ls-files", "--stage", "-z", "--", ".")
+        if exclude_paths
+        else None
+    )
+    commands = [branch, prefix, status, *(item for item in (head, index) if item)]
+    if any(item.returncode != 0 for item in commands):
         raise RuntimeError("Git workspace fingerprint failed")
     git_top = Path(top.stdout.decode("utf-8", errors="surrogateescape").strip())
     submodule_output = b""
@@ -593,7 +627,8 @@ def workspace_fingerprint(root: Path) -> dict[str, Any]:
             # this project root.
             if normalized.startswith(prefix_text):
                 normalized = normalized[len(prefix_text) :]
-        relative_paths.append(normalized)
+        if not _path_excluded(normalized, exclude_paths):
+            relative_paths.append(normalized)
     submodule_paths: set[str] = set()
     for item in _submodule_paths(submodule_output):
         normalized = item
@@ -608,17 +643,76 @@ def workspace_fingerprint(root: Path) -> dict[str, Any]:
             "dirty submodules are unsupported for scope=current_repository_only"
         )
     files = [_file_fingerprint(resolved, item) for item in relative_paths]
-    state = {
+    state: dict[str, Any] = {
         "kind": "git",
         "workspace_sha256": _sha256_bytes(str(resolved).casefold().encode("utf-8")),
         "branch": branch.stdout.decode("utf-8", errors="replace").strip(),
-        "head": head.stdout.decode("ascii", errors="replace").strip(),
-        "porcelain_sha256": _sha256_bytes(status.stdout),
         "changed_file_count": len(files),
         "changed_files_sha256": _sha256_bytes(_json_bytes(files)),
     }
+    if exclude_paths:
+        index_records: list[str] = []
+        assert index is not None
+        for raw_record in index.stdout.decode(
+            "utf-8", errors="surrogateescape"
+        ).split("\0"):
+            if not raw_record or "\t" not in raw_record:
+                continue
+            metadata, path = raw_record.split("\t", 1)
+            normalized = path.replace("\\", "/")
+            if prefix_text:
+                if not normalized.startswith(prefix_text):
+                    continue
+                normalized = normalized[len(prefix_text) :]
+            if not _path_excluded(normalized, exclude_paths):
+                index_records.append(f"{metadata}\t{normalized}")
+        state.update(
+            {
+                "scope": "task-candidate-without-control-plane",
+                "index_sha256": _sha256_bytes(
+                    _json_bytes(sorted(index_records))
+                ),
+            }
+        )
+    else:
+        assert head is not None
+        state.update(
+            {
+                "head": head.stdout.decode("ascii", errors="replace").strip(),
+                "porcelain_sha256": _sha256_bytes(status.stdout),
+            }
+        )
     state["fingerprint"] = _sha256_bytes(_json_bytes(state))
     return state
+
+
+def contract_workspace_fingerprint(
+    contract: dict[str, Any],
+    root: Path,
+    contract_path: Path,
+    receipt_path: Path | None = None,
+) -> dict[str, Any]:
+    if contract.get("schema") != TASK_CONTRACT_SCHEMA:
+        return workspace_fingerprint(root)
+    contract_file = _bounded_path(root, contract_path, label="contract path")
+    contract_relative = contract_file.relative_to(root.resolve()).as_posix()
+    task_path = contract["_task_context"]["task_hook_path"]
+    receipt_relative = (
+        _bounded_path(root, receipt_path, label="receipt path")
+        .relative_to(root.resolve())
+        .as_posix()
+        if receipt_path is not None
+        else ""
+    )
+    return workspace_fingerprint(
+        root,
+        exclude_paths=(
+            contract_relative,
+            task_path,
+            ".codex/task-hooks/evidence/",
+            receipt_relative,
+        ),
+    )
 
 
 def _bounded_path(root: Path, path: Path, *, label: str) -> Path:
@@ -668,8 +762,51 @@ def receipt_is_current(
     )
 
 
-def closeout_is_valid(
+def ensure_revision_boundary(
     contract: dict[str, Any], receipt: dict[str, Any] | None
+) -> None:
+    """Reject semantic self-replacement inside an already evidenced run."""
+    context = contract.get("_task_context")
+    previous = (receipt or {}).get("task")
+    if not isinstance(context, dict) or not isinstance(previous, dict):
+        return
+    task_hook = context["task_hook"]
+    if (
+        previous.get("run_id") != context["run_id"]
+        or previous.get("task_family") != task_hook["task_family"]
+    ):
+        return
+    previous_revision = previous.get("revision")
+    previous_semantics = previous.get("task_semantics_sha256")
+    if previous_revision == task_hook["revision"]:
+        if previous_semantics != context["task_semantics_sha256"]:
+            raise task_oracle.TaskOracleError(
+                "REVISION_PENDING",
+                "Task meaning changed inside an evidenced revision; create and confirm a successor revision.",
+            )
+        return
+    if task_hook.get("parent_revision") != previous_revision:
+        raise task_oracle.TaskOracleError(
+            "REVISION_PENDING",
+            "A successor revision must name the evidenced revision as parent.",
+        )
+    owner_changed = (
+        previous.get("owner_contract_sha256")
+        != context["owner_contract_sha256"]
+    )
+    if owner_changed and context["activation"].get("confirmed_by") != "owner":
+        raise task_oracle.TaskOracleError(
+            "REVISION_PENDING",
+            "Goal, acceptance, or candidate meaning changed without Owner confirmation.",
+        )
+
+
+def closeout_is_valid(
+    contract: dict[str, Any],
+    receipt: dict[str, Any] | None,
+    root: Path,
+    contract_path: Path,
+    receipt_path: Path,
 ) -> bool:
     closeout = contract.get("closeout")
     if not isinstance(closeout, dict) or not receipt:
@@ -680,6 +817,8 @@ def closeout_is_valid(
         receipt.get("receipt_sha256") != digest
         or closeout.get("final_receipt_sha256") != digest
         or receipt.get("outcome") != "CONVERGED"
+        or receipt.get("proof_eligible") is not True
+        or receipt.get("schema") != RECEIPT_SCHEMA
     ):
         return False
     context = contract.get("_task_context")
@@ -687,15 +826,33 @@ def closeout_is_valid(
     if not isinstance(context, dict) or not isinstance(task_state, dict):
         return False
     task_hook = context["task_hook"]
+    workspace = contract_workspace_fingerprint(
+        contract, root, contract_path, receipt_path
+    )
+    current_task = task_snapshot(contract, root, workspace)
+    if not isinstance(current_task, dict):
+        return False
     if (
         task_state.get("run_id") != context["run_id"]
         or task_state.get("task_family") != task_hook["task_family"]
         or task_state.get("revision") != task_hook["revision"]
+        or task_state.get("task_semantics_sha256")
+        != context["task_semantics_sha256"]
+        or task_state.get("owner_contract_sha256")
+        != context["owner_contract_sha256"]
+        or task_state.get("bindings_sha256") != context["bindings_sha256"]
+        or task_state.get("candidate") != current_task.get("candidate")
+        or receipt.get("workspace", {}).get("fingerprint")
+        != workspace.get("fingerprint")
+        or receipt.get("evidence_sha256") != evidence_fingerprint(contract, root)
     ):
         return False
     if task_hook["status"] == "RETIRED":
         transition = task_hook.get("transition", {})
-        return task_state.get("task_hook_sha256") == transition.get("from_sha256")
+        return (
+            task_state.get("task_hook_sha256") == transition.get("from_sha256")
+            and closeout.get("task_hook_sha256") == context["task_hook_sha256"]
+        )
     promotion_receipts = (task_hook.get("promotion") or {}).get(
         "qualifying_receipts", []
     )
@@ -705,6 +862,10 @@ def closeout_is_valid(
         and item.get("candidate_fingerprint")
         == (task_state.get("candidate") or {}).get("fingerprint")
         and item.get("bindings_sha256") == task_state.get("bindings_sha256")
+        and item.get("task_hook_sha256") == task_state.get("task_hook_sha256")
+        and item.get("task_semantics_sha256")
+        == task_state.get("task_semantics_sha256")
+        and closeout.get("task_hook_sha256") == context["task_hook_sha256"]
         for item in promotion_receipts
         if isinstance(item, dict)
     )
@@ -722,6 +883,8 @@ def task_snapshot(
         "revision": task_hook["revision"],
         "task_hook_path": context["task_hook_path"],
         "task_hook_sha256": context["task_hook_sha256"],
+        "task_semantics_sha256": context["task_semantics_sha256"],
+        "owner_contract_sha256": context["owner_contract_sha256"],
         "run_id": context["run_id"],
         "bindings_sha256": context["bindings_sha256"],
         "candidate": task_oracle.current_candidate(context, root, workspace),
@@ -781,6 +944,7 @@ def _run_check(
             "type": "artifact",
             "status": "pass" if passed else "fail",
             **{key: value for key, value in fingerprint.items() if key != "id"},
+            "source": fingerprint,
         }
         if task_context is not None and candidate is not None:
             result["proof"] = task_oracle.proof_receipt(
@@ -811,6 +975,14 @@ def _run_check(
             check=False,
             timeout=float(check.get("timeout_seconds", 120)),
             shell=False,
+            env=(
+                task_oracle.command_environment(
+                    task_context,
+                    check.get("consumes_bindings", []),
+                )
+                if task_context is not None
+                else None
+            ),
         )
         result = {
             "id": check_id,
@@ -967,7 +1139,10 @@ def verify(
     contract, contract_sha256 = load_contract(root, contract_path)
     if contract is None or contract_sha256 is None:
         raise ContractError("no convergence contract found")
-    before_workspace = workspace_fingerprint(root)
+    ensure_revision_boundary(contract, read_receipt(root, receipt_path))
+    before_workspace = contract_workspace_fingerprint(
+        contract, root, contract_path, receipt_path
+    )
     before_task = task_snapshot(contract, root, before_workspace)
     before_evidence = evidence_fingerprint(contract, root, role="candidate")
     task_context = contract.get("_task_context")
@@ -994,7 +1169,9 @@ def verify(
     after_contract, after_contract_sha256 = load_contract(root, contract_path)
     if after_contract is None or after_contract_sha256 is None:
         raise ContractError("convergence contract disappeared during verification")
-    after_workspace = workspace_fingerprint(root)
+    after_workspace = contract_workspace_fingerprint(
+        after_contract, root, contract_path, receipt_path
+    )
     after_task = task_snapshot(after_contract, root, after_workspace)
     after_candidate_evidence = evidence_fingerprint(
         after_contract, root, role="candidate"
@@ -1003,12 +1180,13 @@ def verify(
     after_sources = {
         item["id"]: item
         for item in evidence_snapshot(after_contract, root)
-        if item.get("type") == "external_receipt"
+        if item.get("type") in {"artifact", "external_receipt"}
     }
     checked_sources_match = all(
         item.get("source") == after_sources.get(item["id"])
         for item in checks
-        if item.get("type") == "external_receipt"
+        if item.get("type") in {"artifact", "external_receipt"}
+        and "source" in item
     )
     verification_changed = (
         contract_sha256 != after_contract_sha256
@@ -1089,10 +1267,13 @@ def record_typed(
     if not reason.strip():
         raise ContractError("typed incomplete state requires a non-empty reason")
     previous = read_receipt(root, receipt_path) or {}
+    ensure_revision_boundary(contract, previous)
     # A typed incomplete report must not launder checks that passed against an
     # older candidate into current evidence. Only verify() can create PASS.
     previous_acceptance = _evaluate_acceptance(contract, [], "current")
-    workspace = workspace_fingerprint(root)
+    workspace = contract_workspace_fingerprint(
+        contract, root, contract_path, receipt_path
+    )
     value = _receipt(
         contract_sha256=contract_sha256,
         workspace=workspace,
@@ -1277,7 +1458,13 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
         if contract.get("status", "active") != "active":
             if (
                 contract.get("schema") == TASK_CONTRACT_SCHEMA
-                and not closeout_is_valid(contract, read_receipt(root, receipt_path))
+                and not closeout_is_valid(
+                    contract,
+                    read_receipt(root, receipt_path),
+                    root,
+                    contract_path,
+                    receipt_path,
+                )
             ):
                 raise task_oracle.TaskOracleError(
                     "REVISION_PENDING",
@@ -1297,10 +1484,13 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
         if event not in {"SessionStart", "PreToolUse", "Stop"}:
             print("{}")
             return 0
-        workspace = workspace_fingerprint(root)
+        receipt = read_receipt(root, receipt_path)
+        ensure_revision_boundary(contract, receipt)
+        workspace = contract_workspace_fingerprint(
+            contract, root, contract_path, receipt_path
+        )
         current_evidence = evidence_fingerprint(contract, root)
         current_task = task_snapshot(contract, root, workspace)
-        receipt = read_receipt(root, receipt_path)
         current = receipt_is_current(
             receipt,
             contract_sha256=contract_sha256,
@@ -1393,7 +1583,9 @@ def _summary(
             "ok": True,
             "status": contract.get("status"),
             "closeout_valid": (
-                closeout_is_valid(contract, receipt)
+                closeout_is_valid(
+                    contract, receipt, root, contract_path, receipt_path
+                )
                 if contract.get("schema") == TASK_CONTRACT_SCHEMA
                 else True
             ),
@@ -1402,10 +1594,13 @@ def _summary(
             .get("task_hook", {})
             .get("task_family"),
         }
-    workspace = workspace_fingerprint(root)
+    receipt = read_receipt(root, receipt_path)
+    ensure_revision_boundary(contract, receipt)
+    workspace = contract_workspace_fingerprint(
+        contract, root, contract_path, receipt_path
+    )
     current_evidence = evidence_fingerprint(contract, root)
     current_task = task_snapshot(contract, root, workspace)
-    receipt = read_receipt(root, receipt_path)
     return {
         "ok": True,
         "status": contract.get("status", "active"),
@@ -1426,6 +1621,83 @@ def _summary(
     }
 
 
+def _parse_binding_args(values: list[str]) -> dict[str, Any]:
+    bindings: dict[str, Any] = {}
+    for value in values:
+        name, separator, encoded = value.partition("=")
+        if not separator or not task_oracle.ID_PATTERN.fullmatch(name):
+            raise ContractError("--binding must use NAME=JSON with a valid name")
+        if name in bindings:
+            raise ContractError(f"duplicate binding: {name}")
+        try:
+            bindings[name] = json.loads(encoded)
+        except json.JSONDecodeError as exc:
+            raise ContractError(f"binding {name} value must be valid JSON") from exc
+    return bindings
+
+
+def select_task(
+    root: Path,
+    contract_path: Path,
+    registry_path: Path,
+    *,
+    task_family: str,
+    run_id: str,
+    confirmed_by: str,
+    confirmation_ref: str,
+    binding_args: list[str],
+    allowed_fallbacks: list[str],
+) -> dict[str, Any]:
+    output = _bounded_path(root, contract_path, label="contract path")
+    if output.exists():
+        raise ContractError(
+            "refusing to replace an existing convergence selector; close out and archive it first"
+        )
+    registry_file = _bounded_path(root, registry_path, label="task registry path")
+    registry_relative = registry_file.relative_to(root.resolve()).as_posix()
+    families = task_oracle.load_task_registry(root, registry_relative)
+    entry = families.get(task_family)
+    if entry is None:
+        raise task_oracle.TaskOracleError(
+            "UNAVAILABLE", f"task family is not registered: {task_family}"
+        )
+    digest = entry["sha256"]
+    contract = {
+        "schema": TASK_CONTRACT_SCHEMA,
+        "status": "active",
+        "scope": "current_repository_only",
+        "run_id": run_id,
+        "task_hook": {
+            "path": entry["path"],
+            "sha256": digest,
+            "revision": entry["revision"],
+        },
+        "activation": {
+            "task_hook_sha256": digest,
+            "confirmed_revision": entry["revision"],
+            "confirmed_by": confirmed_by,
+            "confirmation_ref": confirmation_ref,
+        },
+        "bindings": _parse_binding_args(binding_args),
+        "allowed_fallbacks": allowed_fallbacks,
+        "non_goals": [
+            "Owner acceptance, merge, deployment, publication, and 3CAN writeback remain separate decisions."
+        ],
+        "guards": [],
+    }
+    validate_contract(contract, root)
+    _write_json_atomic(output, contract)
+    return {
+        "ok": True,
+        "status": "selected",
+        "task_family": task_family,
+        "revision": entry["revision"],
+        "task_hook_sha256": digest,
+        "run_id": run_id,
+        "contract_path": output.relative_to(root.resolve()).as_posix(),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Verify a project convergence contract.")
     parser.add_argument("--root", type=Path, default=PROJECT_ROOT)
@@ -1439,6 +1711,23 @@ def build_parser() -> argparse.ArgumentParser:
         "task-digest", help="Validate a Task Hook and print its canonical digest."
     )
     task_parser.add_argument("--task-hook", type=Path, required=True)
+    select_parser = sub.add_parser(
+        "select-task",
+        help="Select an exact reusable task family for a new run.",
+    )
+    select_parser.add_argument(
+        "--registry", type=Path, default=DEFAULT_TASK_REGISTRY
+    )
+    select_parser.add_argument("--task-family", required=True)
+    select_parser.add_argument("--run-id", required=True)
+    select_parser.add_argument(
+        "--confirmed-by",
+        choices=["owner", "independent_reviewer"],
+        required=True,
+    )
+    select_parser.add_argument("--confirmation-ref", required=True)
+    select_parser.add_argument("--binding", action="append", default=[])
+    select_parser.add_argument("--allowed-fallback", action="append", default=[])
     verify_parser = sub.add_parser("verify", help="Run checks and write an evidence receipt.")
     verify_parser.add_argument("--stage", choices=["episode", "final"], required=True)
     verify_parser.add_argument("--next-objective", default="")
@@ -1457,6 +1746,10 @@ def main(argv: list[str] | None = None) -> int:
             contract, digest = load_contract(root, args.contract)
             if contract is None:
                 raise ContractError("no convergence contract found")
+            if contract.get("status", "active") == "active":
+                ensure_revision_boundary(
+                    contract, read_receipt(root, args.receipt)
+                )
             output = {"ok": True, "status": "valid", "contract_sha256": digest}
         elif args.command == "task-digest":
             task_path = _bounded_path(root, args.task_hook, label="task hook path")
@@ -1469,6 +1762,18 @@ def main(argv: list[str] | None = None) -> int:
                 "revision": validated["revision"],
                 "task_hook_sha256": task_oracle.sha256_json(validated),
             }
+        elif args.command == "select-task":
+            output = select_task(
+                root,
+                args.contract,
+                args.registry,
+                task_family=args.task_family,
+                run_id=args.run_id,
+                confirmed_by=args.confirmed_by,
+                confirmation_ref=args.confirmation_ref,
+                binding_args=args.binding,
+                allowed_fallbacks=args.allowed_fallback,
+            )
         elif args.command == "status":
             output = _summary(root, args.contract, args.receipt)
         elif args.command == "verify":

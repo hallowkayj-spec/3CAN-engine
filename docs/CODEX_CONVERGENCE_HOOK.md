@@ -44,6 +44,7 @@ The shipped files are examples and are inactive until copied:
 3. Copy `.codex/convergence.example.json` to `.codex/convergence.json`. Pin the
    exact Task Hook path, revision, and digest; choose a unique `run_id`; provide
    every declared mutable binding; and record the real activation review.
+   Keep this per-run selector ignored; track the Task Hook itself.
 4. Keep `test-results/3can/` ignored. Review `.codex/hooks.json`, enable Codex
    Hooks, and use `/hooks` to review and trust the exact native definitions.
 
@@ -92,8 +93,8 @@ An Oracle has an explicit type, kind, and version. Mechanical checks do not
 prove visual quality, semantic consistency, product fitness, or Owner
 acceptance unless the Task Hook binds an appropriate external or human Oracle.
 
-Unknown fields fail closed. Optional experimental metadata belongs under an
-`extensions` object and never changes an allow decision by being ignored.
+Unknown fields fail closed. Add a versioned schema field only when an implemented
+consumer, tests, and migration need it; inert extension bags are rejected.
 
 ## Hardcoding association rule
 
@@ -107,7 +108,11 @@ other domain classifier. It asks a narrower, enforceable question:
 - Stable protocol, schema, interface, and safety bounds belong in `invariants`.
 - Asset paths, model/version choices, tenant or product inputs, strategy values,
   and other run-varying decisions belong in `mutable_bindings`.
-- A command Candidate Provider returns `3can.candidate/v1` with an opaque
+- A command Candidate Provider declares `consumes_bindings`. The helper passes
+  only those values through `THREECAN_TASK_BINDINGS_JSON`; a repeatable provider
+  must consume every mutable binding and must not embed a current run value in
+  executable arguments.
+- The provider returns `3can.candidate/v1` with an opaque
   candidate fingerprint, the SHA-256 of every current binding value, and all
   fallbacks actually used.
 - A missing binding is `IMPLICIT_MUTABLE_BINDING`.
@@ -119,12 +124,24 @@ an old mutable default while QC proves only that the wrong candidate is stable.
 It does not claim to discover every semantic hardcode without a project-owned
 Candidate Provider or Oracle.
 
+For a high-risk or long task, add a separate requirement/result consistency
+Oracle to that Task Hook (not a second native lifecycle Hook). It compares the
+current Goal and Acceptance IDs with the Git diff, resolved run bindings, actual
+Candidate, and runtime/artifact evidence, then emits one bound
+`3can.proof-receipt/v1`. Its typed result should distinguish `CONTRADICTS`,
+`UNREQUESTED`, `IMPLICIT_MUTABLE_BINDING`, `FALLBACK_NOT_ALLOWED`, and
+`STALE_EVIDENCE`. A semantic reviewer must declare `independent` or
+`same_agent`; the latter remains visible as a review-independence downgrade.
+
 ## Candidate Providers
 
 The Task Hook declares exactly how to identify the current deliverable:
 
-- `workspace`: the current repository HEAD, branch, dirty paths, and bounded
-  content fingerprints. Use for code tasks without run-specific bindings.
+- `workspace`: the current branch, tracked content index, dirty paths, and
+  bounded content fingerprints. For v2, the per-run selector, selected Task
+  Hook, and retained promotion receipts are a separately hashed control plane
+  and are excluded from the deliverable fingerprint. This permits an honest
+  lifecycle transition without changing the candidate it closes out.
 - `artifact`: a small file, either a one-off literal path or a repeatable
   `path_binding`. Files up to 8 MiB are content-hashed.
 - `command`: a project adapter that returns a bounded `3can.candidate/v1` JSON
@@ -144,7 +161,8 @@ Every generated proof binds:
 - run ID and bindings digest;
 - current candidate fingerprint;
 - Acceptance criterion IDs;
-- evaluator ID, version, and kind;
+- evaluator ID, version, kind, and declared independence (`independent`,
+  `same_agent`, `owner`, or `not_applicable` as appropriate);
 - typed status, reason, and content-addressed evidence references.
 
 An `external_receipt` Oracle reads a bounded `3can.proof-receipt/v1` file. A
@@ -174,8 +192,10 @@ stable => atomically write convergence receipt
 
 It uses no lock, daemon, database, or transaction manager. This protects normal
 local concurrency and accidental drift, not hostile mutate-and-revert attacks.
-Stop and declared guards always recompute current identity. Old evidence cannot
-prove a changed Task Hook, binding, candidate, artifact, or external proof.
+Stop and declared guards always recompute current identity. Artifact byproducts
+and external receipts are fingerprinted again after their check, so a post-check
+replacement is `CONFLICT`. Old evidence cannot prove a changed Task Hook,
+binding, candidate, artifact, or external proof.
 
 Run an episode gate after one evidence-bearing module:
 
@@ -200,8 +220,11 @@ candidate and therefore requires fresh evidence. Changing Goal, Acceptance,
 Oracle meaning/version, mutable-binding policy, or Candidate Provider creates a
 new content digest and normally a new revision.
 
-An active digest is pinned by `.codex/convergence.json`. In-place edits make the
-run `REVISION_PENDING`; a `PROPOSED_REVISION` cannot execute. After review, the
+An active digest is pinned by `.codex/convergence.json`. Re-pinning and
+re-confirming changed Goal, Acceptance, Candidate, or Oracle semantics under the
+same evidenced revision is still `REVISION_PENDING`; a successor must name the
+evidenced parent revision. Owner-controlled meaning changes require an Owner
+activation assertion. A `PROPOSED_REVISION` cannot execute. After review, the
 new exact digest receives a new activation and all old candidate proofs are
 ineligible. A superseded file retains a confirmed transition and successor
 revision.
@@ -215,20 +238,39 @@ revision:   ACTIVE -> PROPOSED_REVISION -> ACTIVE; old revision -> SUPERSEDED
 ```
 
 A one-off closeout must retain the final `CONVERGED` receipt and link the
-`RETIRED` transition to the previously active Task Hook digest. Deleting the
-contract is not retirement.
+`RETIRED` transition to the previously active Task Hook digest. Closeout
+recomputes the current workspace, candidate, bindings, and evidence; changing a
+deliverable after the final receipt cannot be laundered by retiring the hook.
+Deleting the contract is not retirement.
 
 The first repeatable success may become `REUSABLE_CANDIDATE`. Default promotion
 to `REUSABLE_ACTIVE` requires two distinct run IDs and two distinct
-candidate/binding subjects, content-addressed qualifying receipts, plus Owner
-or independent-review confirmation. Owner fast-track is explicit and may use
-one receipt. Duplicate replay never increases the count.
+candidate/binding subjects, plus Owner or independent-review confirmation. Each
+qualifying reference must resolve to a real, self-digest-valid, proof-eligible
+`CONVERGED` receipt retained under `.codex/task-hooks/evidence/`; invented hash
+strings and duplicate replay never increase the count. Owner fast-track is
+explicit and may use one retained receipt.
 
 Reusable executable fields contain parameter names, not a previous run's path,
 asset, URL, product, or prompt. Historical promotion evidence may reference the
 qualifying run receipts. Each future worktree selects the tracked Task Hook by
-exact digest and supplies a new run ID and bindings. The same native Hook loads
-that active selector at `SessionStart`; there is no thread-ID binding.
+exact digest and supplies a new run ID and bindings. A tracked registry contains
+only exact `REUSABLE_ACTIVE` entries. Select one deterministically in a later
+worktree without hand-editing the selector:
+
+```powershell
+python scripts\3can_convergence.py select-task `
+  --registry .codex/task-hooks/registry.json `
+  --task-family generic-delivery `
+  --run-id run-20260824-001 `
+  --confirmed-by owner `
+  --confirmation-ref owner-selected-family `
+  --binding 'candidate_path="outputs/current.bin"'
+```
+
+The selector refuses to overwrite an existing run. Once selected, the same
+native Hook automatically loads it at `SessionStart`; there is no thread-ID
+binding.
 
 Semantic matching of an arbitrary user prompt to a task family remains an
 explicit task-start decision. The offline Global Hook enforces the selected
@@ -246,6 +288,10 @@ classifier or add a per-prompt LLM hot path.
 - `Stop` accepts only a current `CONVERGED` receipt. The first incomplete stop
   requests one bounded continuation; when `stop_hook_active=true`, it emits an
   explicit typed report instead of creating a loop.
+
+Native convergence handlers have a 30-second outer budget. Their hot path runs
+no Oracle suite; Git probes and Candidate Provider subprocesses are individually
+bounded to 3 seconds. Long checks run only through explicit `verify` commands.
 
 Development-path hook failures are fail-open so safe local work continues.
 Stop failures never fabricate convergence. Contract missing plus prior receipt

@@ -8,7 +8,7 @@
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/3can_convergence.py\" hook",
             "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_convergence.py') hook\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "Restoring the accepted convergence contract"
           }
         ]
@@ -28,7 +28,7 @@
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/3can_convergence.py\" hook",
             "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_convergence.py') hook\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "Checking declared evidence guard"
           }
         ]
@@ -41,7 +41,7 @@
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/3can_convergence.py\" hook",
             "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_convergence.py') hook\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "Checking convergence evidence"
           }
         ]
