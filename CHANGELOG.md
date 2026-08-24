@@ -19,8 +19,10 @@ claim that any private production graph has been migrated.
   optional episode, and semantic review result/reference. It does not create a
   Task Hook, selector, proof lifecycle, candidate-freshness path, or Stop
   decision; those remain independently owned by the existing convergence engine
-  and Git. Owner off retains the state as `disabled_by_owner` and cannot bypass
-  another gate.
+  and Git. Final semantic `PASS` now records only the reviewed clean Git HEAD;
+  a later commit or dirty edit makes that review stale without adding artifact
+  hashing or another candidate kernel. Owner off retains the state as
+  `disabled_by_owner` and cannot bypass another gate.
 - Kept `/3CAN` as an unimplemented target shorthand because Codex exposes a
   fixed native slash-command set. The supported explicit entry is
   `$3can-runtimehook` (or `/skills`), with implicit Chinese/English aliases; no

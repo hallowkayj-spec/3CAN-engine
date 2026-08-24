@@ -80,6 +80,25 @@ def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return completed
 
 
+def _git_checkpoint(root: Path) -> tuple[str, bool]:
+    head = _git(root, "rev-parse", "--verify", "HEAD")
+    if head.returncode != 0:
+        raise RuntimeHookError("Git HEAD is unavailable")
+    reviewed_head = head.stdout.strip()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", reviewed_head):
+        raise RuntimeHookError("Git HEAD is invalid")
+    status = _git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=normal",
+        "--ignore-submodules=none",
+    )
+    if status.returncode != 0:
+        raise RuntimeHookError("Git worktree status is unavailable")
+    return reviewed_head, bool(status.stdout.strip())
+
+
 def _repository_root(root: Path) -> Path:
     try:
         resolved = root.resolve()
@@ -191,6 +210,14 @@ def _validate_state(value: Any) -> dict[str, Any]:
         if review.get("stage") not in {"episode", "final"}:
             raise RuntimeHookError("semantic review stage is invalid")
         _text(review.get("reference"), label="semantic review reference")
+    reviewed_git_head = review.get("reviewed_git_head")
+    if result == "PASS" and review.get("stage") == "final":
+        if not isinstance(reviewed_git_head, str) or not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", reviewed_git_head
+        ):
+            raise RuntimeHookError("final semantic PASS requires reviewed_git_head")
+    elif reviewed_git_head is not None:
+        raise RuntimeHookError("reviewed_git_head belongs only to final semantic PASS")
     return value
 
 
@@ -311,6 +338,7 @@ def activate(args: argparse.Namespace) -> dict[str, Any]:
             "stage": None,
             "result": "PENDING",
             "reference": None,
+            "reviewed_git_head": None,
         },
     }
     _write_state(root, state)
@@ -351,12 +379,21 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
     next_objective = args.next_objective.strip()
     if args.stage == "episode" and not next_objective:
         raise RuntimeHookError("episode review requires --next-objective")
+    reference = _text(args.reference, label="semantic review reference")
+    reviewed_git_head = None
+    if args.stage == "final" and args.result == "PASS":
+        reviewed_git_head, dirty = _git_checkpoint(root)
+        if dirty:
+            raise RuntimeHookError(
+                "final semantic PASS requires a clean Git checkpoint"
+            )
     state = {
         **state,
         "semantic_review": {
             "stage": args.stage,
             "result": args.result,
-            "reference": _text(args.reference, label="semantic review reference"),
+            "reference": reference,
+            "reviewed_git_head": reviewed_git_head,
         },
         "current_episode": (
             next_objective if args.stage == "episode" else state.get("current_episode")
@@ -370,6 +407,7 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
         "stage": args.stage,
         "result": args.result,
         "reference": state["semantic_review"]["reference"],
+        "reviewed_git_head": reviewed_git_head,
     }
 
 
@@ -446,7 +484,20 @@ def hook(args: argparse.Namespace) -> int:
                     "convergence hook remain authoritative for completion."
                 )
             else:
-                return 0
+                current_head, dirty = _git_checkpoint(root)
+                stale_reasons = []
+                if current_head != review["reviewed_git_head"]:
+                    stale_reasons.append("Git HEAD changed")
+                if dirty:
+                    stale_reasons.append("the worktree is dirty")
+                if not stale_reasons:
+                    return 0
+                message = (
+                    "RuntimeHook final semantic review is STALE because "
+                    f"{' and '.join(stale_reasons)} after {review['reference']}. "
+                    "Repeat the semantic review on a clean Git checkpoint. This "
+                    "reminder does not replace or override the project Stop gate."
+                )
             print(json.dumps({"systemMessage": message}, ensure_ascii=False))
         return 0
     except (RuntimeHookError, OSError, subprocess.SubprocessError) as exc:

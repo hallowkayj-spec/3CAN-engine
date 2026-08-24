@@ -2,8 +2,8 @@
 
 Status: `ISOLATED_SEMANTIC_SUPERVISOR / DOGFOOD_PENDING / GLOBAL_ROLLOUT_BLOCKED`
 
-Strict evidence reference: PR #15 commit
-`5995c3f6d694297f8994de252371fdaca7664cd4`.
+Strict evidence reference: Draft PR #15; Git is authoritative for its current
+review head.
 
 ## First-principles split
 
@@ -30,10 +30,13 @@ RuntimeHook writes one Git-ignored project-local file under
 - RUN_INTENT Goal, stable Acceptance IDs, and explicit non-goals;
 - the Agent-selected internal intensity and reason;
 - an optional current episode objective;
-- the latest semantic review result and durable reference.
+- the latest semantic review result and durable reference;
+- for final `PASS` only, the clean Git HEAD reviewed for semantic currentness.
 
 It is replaceable current-task state, not a history database. Git commits, PR
 reviews, project receipts, and artifact manifests retain durable evidence.
+The final-review HEAD is not a candidate or artifact fingerprint: Stop only
+reminds when HEAD changes or the worktree becomes dirty after semantic review.
 
 ## Semantic review contract
 
@@ -95,10 +98,20 @@ Before wider installation, run three isolated paths:
 3. Owner off: state remains `disabled_by_owner`, RuntimeHook becomes silent,
    and an independent convergence gate remains unchanged.
 
-Then dogfood one small code task, one cross-module task, and one artifact-lineage
-task. Measure wall-clock task cost, RuntimeHook boundary cost, review rounds,
-false reminders, escaped drift, and manual intervention. Foundation development
-time is reported separately from the governed task's overhead.
+Then freeze the architecture and dogfood exactly three real tasks:
+
+1. a small code task explicitly requested with RuntimeHook, observing automatic
+   `light` timing, overhead, and final-review value;
+2. a one-to-two-hour cross-module task, observing automatic `medium` timing and
+   whether episodes reduce drift without adding ceremony;
+3. a video or artifact workflow where RuntimeHook owns semantics and a known
+   lineage criterion calls the existing targeted strict Oracle.
+
+For each, record only total time, RuntimeHook overhead, review count, valuable
+findings, false reminders, manual intervention, and whether goal drift or bad
+hardcoding escaped. Foundation development time remains separate. Active-Intent
+replacement and real natural-language implicit activation stay P2 dogfood
+questions; do not add lifecycle machinery or synthetic tests for them.
 
 No broad rollout is implied by local tests. A rollout decision requires owner
 review plus evidence that the semantic layer reduces real mistakes without

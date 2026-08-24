@@ -63,7 +63,10 @@ Record an honest result (`PASS`, `PARTIAL`, `FAIL`, `UNVERIFIABLE`,
 `CONTRADICTS`, or `UNREQUESTED`) and a durable reference with `review`. For an
 episode review, include the next bounded objective. A reference may be a Git
 commit, PR review, or project evidence path; do not create a duplicate proof
-format.
+format. Before recording final `PASS`, create the task's normal Git checkpoint
+and verify the worktree is clean. RuntimeHook records that HEAD only to make the
+semantic review stale after a later commit or dirty edit; it does not fingerprint
+the candidate or artifact.
 
 If a criterion needs mechanical proof, use the project's existing convergence
 or Task Oracle path separately and reference that result. RuntimeHook never

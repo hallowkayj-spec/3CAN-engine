@@ -13,10 +13,12 @@ It is not a second Task Oracle. RuntimeHook owns one ignored file only:
 
 That file contains enabled/disabled state, an activation ID, RUN_INTENT,
 Agent-selected internal intensity, an optional current episode, and the latest
-semantic review result/reference. It does not own a convergence selector,
-candidate fingerprint, proof receipt, history ledger, binding policy, or Stop
-decision. Git remains engineering truth; the existing `3can_convergence.py` and
-Task Oracle remain the evidence kernel.
+semantic review result/reference. A final `PASS` also records the clean Git HEAD
+that was reviewed. This narrow anchor answers only whether the reviewed code is
+still current; it is not an artifact hash, candidate fingerprint, proof receipt,
+or history ledger. RuntimeHook does not own a convergence selector, binding
+policy, or Stop decision. Git remains engineering truth; the existing
+`3can_convergence.py` and Task Oracle remain the evidence kernel.
 
 The state is scoped to one physical Git worktree, not to one chat. At most one
 current RuntimeHook task may use that worktree; concurrent tasks require
@@ -51,11 +53,13 @@ duration, file-count, domain, command-name, or Oracle-name classifier.
 The native project hooks run RuntimeHook and `3can_convergence.py` independently.
 With no enabled RuntimeHook state, the semantic hook exits silently. When
 enabled, SessionStart reinjects RUN_INTENT; Stop emits a non-owning reminder
-only while final semantic review is due or non-successful. A recorded final
-`PASS` is silent. SessionStart uses native `hookSpecificOutput.additionalContext`
-with a bounded matching handler limit, so the context reaches the model rather
-than only the UI event stream. RuntimeHook never returns a Stop allow/block
-decision.
+while final semantic review is due, non-successful, or stale. Recording final
+`PASS` requires a clean Git checkpoint. It is silent only while HEAD still
+matches that checkpoint and the worktree remains clean; later changes produce a
+semantic-review reminder. SessionStart uses native
+`hookSpecificOutput.additionalContext` with a bounded matching handler limit, so
+the context reaches the model rather than only the UI event stream. RuntimeHook
+never returns a Stop allow/block decision.
 
 `off` changes the retained state to `disabled_by_owner`; later RuntimeHook hooks
 are silent. It does not delete evidence and cannot disable credentials,

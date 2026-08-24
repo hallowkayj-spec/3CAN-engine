@@ -105,6 +105,15 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _git_head(root: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def test_runtimehook_off_default_is_silent_and_hooks_are_independent(
     runtimehook_project,
 ):
@@ -171,10 +180,10 @@ def test_runtimehook_records_agent_selected_intensity_and_reinjects_utf8(
     ).exists()
 
 
-def test_runtimehook_episode_and_final_review_keep_only_semantic_reference(
+def test_runtimehook_episode_and_final_review_record_narrow_git_anchor(
     runtimehook_project,
 ):
-    _installed, _hooks, command, native_hook = runtimehook_project
+    installed, _hooks, command, native_hook = runtimehook_project
     activation = _activate(command)
 
     episode, episode_output = command(
@@ -198,6 +207,7 @@ def test_runtimehook_episode_and_final_review_keep_only_semantic_reference(
         "--reference",
         "pr:15-final-review",
     )
+    _status, reviewed_state = command("status")
     stopped = native_hook("Stop", {"hook_event_name": "Stop"})
 
     assert episode.returncode == 0, episode_output
@@ -206,7 +216,67 @@ def test_runtimehook_episode_and_final_review_keep_only_semantic_reference(
     assert state["current_episode"] == "完成剩余验收项。"
     assert final.returncode == 0, final_output
     assert final_output["result"] == "PASS"
+    assert reviewed_state["semantic_review"]["reviewed_git_head"] == _git_head(
+        installed
+    )
     assert stopped == {}
+
+
+def test_runtimehook_final_pass_requires_clean_git_checkpoint(runtimehook_project):
+    installed, _hooks, command, _native_hook = runtimehook_project
+    _activate(command)
+    (installed / "tracked.txt").write_text("changed before review\n", encoding="utf-8")
+
+    completed, output = command(
+        "review",
+        "--stage",
+        "final",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:dirty-review",
+    )
+    _status, state = command("status")
+
+    assert completed.returncode == 2
+    assert output["status"] == "UNAVAILABLE"
+    assert "clean Git checkpoint" in output["error"]
+    assert state["semantic_review"]["result"] == "PENDING"
+
+
+@pytest.mark.parametrize("change", ["dirty", "new-head"])
+def test_runtimehook_stop_marks_post_review_git_change_stale(
+    runtimehook_project, change: str
+):
+    installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    reviewed, output = command(
+        "review",
+        "--stage",
+        "final",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:clean-review",
+    )
+    assert reviewed.returncode == 0, output
+
+    (installed / "tracked.txt").write_text("changed after review\n", encoding="utf-8")
+    if change == "new-head":
+        subprocess.run(
+            ["git", "-C", str(installed), "add", "tracked.txt"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(installed), "commit", "-qm", "post-review change"],
+            check=True,
+        )
+
+    stopped = native_hook("Stop", {"hook_event_name": "Stop"})
+
+    assert "STALE" in stopped["systemMessage"]
+    expected_reason = "worktree is dirty" if change == "dirty" else "Git HEAD changed"
+    assert expected_reason in stopped["systemMessage"]
+    assert "decision" not in stopped
 
 
 def test_runtimehook_off_retains_state_without_touching_independent_gate(
