@@ -178,6 +178,10 @@ def validate_contract(value: Any, root: Path) -> dict[str, Any]:
             min_bytes = check.get("min_bytes", 1)
             if not isinstance(min_bytes, int) or min_bytes < 0:
                 raise ContractError(f"artifact check {check_id} min_bytes must be non-negative")
+            if check.get("role", "candidate") not in {"candidate", "byproduct"}:
+                raise ContractError(
+                    f"artifact check {check_id} role must be candidate or byproduct"
+                )
         elif stages != ["final"]:
             raise ContractError(f"owner_review check {check_id} must use only the final stage")
     if not automated_final:
@@ -344,11 +348,14 @@ def _artifact_fingerprint(root: Path, check: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def evidence_fingerprint(contract: dict[str, Any], root: Path) -> str:
+def evidence_fingerprint(
+    contract: dict[str, Any], root: Path, *, role: str | None = None
+) -> str:
     artifacts = [
         _artifact_fingerprint(root, check)
         for check in contract.get("checks", [])
         if check.get("type") == "artifact"
+        and (role is None or check.get("role", "candidate") == role)
     ]
     return _sha256_bytes(_json_bytes(artifacts))
 
@@ -527,6 +534,19 @@ def _run_check(check: dict[str, Any], root: Path, stage: str) -> dict[str, Any]:
         }
 
 
+def _run_checks(
+    checks: list[dict[str, Any]], root: Path, stage: str
+) -> list[dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for check in checks:
+        if check.get("type") != "artifact":
+            results[check["id"]] = _run_check(check, root, stage)
+    for check in checks:
+        if check.get("type") == "artifact":
+            results[check["id"]] = _run_check(check, root, stage)
+    return [results[check["id"]] for check in checks]
+
+
 def _evaluate_acceptance(
     contract: dict[str, Any], checks: list[dict[str, Any]], stage: str
 ) -> list[dict[str, Any]]:
@@ -607,17 +627,20 @@ def verify(
     if contract is None or contract_sha256 is None:
         raise ContractError("no convergence contract found")
     before_workspace = workspace_fingerprint(root)
-    before_evidence = evidence_fingerprint(contract, root)
-    checks = [_run_check(check, root, stage) for check in contract.get("checks", [])]
+    before_evidence = evidence_fingerprint(contract, root, role="candidate")
+    checks = _run_checks(contract.get("checks", []), root, stage)
     after_contract, after_contract_sha256 = load_contract(root, contract_path)
     if after_contract is None or after_contract_sha256 is None:
         raise ContractError("convergence contract disappeared during verification")
     after_workspace = workspace_fingerprint(root)
+    after_candidate_evidence = evidence_fingerprint(
+        after_contract, root, role="candidate"
+    )
     after_evidence = evidence_fingerprint(after_contract, root)
     verification_changed = (
         contract_sha256 != after_contract_sha256
         or before_workspace.get("fingerprint") != after_workspace.get("fingerprint")
-        or before_evidence != after_evidence
+        or before_evidence != after_candidate_evidence
     )
     if not any(
         item["type"] != "owner_review" and item["status"] != "skipped" for item in checks

@@ -493,6 +493,70 @@ def test_ignored_artifact_change_stales_converged_receipt(convergence):
     assert "stale" in stopped["reason"].lower()
 
 
+def test_command_generated_byproduct_is_fresh_without_false_race(convergence):
+    module, root, contract, receipt = convergence
+    write_contract(contract, owner_review=False)
+    value = json.loads(contract.read_text(encoding="utf-8"))
+    value["checks"][0]["argv"] = [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; p=Path('test-results/module/report.txt'); "
+        "p.parent.mkdir(parents=True, exist_ok=True); p.write_text('current proof\\n')",
+    ]
+    value["checks"][1].update(
+        {"path": "test-results/module/report.txt", "role": "byproduct"}
+    )
+    contract.write_text(json.dumps(value), encoding="utf-8")
+
+    result = module.verify(root, contract, receipt, stage="final", next_objective="")
+
+    assert result["outcome"] == "CONVERGED"
+    (root / "test-results" / "module" / "report.txt").write_text(
+        "replaced proof\n", encoding="utf-8"
+    )
+    stopped = hook(module, root, contract, receipt, {"hook_event_name": "Stop"})
+    assert stopped["decision"] == "block"
+    assert "stale" in stopped["reason"].lower()
+
+
+def test_byproduct_is_checked_after_commands_regardless_of_json_order(convergence):
+    module, root, contract, receipt = convergence
+    write_contract(contract, owner_review=False)
+    report = root / "test-results" / "module" / "report.txt"
+    report.parent.mkdir(parents=True)
+    report.write_text("old passing report\n", encoding="utf-8")
+    value = json.loads(contract.read_text(encoding="utf-8"))
+    command = value["checks"][0]
+    artifact = value["checks"][1]
+    command["argv"] = [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; Path('test-results/module/report.txt').write_bytes(b'')",
+    ]
+    artifact.update(
+        {
+            "path": "test-results/module/report.txt",
+            "role": "byproduct",
+            "min_bytes": 1,
+        }
+    )
+    value["checks"] = [artifact, command]
+    contract.write_text(json.dumps(value), encoding="utf-8")
+
+    result = module.verify(
+        root,
+        contract,
+        receipt,
+        stage="final",
+        next_objective="Repair the generated proof.",
+    )
+
+    assert result["outcome"] == "FAIL"
+    artifact_result = next(item for item in result["checks"] if item["id"] == "artifact")
+    assert artifact_result["status"] == "fail"
+    assert result["proof_eligible"] is False
+
+
 def test_contract_disappearance_after_activation_is_not_noop(convergence):
     module, root, contract, receipt = convergence
     write_contract(contract, owner_review=False)
