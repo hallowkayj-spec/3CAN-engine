@@ -162,8 +162,10 @@ family explicitly with `validate-registry` outside a native Hook event.
 The shipped Hook configuration does not start convergence on every tool call;
 it restores at `SessionStart` and checks completion at `Stop`. A project with a
 real declared high-cost guard may add a narrowly matched convergence
-`PreToolUse` handler. No first-write gate is shipped; do not classify arbitrary
-Bash or MCP text as read versus mutation or globally enable an unproven gate.
+`PreToolUse` handler. A declared guard without that installed handler is
+inactive, not enforced. No first-write gate is shipped; do not classify
+arbitrary Bash or MCP text as read versus mutation or globally enable an
+unproven gate.
 
 Declare stable protocol and safety constants as invariants. Declare every
 run-varying asset, path, model/version, tenant/product input, strategy, and

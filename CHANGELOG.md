@@ -29,6 +29,11 @@ claim that any private production graph has been migrated.
   while moving any future Lite experiment outside the existing strict path.
   Global enablement remains blocked pending adversarial equivalence and real
   task cost evidence.
+- Added clean-clone execution of the exact installed `Stop` command for both a
+  stale-candidate block and a current `CONVERGED` allow on Linux and Windows.
+- Tightened the Lite design so stable Acceptance IDs map to criterion evidence
+  and the Final Gate re-resolves current non-Git artifacts against their frozen
+  manifest identity.
 - Kept ordinary development free of per-tool 3CAN calls. The hook makes no
   network call, does not parse Codex transcripts, and only marks 3CAN writeback
   eligible at `AUTO_CLOSEOUT` after every acceptance condition has passing

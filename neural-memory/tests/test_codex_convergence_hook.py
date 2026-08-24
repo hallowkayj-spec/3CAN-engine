@@ -857,8 +857,8 @@ def test_dirty_submodule_is_rejected_by_current_repository_scope(tmp_path):
         module.workspace_fingerprint(parent)
 
 
-@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
-def test_installed_project_kit_executes_exact_native_hook_command(tmp_path, source):
+@pytest.fixture
+def installed_project_kit(tmp_path):
     project_kit = SCRIPT.parents[1]
     installed = tmp_path / "installed-project"
     shutil.copytree(project_kit, installed)
@@ -866,6 +866,8 @@ def test_installed_project_kit_executes_exact_native_hook_command(tmp_path, sour
         installed / ".codex" / "convergence.example.json",
         installed / ".codex" / "convergence.json",
     )
+    shutil.copyfile(installed / ".gitignore.template", installed / ".gitignore")
+    (installed / "tracked.txt").write_text("baseline\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(installed)], check=True)
     subprocess.run(
         ["git", "-C", str(installed), "config", "user.email", "test@example.invalid"],
@@ -882,27 +884,73 @@ def test_installed_project_kit_executes_exact_native_hook_command(tmp_path, sour
     hooks = json.loads(
         (installed / ".codex" / "hooks.json").read_text(encoding="utf-8")
     )["hooks"]
-    session_hook = hooks["SessionStart"][0]["hooks"][0]
-    command = session_hook["commandWindows" if os.name == "nt" else "command"]
 
-    result = subprocess.run(
-        command,
-        cwd=installed / "scripts",
-        input=json.dumps({"hook_event_name": "SessionStart", "source": source}),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        shell=True,
-        timeout=30,
+    def run_hook(event, payload):
+        native_hook = hooks[event][0]["hooks"][0]
+        command = native_hook["commandWindows" if os.name == "nt" else "command"]
+        result = subprocess.run(
+            command,
+            cwd=installed / "scripts",
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return json.loads(result.stdout)
+
+    return installed, run_hook
+
+
+@pytest.mark.parametrize("source", ["startup", "resume", "compact"])
+def test_installed_project_kit_executes_exact_native_hook_command(
+    installed_project_kit, source
+):
+    _, run_hook = installed_project_kit
+
+    output = run_hook(
+        "SessionStart", {"hook_event_name": "SessionStart", "source": source}
     )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    output = json.loads(result.stdout)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "Replace this with the exact observable outcome" in context
     assert "generic-delivery / v1" in context
     assert "owner-acceptance" in context
+
+
+def test_installed_project_kit_exact_stop_blocks_stale_and_allows_current(
+    installed_project_kit,
+):
+    installed, run_hook = installed_project_kit
+
+    write_contract(installed / ".codex" / "convergence.json", owner_review=False)
+    verified = subprocess.run(
+        [
+            sys.executable,
+            str(installed / "scripts" / "3can_convergence.py"),
+            "verify",
+            "--stage",
+            "final",
+        ],
+        cwd=installed,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert json.loads(verified.stdout)["outcome"] == "CONVERGED"
+
+    (installed / "tracked.txt").write_text("stale\n", encoding="utf-8")
+    stale = run_hook("Stop", {"hook_event_name": "Stop"})
+    assert stale["decision"] == "block"
+    assert "stale" in stale["reason"]
+
+    (installed / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    assert run_hook("Stop", {"hook_event_name": "Stop"}) == {}
 
 
 def test_public_hook_configuration_and_package_surface_are_coherent():

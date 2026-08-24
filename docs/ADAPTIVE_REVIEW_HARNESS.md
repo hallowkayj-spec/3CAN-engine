@@ -41,7 +41,7 @@ Execution and evidence are independent axes:
 | Axis | Values | Meaning |
 | --- | --- | --- |
 | execution | `FAST`, `EPISODIC` | one final bookend review, or a small number of incremental episode reviews plus a final review |
-| evidence | `LIGHT`, `TARGETED_STRICT` | semantic review by default, with deterministic or relational proof only for named risky criteria |
+| evidence | `REVIEW`, `REVIEW + TARGETED_STRICT` | semantic review by default, with deterministic or relational proof added only for named risky criteria |
 
 The Builder may propose stronger handling. It must not silently downgrade an
 active execution mode or remove a mandatory strict criterion. A downgrade is
@@ -60,12 +60,19 @@ The experiment should add only three small content-addressed records.
 {
   "schema": "3can.run-intent/v1",
   "goal": "...",
-  "acceptance": ["..."],
+  "acceptance": [
+    {"id": "A01", "text": "...", "evidence": "REVIEW"},
+    {
+      "id": "A02",
+      "text": "...",
+      "evidence": "TARGETED_STRICT",
+      "oracle_id": "lineage-check"
+    }
+  ],
   "non_goals": ["..."],
   "mutable_decisions": ["..."],
-  "final_evidence_expectation": ["..."],
   "execution_mode": "FAST",
-  "mandatory_strict_criteria": [],
+  "mandatory_strict_criteria": ["A02"],
   "revision": "v1"
 }
 ```
@@ -73,7 +80,11 @@ The experiment should add only three small content-addressed records.
 It stays within one screen. The active canonical digest and revision form the
 governance boundary. A semantic change after work begins is
 `REVISION_PENDING`; the Builder cannot edit, confirm, and accept its own new
-goal in the same boundary.
+goal in the same boundary. Acceptance IDs are unique and stable within a
+revision. Every criterion names either `REVIEW` or `TARGETED_STRICT` evidence;
+`mandatory_strict_criteria` references those same IDs rather than a second
+anonymous requirement list. It must equal the complete set of Acceptance IDs
+whose evidence is `TARGETED_STRICT`.
 
 ### Frozen Candidate
 
@@ -85,15 +96,26 @@ content-addressed manifest:
 {
   "schema": "3can.candidate-manifest/v1",
   "git_commit": "...",
-  "artifacts": [{"role": "final-result", "identity": "sha256:..."}],
+  "artifacts": [
+    {
+      "role": "final-result",
+      "path": "outputs/final.mp4",
+      "identity": "sha256:..."
+    }
+  ],
   "runtime_revision": null
 }
 ```
 
 The manifest identifies what was reviewed; it does not prove the result is
-correct. Reuse an existing immutable object digest or run revision rather than
-rehashing a costly artifact. Without a stable identity, that result is
-`UNVERIFIABLE`.
+correct, and an unchanged manifest does not prove that a mutable file still has
+the recorded content. Immediately before final success, the Final Gate resolves
+each current artifact again: a local path is hashed and compared with its
+expected identity, while an immutable object or runtime reference is resolved
+through the existing producing system or readback. Reuse an existing immutable
+object digest or run revision rather than rehashing a costly artifact. If
+neither a current local digest nor a stable immutable identity is available,
+that result is `UNVERIFIABLE`.
 
 ### Review Receipt
 
@@ -103,7 +125,7 @@ rehashing a costly artifact. Without a stable identity, that result is
   "intent_revision": "v1",
   "intent_sha256": "...",
   "candidate_git_commit": "...",
-  "candidate_manifest_sha256": null,
+  "candidate_manifest_sha256": "sha256:...",
   "review_scope_from": "...",
   "review_scope_to": "...",
   "reviewer": {
@@ -111,6 +133,14 @@ rehashing a costly artifact. Without a stable identity, that result is
     "version": "...",
     "independence": "same_agent"
   },
+  "criteria": [
+    {"id": "A01", "status": "PASS"},
+    {
+      "id": "A02",
+      "status": "PASS",
+      "evidence_ref": "oracle:lineage-check:sha256:..."
+    }
+  ],
   "status": "PASS",
   "findings": [],
   "receipt_sha256": "..."
@@ -121,11 +151,16 @@ The receipt digest is an integrity fingerprint over canonical receipt content,
 not a signature, authentication mechanism, or proof of reviewer independence.
 Independence is supplied by workflow separation or Owner review. A reviewer is
 read-only; changing the candidate invalidates the review and requires a new
-snapshot and receipt.
+snapshot and receipt. `criteria` must cover every active Acceptance ID exactly
+once. Aggregate `PASS` is derived only when every criterion passes and each
+mandatory strict criterion references current strict evidence; the top-level
+status cannot replace criterion-level proof.
+`candidate_manifest_sha256` is `null` only for a code-only candidate with no
+manifest; otherwise the receipt must bind the exact manifest shown to review.
 
 ## Execution flows
 
-### FAST + LIGHT
+### FAST + REVIEW
 
 ```text
 Owner prompt -> active Intent -> normal development -> focused test
@@ -136,7 +171,7 @@ Owner prompt -> active Intent -> normal development -> focused test
 This is the default experiment for a bounded 10--60 minute task. Git freezes the
 review object before review; a commit is a candidate, not automatic acceptance.
 
-### EPISODIC + LIGHT
+### EPISODIC + REVIEW
 
 ```text
 Intent -> E1 candidate commit -> E1 incremental review PASS

@@ -5,7 +5,7 @@ It keeps the task boundary outside model context, restores it at session start
 and after compaction, and refuses to call stale or unrelated evidence
 `CONVERGED`.
 
-The hook is deliberately small and offline. It does not schedule work, parse
+The hook is deliberately local, offline, and bounded. It does not schedule work, parse
 session JSONL, call an LLM, call 3CAN, manage a runtime, commit, merge, deploy,
 publish, or write back to the graph.
 
@@ -58,7 +58,8 @@ ordinary safe development has no added ceremony.
 The default file deliberately starts no convergence process for ordinary tool
 calls. A project with a measured high-cost operation may explicitly add the
 existing convergence handler under a narrow `PreToolUse` matcher for its
-declared guard. No first-write gate is shipped. The proposed FAST/EPISODIC
+declared guard. A declared guard without that installed handler is inactive and
+not enforced. No first-write gate is shipped. The proposed FAST/EPISODIC
 reduction and its unresolved generic-shell boundary are documented separately
 in [`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md).
 
