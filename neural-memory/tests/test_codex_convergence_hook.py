@@ -880,7 +880,8 @@ def test_installed_project_kit_executes_exact_native_hook_command(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     output = json.loads(result.stdout)
     context = output["hookSpecificOutput"]["additionalContext"]
-    assert "Replace this with the accepted task outcome." in context
+    assert "Replace this with the exact observable outcome" in context
+    assert "generic-delivery / v1" in context
     assert "owner-acceptance" in context
 
 
@@ -913,9 +914,12 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
     assert {
         "docs/CODEX_CONVERGENCE_HOOK.md",
         "examples/codex-cli-project-kit/.codex/convergence.example.json",
+        "examples/codex-cli-project-kit/.codex/task-hooks/generic-delivery.example.json",
         "examples/codex-cli-project-kit/.codex/hooks.json",
         "examples/codex-cli-project-kit/scripts/3can_convergence.py",
+        "examples/codex-cli-project-kit/scripts/task_oracle.py",
         "neural-memory/tests/test_codex_convergence_hook.py",
+        "neural-memory/tests/test_task_oracle.py",
     } <= manifest
 
 

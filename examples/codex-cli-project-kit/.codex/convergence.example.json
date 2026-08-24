@@ -1,50 +1,23 @@
 {
-  "schema": "3can.convergence-contract/v1",
+  "schema": "3can.convergence-contract/v2",
   "status": "active",
   "scope": "current_repository_only",
-  "goal": "Replace this with the accepted task outcome.",
-  "acceptance": [
-    {
-      "id": "mechanical-integrity",
-      "text": "Replace this with an observable acceptance condition.",
-      "evidence": [
-        "diff-check"
-      ]
-    },
-    {
-      "id": "owner-acceptance",
-      "text": "The Owner accepts the final result.",
-      "evidence": [
-        "owner-review"
-      ]
-    }
-  ],
+  "run_id": "replace-with-a-unique-run-id",
+  "task_hook": {
+    "path": ".codex/task-hooks/generic-delivery.example.json",
+    "sha256": "1433d4ad360f4e7625e5aa7048bfaddc83bd03bf72fa0bf2d46defbeef909c8b",
+    "revision": "v1"
+  },
+  "activation": {
+    "task_hook_sha256": "1433d4ad360f4e7625e5aa7048bfaddc83bd03bf72fa0bf2d46defbeef909c8b",
+    "confirmed_revision": "v1",
+    "confirmed_by": "owner",
+    "confirmation_ref": "replace-with-the-real-review-reference"
+  },
+  "bindings": {},
+  "allowed_fallbacks": [],
   "non_goals": [
-    "Owner acceptance, merge, deployment, and publication are separate decisions."
-  ],
-  "checks": [
-    {
-      "id": "diff-check",
-      "type": "command",
-      "argv": [
-        "git",
-        "diff",
-        "HEAD",
-        "--check"
-      ],
-      "stages": [
-        "episode",
-        "final"
-      ],
-      "timeout_seconds": 30
-    },
-    {
-      "id": "owner-review",
-      "type": "owner_review",
-      "stages": [
-        "final"
-      ]
-    }
+    "Owner acceptance, merge, deployment, publication, and 3CAN writeback remain separate decisions."
   ],
   "guards": []
 }

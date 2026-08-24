@@ -1,0 +1,65 @@
+{
+  "schema": "3can.task-hook/v1",
+  "task_family": "generic-delivery",
+  "status": "EPHEMERAL_ACTIVE",
+  "lifecycle": "one_off",
+  "revision": "v1",
+  "parent_revision": null,
+  "goal": "Replace this with the exact observable outcome for the current task.",
+  "applicability": "Use only after this task family is explicitly selected for the current run.",
+  "candidate": {
+    "provider": {
+      "type": "workspace"
+    }
+  },
+  "acceptance": [
+    {
+      "id": "mechanical-integrity",
+      "text": "The current candidate passes the declared mechanical checks.",
+      "oracle_ids": [
+        "diff-check"
+      ]
+    },
+    {
+      "id": "owner-acceptance",
+      "text": "The Owner accepts the final result.",
+      "oracle_ids": [
+        "owner-review"
+      ]
+    }
+  ],
+  "oracles": [
+    {
+      "id": "diff-check",
+      "type": "command",
+      "kind": "DETERMINISTIC",
+      "version": "v1",
+      "argv": [
+        "git",
+        "diff",
+        "HEAD",
+        "--check"
+      ],
+      "stages": [
+        "episode",
+        "final"
+      ],
+      "timeout_seconds": 30
+    },
+    {
+      "id": "owner-review",
+      "type": "owner_review",
+      "kind": "HUMAN",
+      "version": "owner-v1",
+      "stages": [
+        "final"
+      ]
+    }
+  ],
+  "invariants": [
+    "Evidence must target the active task revision and current candidate."
+  ],
+  "mutable_bindings": [],
+  "fallback_policy": "explicit_only",
+  "allowed_fallback_ids": []
+}
