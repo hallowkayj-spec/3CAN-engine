@@ -324,6 +324,35 @@ def _file_fingerprint(root: Path, relative: str) -> dict[str, Any]:
     return result
 
 
+def _artifact_fingerprint(root: Path, check: dict[str, Any]) -> dict[str, Any]:
+    check_id = check["id"]
+    relative = check["path"].replace("\\", "/")
+    path = _resolve_under(root, relative, label=f"artifact check {check_id} path")
+    result: dict[str, Any] = {"id": check_id, "path": relative}
+    if not path.is_file():
+        result["state"] = "missing"
+        return result
+    stat = path.stat()
+    result.update({"state": "file", "bytes": stat.st_size})
+    if stat.st_size <= MAX_HASH_BYTES:
+        result["sha256"] = _sha256_bytes(path.read_bytes())
+    else:
+        # Large artifacts should normally use a task-specific manifest or
+        # candidate provider. Size + mtime keeps the generic hook bounded while
+        # still making the recorded evidence re-verifiable.
+        result["mtime_ns"] = stat.st_mtime_ns
+    return result
+
+
+def evidence_fingerprint(contract: dict[str, Any], root: Path) -> str:
+    artifacts = [
+        _artifact_fingerprint(root, check)
+        for check in contract.get("checks", [])
+        if check.get("type") == "artifact"
+    ]
+    return _sha256_bytes(_json_bytes(artifacts))
+
+
 def workspace_fingerprint(root: Path) -> dict[str, Any]:
     resolved = root.resolve()
     top = _git(resolved, "rev-parse", "--show-toplevel")
@@ -423,11 +452,13 @@ def receipt_is_current(
     *,
     contract_sha256: str,
     workspace: dict[str, Any],
+    evidence_sha256: str,
 ) -> bool:
     return bool(
         receipt
         and receipt.get("schema") == RECEIPT_SCHEMA
         and receipt.get("contract_sha256") == contract_sha256
+        and receipt.get("evidence_sha256") == evidence_sha256
         and workspace.get("kind") == "git"
         and bool(workspace.get("fingerprint"))
         and receipt.get("workspace", {}).get("fingerprint") == workspace.get("fingerprint")
@@ -445,19 +476,15 @@ def _run_check(check: dict[str, Any], root: Path, stage: str) -> dict[str, Any]:
     if check["type"] == "owner_review":
         return {"id": check_id, "type": "owner_review", "status": "pending"}
     if check["type"] == "artifact":
-        path = _resolve_under(root, check["path"], label=f"artifact check {check_id} path")
-        exists = path.is_file()
-        size = path.stat().st_size if exists else 0
-        passed = exists and size >= check.get("min_bytes", 1)
+        fingerprint = _artifact_fingerprint(root, check)
+        size = int(fingerprint.get("bytes", 0))
+        passed = fingerprint.get("state") == "file" and size >= check.get("min_bytes", 1)
         result: dict[str, Any] = {
             "id": check_id,
             "type": "artifact",
             "status": "pass" if passed else "fail",
-            "path": check["path"].replace("\\", "/"),
-            "bytes": size,
+            **{key: value for key, value in fingerprint.items() if key != "id"},
         }
-        if exists and size <= MAX_HASH_BYTES:
-            result["sha256"] = _sha256_bytes(path.read_bytes())
         return result
 
     started = time.monotonic()
@@ -530,6 +557,7 @@ def _receipt(
     *,
     contract_sha256: str,
     workspace: dict[str, Any],
+    evidence_sha256: str,
     stage: str,
     outcome: str,
     checks: list[dict[str, Any]],
@@ -546,6 +574,7 @@ def _receipt(
         "schema": RECEIPT_SCHEMA,
         "recorded_at": _now(),
         "contract_sha256": contract_sha256,
+        "evidence_sha256": evidence_sha256,
         "workspace": workspace,
         "stage": stage,
         "outcome": outcome,
@@ -575,7 +604,19 @@ def verify(
     contract, contract_sha256 = load_contract(root, contract_path)
     if contract is None or contract_sha256 is None:
         raise ContractError("no convergence contract found")
+    before_workspace = workspace_fingerprint(root)
+    before_evidence = evidence_fingerprint(contract, root)
     checks = [_run_check(check, root, stage) for check in contract.get("checks", [])]
+    after_contract, after_contract_sha256 = load_contract(root, contract_path)
+    if after_contract is None or after_contract_sha256 is None:
+        raise ContractError("convergence contract disappeared during verification")
+    after_workspace = workspace_fingerprint(root)
+    after_evidence = evidence_fingerprint(after_contract, root)
+    verification_changed = (
+        contract_sha256 != after_contract_sha256
+        or before_workspace.get("fingerprint") != after_workspace.get("fingerprint")
+        or before_evidence != after_evidence
+    )
     if not any(
         item["type"] != "owner_review" and item["status"] != "skipped" for item in checks
     ):
@@ -584,7 +625,11 @@ def verify(
         item for item in checks if item["type"] != "owner_review" and item["status"] == "fail"
     ]
     acceptance = _evaluate_acceptance(contract, checks, stage)
-    if automated_failures:
+    reason = ""
+    if verification_changed:
+        outcome = "CONFLICT"
+        reason = "Contract, workspace, or artifact evidence changed while checks were running."
+    elif automated_failures:
         outcome = "FAIL"
     elif stage == "episode":
         outcome = "PASS"
@@ -596,15 +641,16 @@ def verify(
         outcome = "CONVERGED"
     if stage == "episode" and outcome == "PASS" and not next_objective.strip():
         raise ContractError("episode verification requires --next-objective")
-    workspace = workspace_fingerprint(root)
     value = _receipt(
-        contract_sha256=contract_sha256,
-        workspace=workspace,
+        contract_sha256=after_contract_sha256,
+        workspace=after_workspace,
+        evidence_sha256=after_evidence,
         stage=stage,
         outcome=outcome,
         checks=checks,
         acceptance=acceptance,
         next_objective=next_objective.strip(),
+        reason=reason,
     )
     _write_json_atomic(_receipt_path(root, receipt_path), value)
     return value
@@ -625,15 +671,16 @@ def record_typed(
     if not reason.strip():
         raise ContractError("typed incomplete state requires a non-empty reason")
     previous = read_receipt(root, receipt_path) or {}
-    previous_acceptance = previous.get("acceptance")
-    if not isinstance(previous_acceptance, list) or not previous_acceptance:
-        previous_acceptance = _evaluate_acceptance(contract, [], "current")
+    # A typed incomplete report must not launder checks that passed against an
+    # older candidate into current evidence. Only verify() can create PASS.
+    previous_acceptance = _evaluate_acceptance(contract, [], "current")
     value = _receipt(
         contract_sha256=contract_sha256,
         workspace=workspace_fingerprint(root),
+        evidence_sha256=evidence_fingerprint(contract, root),
         stage=str(previous.get("stage") or "current"),
         outcome=outcome,
-        checks=previous.get("checks", []) if isinstance(previous.get("checks"), list) else [],
+        checks=[],
         acceptance=previous_acceptance,
         next_objective=next_objective.strip(),
         reason=reason.strip(),
@@ -668,7 +715,12 @@ def _compact_contract_context(
                 "Open acceptance: " + ", ".join(receipt["open_acceptance_ids"])
             )
         if receipt.get("next_objective"):
-            lines.append("Next objective: " + str(receipt["next_objective"]))
+            objective_label = (
+                "Next objective: "
+                if current
+                else "Previous next objective (stale; re-evaluate): "
+            )
+            lines.append(objective_label + str(receipt["next_objective"]))
         if receipt.get("reason"):
             lines.append("Typed reason: " + str(receipt["reason"]))
     else:
@@ -677,7 +729,9 @@ def _compact_contract_context(
         "Git and validation receipts prove candidate state; owner acceptance, merge, deployment, and publication remain separate decisions."
     )
     text = "\n".join(lines)
-    return text[:MAX_CONTEXT_CHARS]
+    if len(text) > MAX_CONTEXT_CHARS:
+        raise ContractError("compact convergence context exceeds the configured limit")
+    return text
 
 
 def _hook_input_text(value: Any) -> str:
@@ -755,7 +809,25 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
         stop_hook_active = bool(payload.get("stop_hook_active"))
         contract, contract_sha256 = load_contract(root, contract_path)
         if contract is None or contract_sha256 is None:
-            print("{}")
+            previous = read_receipt(root, receipt_path)
+            if previous is None:
+                print("{}")
+                return 0
+            unavailable = (
+                "Convergence contract is missing after prior activation. "
+                "Current convergence is UNAVAILABLE; do not claim completion."
+            )
+            if event == "Stop":
+                output = (
+                    {"systemMessage": unavailable + " Report PARTIAL with the exact gap."}
+                    if stop_hook_active
+                    else {"decision": "block", "reason": unavailable}
+                )
+            elif event in {"SessionStart", "PreToolUse"}:
+                output = {"systemMessage": unavailable + " The development path failed open."}
+            else:
+                output = {}
+            print(json.dumps(output, ensure_ascii=False))
             return 0
         if contract.get("status", "active") != "active":
             print("{}")
@@ -772,11 +844,13 @@ def run_hook(root: Path, contract_path: Path, receipt_path: Path) -> int:
             print("{}")
             return 0
         workspace = workspace_fingerprint(root)
+        current_evidence = evidence_fingerprint(contract, root)
         receipt = read_receipt(root, receipt_path)
         current = receipt_is_current(
             receipt,
             contract_sha256=contract_sha256,
             workspace=workspace,
+            evidence_sha256=current_evidence,
         )
 
         if event == "SessionStart" and payload.get("source") == "compact":
@@ -853,6 +927,7 @@ def _summary(
     if contract is None or contract_sha256 is None:
         return {"ok": True, "status": "inactive", "reason": "contract_missing"}
     workspace = workspace_fingerprint(root)
+    current_evidence = evidence_fingerprint(contract, root)
     receipt = read_receipt(root, receipt_path)
     return {
         "ok": True,
@@ -864,6 +939,7 @@ def _summary(
             receipt,
             contract_sha256=contract_sha256,
             workspace=workspace,
+            evidence_sha256=current_evidence,
         ),
         "threecan_writeback": (receipt or {}).get(
             "threecan_writeback", {"eligible_trigger": "NONE", "performed": False}

@@ -471,6 +471,161 @@ def test_workspace_change_stales_receipt_and_typed_state_allows_stop(convergence
     assert "BLOCKED" in typed_second["systemMessage"]
 
 
+def test_ignored_artifact_change_stales_converged_receipt(convergence):
+    module, root, contract, receipt = convergence
+    (root / ".gitignore").write_text("test-results/\nartifacts/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "ignore artifacts"], check=True)
+    artifact = root / "artifacts" / "candidate.bin"
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"candidate-one")
+    write_contract(contract, owner_review=False)
+    value = json.loads(contract.read_text(encoding="utf-8"))
+    value["checks"][1]["path"] = "artifacts/candidate.bin"
+    contract.write_text(json.dumps(value), encoding="utf-8")
+
+    final = module.verify(root, contract, receipt, stage="final", next_objective="")
+    assert final["outcome"] == "CONVERGED"
+    artifact.write_bytes(b"candidate-two")
+
+    stopped = hook(module, root, contract, receipt, {"hook_event_name": "Stop"})
+    assert stopped["decision"] == "block"
+    assert "stale" in stopped["reason"].lower()
+
+
+def test_contract_disappearance_after_activation_is_not_noop(convergence):
+    module, root, contract, receipt = convergence
+    write_contract(contract, owner_review=False)
+    module.verify(root, contract, receipt, stage="final", next_objective="")
+    contract.unlink()
+
+    first = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": False},
+    )
+    second = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "Stop", "stop_hook_active": True},
+    )
+
+    assert first["decision"] == "block"
+    assert "missing after prior activation" in first["reason"]
+    assert "UNAVAILABLE" in first["reason"]
+    assert "PARTIAL" in second["systemMessage"]
+
+
+def test_verification_race_records_conflict(convergence):
+    module, root, contract, receipt = convergence
+    write_contract(contract, owner_review=False)
+    value = json.loads(contract.read_text(encoding="utf-8"))
+    value["checks"][0]["argv"] = [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; Path('tracked.txt').write_text('changed during check\\n')",
+    ]
+    contract.write_text(json.dumps(value), encoding="utf-8")
+
+    result = module.verify(
+        root,
+        contract,
+        receipt,
+        stage="final",
+        next_objective="Re-run against a stable candidate.",
+    )
+
+    assert result["outcome"] == "CONFLICT"
+    assert "changed while checks were running" in result["reason"]
+    stopped = hook(module, root, contract, receipt, {"hook_event_name": "Stop"})
+    assert stopped["decision"] == "block"
+    assert "CONFLICT" in stopped["reason"]
+
+
+def test_typed_receipt_cannot_launder_old_passed_checks(convergence):
+    module, root, contract, receipt = convergence
+    guards = [
+        {
+            "tool_name_glob": "exec_command",
+            "input_contains": "expensive-operation",
+            "requires_check_ids": ["diff-check"],
+        }
+    ]
+    write_contract(contract, guards=guards)
+    module.verify(
+        root,
+        contract,
+        receipt,
+        stage="episode",
+        next_objective="Run the next operation.",
+    )
+    (root / "tracked.txt").write_text("new candidate\n", encoding="utf-8")
+
+    typed = module.record_typed(
+        root,
+        contract,
+        receipt,
+        outcome="PARTIAL",
+        reason="The candidate changed.",
+        next_objective="Verify the new candidate.",
+    )
+    guarded = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "expensive-operation"},
+        },
+    )
+
+    assert typed["checks"] == []
+    assert guarded["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "diff-check" in guarded["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_compaction_marks_stale_objective_and_never_silently_truncates(convergence):
+    module, root, contract, receipt = convergence
+    write_contract(contract)
+    module.verify(
+        root,
+        contract,
+        receipt,
+        stage="episode",
+        next_objective="Run the previously selected next step.",
+    )
+    (root / "tracked.txt").write_text("stale\n", encoding="utf-8")
+
+    stale = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "SessionStart", "source": "compact"},
+    )
+    context = stale["hookSpecificOutput"]["additionalContext"]
+    assert "Previous next objective (stale; re-evaluate):" in context
+
+    value = json.loads(contract.read_text(encoding="utf-8"))
+    value["goal"] = "x" * (module.MAX_CONTEXT_CHARS + 1)
+    contract.write_text(json.dumps(value), encoding="utf-8")
+    too_large = hook(
+        module,
+        root,
+        contract,
+        receipt,
+        {"hook_event_name": "SessionStart", "source": "compact"},
+    )
+    assert "UNAVAILABLE" in too_large["systemMessage"]
+    assert "additionalContext" not in too_large
+
+
 def test_invalid_contract_is_asymmetric_at_stop(convergence):
     module, root, contract, receipt = convergence
     contract.write_text("{not-json", encoding="utf-8")
