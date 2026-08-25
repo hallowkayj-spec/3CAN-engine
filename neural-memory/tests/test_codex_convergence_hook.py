@@ -970,11 +970,17 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
         hook["command"] for group in hooks["PreToolUse"] for hook in group["hooks"]
     ]
 
-    assert "SessionStart" in hooks and "Stop" in hooks and "PreToolUse" in hooks
+    assert {
+        "SessionStart",
+        "UserPromptSubmit",
+        "PostToolUse",
+        "Stop",
+        "PreToolUse",
+    } <= set(hooks)
     assert not any("3can_convergence.py" in item for item in pre_tool_commands)
     assert hooks["PreToolUse"][0]["matcher"] == "Bash|mcp__.*create_pull_request.*"
     assert not any("3can_research_harness.py" in item for item in pre_tool_commands)
-    assert "UserPromptSubmit" not in hooks
+    assert hooks["PostToolUse"][0]["matcher"] == "^(Bash|update_plan)$"
     assert not any(
         "3can_research_harness.py" in hook["command"]
         for groups in hooks.values()
@@ -983,14 +989,14 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
     )
     assert all(
         "commandWindows" in hook
-        for event in ("SessionStart", "PreToolUse", "Stop")
+        for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
         for group in hooks[event]
         for hook in group["hooks"]
         if "3can_runtimehook.py" in hook["command"]
     )
     runtimehook_hooks = [
         hook
-        for event in ("SessionStart", "PreToolUse", "Stop")
+        for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
         for group in hooks[event]
         for hook in group["hooks"]
         if "3can_runtimehook.py" in hook["command"]
@@ -1010,7 +1016,8 @@ def test_public_hook_configuration_and_package_surface_are_coherent():
     ]
     assert all(item["timeout"] == 30 for item in convergence_hooks)
     assert all(item["timeout"] == 10 for item in runtimehook_hooks)
-    assert len(convergence_hooks) == len(runtimehook_hooks) == 2
+    assert len(convergence_hooks) == 2
+    assert len(runtimehook_hooks) == 4
     assert all(item["timeout"] == 10 for item in pr_hooks)
     assert {
         "docs/CODEX_CONVERGENCE_HOOK.md",

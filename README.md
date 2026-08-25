@@ -151,7 +151,7 @@ codex plugin marketplace add hallowkayj-spec/3CAN-engine --ref main
 
 重启 ChatGPT 桌面版，在 Plugins Directory 选择 `3CAN Engine` 来源并安装
 `3CAN RuntimeHook`；Codex CLI 用户则打开 `/plugins`，从该 marketplace
-安装后新建 Session。通过原生 Hook 审阅界面核对并信任两条 Hook 后，即可
+安装后新建 Session。通过原生 Hook 审阅界面核对并信任当前 Hook 定义后，即可
 直接说“这个任务按 RuntimeHook 执行”。插件未激活时全程静默，也不要求向
 每个项目复制 Project Kit。详见
 [docs/RUNTIMEHOOK.md](./docs/RUNTIMEHOOK.md)。

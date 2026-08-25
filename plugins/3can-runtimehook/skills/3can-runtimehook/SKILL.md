@@ -41,10 +41,10 @@ Derive one concise Goal and stable `ID=observable text` Acceptance list from the
 Owner request. Keep implementation choices out of Acceptance unless the Owner
 actually required them.
 
-Choose and record the lightest useful internal intensity by semantic judgment:
+Choose and record the lightest useful review depth by semantic judgment:
 
-- `light`: small and clear; final review only;
-- `medium`: long, cross-module, or multi-stage; episode and final reviews;
+- `light`: a short Goal/Acceptance check at each observed boundary;
+- `medium`: inspect the completed episode output and relevant diff at each boundary;
 - `max`: only when a named criterion needs an existing project-owned targeted
   strict Oracle in addition to semantic review.
 
@@ -52,12 +52,23 @@ When uncertain between light and medium, use medium. Do not classify by elapsed
 minutes, file count, domain name, command string, or Oracle name. Do not ask the
 user to choose the intensity. Run `on` with Goal, repeated Acceptance, selected
 intensity, and a short semantic reason. Then work normally—understand, edit,
-test, Git checkpoint, PR or delivery—with no per-tool RuntimeHook call.
+test, Git checkpoint, PR or delivery. Native Hooks observe Git HEAD changes and
+completed `update_plan` stages; do not parse command text or add per-tool calls.
 
 ## Review semantically
 
-At the selected episode/final boundary, inspect the actual request, current diff,
-tests, and delivered result. Review these general questions:
+Every observed Git or completed-plan boundary creates one coalesced semantic
+review debt and immediately reinjects RUN_INTENT. When a meaningful semantic
+stage or episode completes without either signal, run one generic boundary:
+
+```text
+checkpoint --kind stage|episode --label "what completed" --next-objective "what is next"
+```
+
+Do not duplicate a boundary already observed through Git or `update_plan`, and
+do not encode domain names, S-number lists, file paths, or command patterns in
+the controller. At each debt and at the final boundary, inspect the actual
+request, current diff or output, tests, and delivered result. Review:
 
 1. Does the result still satisfy the Goal and every Acceptance criterion?
 2. Is any decision hardcoded without a traceable Owner requirement, declared
@@ -75,10 +86,15 @@ and verify the worktree is clean. RuntimeHook records that HEAD only to make the
 semantic review stale after a later commit or dirty edit; it does not fingerprint
 the candidate or artifact.
 
+`SessionStart` and `UserPromptSubmit` reassert current Intent. If review debt is
+still due at `Stop`, the native Hook requests one continuation so the Agent must
+review or report an honest typed non-success state; it does not loop forever or
+override an independent project gate.
+
 If a criterion needs mechanical proof, use the project's existing convergence
 or Task Oracle path separately and reference that result. RuntimeHook never
 creates or owns its selector, candidate freshness, receipt lifecycle, bindings,
-fallback policy, history ledger, or Stop decision.
+fallback policy, history ledger, or project evidence Stop decision.
 
 ## Disable only this layer
 

@@ -204,7 +204,8 @@ def test_plugin_hooks_are_silent_until_active_and_resolve_nested_cwd(
     context = started["hookSpecificOutput"]["additionalContext"]
     assert "交付当前开源任务" in context
     assert "Semantic review: PENDING" in context
-    assert "final semantic review remains due" in stopped["systemMessage"]
+    assert stopped["decision"] == "block"
+    assert "final semantic review is due" in stopped["reason"]
 
 
 def test_plugin_hook_is_silent_outside_git(tmp_path: Path):
@@ -291,7 +292,12 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
     assert manifest["skills"] == "./skills/"
     assert "hooks" not in manifest
     assert manifest["repository"].endswith("/3CAN-engine")
-    assert set(hooks) == {"SessionStart", "Stop"}
+    assert set(hooks) == {
+        "SessionStart",
+        "UserPromptSubmit",
+        "PostToolUse",
+        "Stop",
+    }
     for event in hooks.values():
         handlers = [hook for group in event for hook in group["hooks"]]
         assert len(handlers) == 1
@@ -305,6 +311,10 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
     assert hooks["SessionStart"][0]["hooks"][0][
         "additionalContextLimit"
     ] == 5000
+    assert hooks["UserPromptSubmit"][0]["hooks"][0][
+        "additionalContextLimit"
+    ] == 5000
+    assert hooks["PostToolUse"][0]["matcher"] == "^(Bash|update_plan)$"
     assert "do not require or\ncopy a controller" in skill
     assert "allow_implicit_invocation: true" in skill_ui
     assert "NoDefaultCurrentDirectoryInExePath" in windows_launcher

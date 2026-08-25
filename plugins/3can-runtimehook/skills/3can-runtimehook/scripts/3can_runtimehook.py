@@ -37,6 +37,8 @@ REVIEW_RESULTS = {
     "CONTRADICTS",
     "UNREQUESTED",
 }
+BOUNDARY_KINDS = {"activation", "git", "stage", "episode"}
+MAX_BOUNDARY_LABEL_CHARS = 240
 ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
@@ -123,13 +125,18 @@ def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return completed
 
 
-def _git_checkpoint(root: Path) -> tuple[str, bool]:
+def _git_head(root: Path) -> str:
     head = _git(root, "rev-parse", "--verify", "HEAD")
     if head.returncode != 0:
         raise RuntimeHookError("Git HEAD is unavailable")
-    reviewed_head = head.stdout.strip()
-    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", reviewed_head):
+    current_head = head.stdout.strip()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", current_head):
         raise RuntimeHookError("Git HEAD is invalid")
+    return current_head
+
+
+def _git_checkpoint(root: Path) -> tuple[str, bool]:
+    current_head = _git_head(root)
     status = _git(
         root,
         "status",
@@ -139,7 +146,7 @@ def _git_checkpoint(root: Path) -> tuple[str, bool]:
     )
     if status.returncode != 0:
         raise RuntimeHookError("Git worktree status is unavailable")
-    return reviewed_head, bool(status.stdout.strip())
+    return current_head, bool(status.stdout.strip())
 
 
 def _repository_root(root: Path) -> Path:
@@ -283,6 +290,15 @@ def _text(value: Any, *, label: str) -> str:
     return result
 
 
+def _boundary_label(value: Any, *, label: str) -> str:
+    result = _text(value, label=label)
+    if len(result) > MAX_BOUNDARY_LABEL_CHARS:
+        raise RuntimeHookError(
+            f"{label} exceeds {MAX_BOUNDARY_LABEL_CHARS} characters"
+        )
+    return result
+
+
 def _validate_state(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema") != STATE_SCHEMA:
         raise RuntimeHookError(f"state schema must be {STATE_SCHEMA}")
@@ -342,7 +358,51 @@ def _validate_state(value: Any) -> dict[str, Any]:
             raise RuntimeHookError("final semantic PASS requires reviewed_git_head")
     elif reviewed_git_head is not None:
         raise RuntimeHookError("reviewed_git_head belongs only to final semantic PASS")
+
+    boundary = value.get("boundary")
+    if boundary is not None:
+        if not isinstance(boundary, dict):
+            raise RuntimeHookError("review boundary must be an object")
+        sequence = boundary.get("sequence")
+        reviewed_sequence = boundary.get("reviewed_sequence")
+        if (
+            not isinstance(sequence, int)
+            or isinstance(sequence, bool)
+            or sequence < 1
+            or not isinstance(reviewed_sequence, int)
+            or isinstance(reviewed_sequence, bool)
+            or reviewed_sequence < 0
+            or reviewed_sequence > sequence
+        ):
+            raise RuntimeHookError("review boundary sequence is invalid")
+        observed_git_head = boundary.get("observed_git_head")
+        if not isinstance(observed_git_head, str) or not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", observed_git_head
+        ):
+            raise RuntimeHookError("review boundary Git HEAD is invalid")
+        if boundary.get("last_kind") not in BOUNDARY_KINDS:
+            raise RuntimeHookError("review boundary kind is invalid")
+        _boundary_label(boundary.get("last_label"), label="review boundary label")
     return value
+
+
+def _with_boundary(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Adopt pre-boundary v1 state without a migration subsystem."""
+    if state.get("boundary") is not None:
+        return state
+    current_head = _git_head(root)
+    review = state["semantic_review"]
+    reviewed_head = review.get("reviewed_git_head")
+    return {
+        **state,
+        "boundary": {
+            "sequence": 1,
+            "reviewed_sequence": 0 if review["result"] == "PENDING" else 1,
+            "observed_git_head": reviewed_head or current_head,
+            "last_kind": "activation",
+            "last_label": "Existing RuntimeHook state adopted",
+        },
+    }
 
 
 def _load_state(root: Path) -> dict[str, Any] | None:
@@ -358,7 +418,7 @@ def _load_state(root: Path) -> dict[str, Any] | None:
         value = json.loads(state_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeHookError("RuntimeHook state is unreadable") from exc
-    return _validate_state(value)
+    return _validate_state(_with_boundary(root, _validate_state(value)))
 
 
 def _context(
@@ -373,26 +433,45 @@ def _context(
     episode = state.get("current_episode")
     episode_text = f" Current episode: {episode}." if episode else ""
     review = state["semantic_review"]
-    review_text = f" Semantic review: {review_result or review['result']}"
+    boundary = state["boundary"]
+    effective_review = review_result or review["result"]
+    if (
+        effective_review == "PENDING"
+        and boundary["last_kind"] == "git"
+        and boundary["reviewed_sequence"] > 0
+        and boundary["reviewed_sequence"] < boundary["sequence"]
+    ):
+        effective_review = "STALE"
+    review_text = f" Semantic review: {effective_review}"
     if review["result"] != "PENDING":
         review_text += f" ({review['stage']}, {review['reference']})"
+    boundary_due = boundary["reviewed_sequence"] < boundary["sequence"]
+    boundary_text = (
+        f" Last boundary {boundary['sequence']}: {boundary['last_kind']}="
+        f"{boundary['last_label']}. Boundary review: "
+        f"{'DUE' if boundary_due else 'CURRENT'}."
+    )
     message = (
         f"RuntimeHook semantic context [{state['activation_id']}]. "
         f"RUN_INTENT: {intent['goal']}. Acceptance: {acceptance}.{non_goal_text} "
         f"Internal intensity: {state['internal_intensity']['level']} because "
-        f"{state['internal_intensity']['reason']}.{episode_text}{review_text}. "
+        f"{state['internal_intensity']['reason']}.{episode_text}{review_text}."
+        f"{boundary_text} "
         "At the selected review boundary, check goal/acceptance drift, decisions "
         "hardcoded without a requirement or declared contract, hidden fallback or "
         "stale state, and unrequested behavior. Use existing targeted strict "
         "evidence only for criteria needing mechanical proof. Git and the project "
-        "convergence hook remain authoritative for evidence freshness and Stop."
+        "convergence hook remain authoritative for evidence freshness and Stop. "
+        "The current Owner prompt is authoritative; if it changes this task, "
+        "update or replace RUN_INTENT before acting."
     )
     if len(message) > MAX_CONTEXT_CHARS:
         raise RuntimeHookError("RUN_INTENT is too large for native Hook reinjection")
     return message
 
 
-def _stale_review_reasons(root: Path, review: dict[str, Any]) -> list[str]:
+def _stale_review_reasons(root: Path, state: dict[str, Any]) -> list[str]:
+    review = state["semantic_review"]
     if review["result"] != "PASS" or review.get("stage") != "final":
         return []
     current_head, dirty = _git_checkpoint(root)
@@ -401,7 +480,55 @@ def _stale_review_reasons(root: Path, review: dict[str, Any]) -> list[str]:
         reasons.append("Git HEAD changed")
     if dirty:
         reasons.append("the worktree is dirty")
+    boundary = state["boundary"]
+    if boundary["reviewed_sequence"] < boundary["sequence"]:
+        reasons.append("a newer review boundary is due")
     return reasons
+
+
+def _mark_boundary(
+    state: dict[str, Any],
+    *,
+    kind: str,
+    label: str,
+    observed_git_head: str,
+) -> dict[str, Any]:
+    if kind not in BOUNDARY_KINDS - {"activation"}:
+        raise RuntimeHookError("only Git, stage, or episode boundaries may be added")
+    boundary = state["boundary"]
+    return {
+        **state,
+        "boundary": {
+            **boundary,
+            "sequence": boundary["sequence"] + 1,
+            "observed_git_head": observed_git_head,
+            "last_kind": kind,
+            "last_label": _boundary_label(label, label="review boundary label"),
+        },
+        "semantic_review": {
+            "stage": None,
+            "result": "PENDING",
+            "reference": None,
+            "reviewed_git_head": None,
+        },
+    }
+
+
+def _sync_git_boundary(
+    root: Path, state: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    current_head = _git_head(root)
+    previous_head = state["boundary"]["observed_git_head"]
+    if current_head == previous_head:
+        return state, False
+    state = _mark_boundary(
+        state,
+        kind="git",
+        label=f"Git HEAD {previous_head[:12]} -> {current_head[:12]}",
+        observed_git_head=current_head,
+    )
+    _write_state(root, state)
+    return state, True
 
 
 def _write_state(root: Path, value: dict[str, Any]) -> None:
@@ -454,6 +581,7 @@ def _acceptance(values: list[str]) -> list[dict[str, str]]:
 def activate(args: argparse.Namespace) -> dict[str, Any]:
     root = _repository_root(args.root)
     local_exclude_added = _ensure_state_ignored(root)
+    current_head = _git_head(root)
     activation_id = f"rh-{uuid.uuid4().hex[:16]}"
     state = {
         "schema": STATE_SCHEMA,
@@ -478,6 +606,13 @@ def activate(args: argparse.Namespace) -> dict[str, Any]:
             "result": "PENDING",
             "reference": None,
             "reviewed_git_head": None,
+        },
+        "boundary": {
+            "sequence": 1,
+            "reviewed_sequence": 0,
+            "observed_git_head": current_head,
+            "last_kind": "activation",
+            "last_label": "RuntimeHook activated",
         },
     }
     _write_state(root, state)
@@ -516,6 +651,7 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
     state = _load_state(root)
     if state is None or state["status"] != "active":
         raise RuntimeHookError("no active RuntimeHook semantic task")
+    state, _git_changed = _sync_git_boundary(root, state)
     next_objective = args.next_objective.strip()
     if args.stage == "episode" and not next_objective:
         raise RuntimeHookError("episode review requires --next-objective")
@@ -535,6 +671,10 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
             "reference": reference,
             "reviewed_git_head": reviewed_git_head,
         },
+        "boundary": {
+            **state["boundary"],
+            "reviewed_sequence": state["boundary"]["sequence"],
+        },
         "current_episode": (
             next_objective if args.stage == "episode" else state.get("current_episode")
         ),
@@ -548,6 +688,37 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
         "result": args.result,
         "reference": state["semantic_review"]["reference"],
         "reviewed_git_head": reviewed_git_head,
+        "reviewed_boundary_sequence": state["boundary"]["reviewed_sequence"],
+    }
+
+
+def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
+    root = _repository_root(args.root)
+    state = _load_state(root)
+    if state is None or state["status"] != "active":
+        raise RuntimeHookError("no active RuntimeHook semantic task")
+    state, _git_changed = _sync_git_boundary(root, state)
+    current_head = _git_head(root)
+    state = _mark_boundary(
+        state,
+        kind=args.kind,
+        label=args.label,
+        observed_git_head=current_head,
+    )
+    next_objective = args.next_objective.strip()
+    if next_objective:
+        state = {
+            **state,
+            "current_episode": _text(
+                next_objective, label="next episode objective"
+            ),
+        }
+    _write_state(root, state)
+    return {
+        "ok": True,
+        "status": "review_due",
+        "activation_id": state["activation_id"],
+        "boundary": state["boundary"],
     }
 
 
@@ -557,6 +728,29 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
     if state is None:
         return {"ok": True, "status": "inactive"}
     return {"ok": True, **state}
+
+
+def _completed_plan_label(payload: dict[str, Any]) -> str | None:
+    if payload.get("tool_name") != "update_plan":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    plan = tool_input.get("plan")
+    if not isinstance(plan, list):
+        return None
+    completed = [
+        item.get("step", "").strip()
+        for item in plan
+        if isinstance(item, dict)
+        and item.get("status") == "completed"
+        and isinstance(item.get("step"), str)
+        and item.get("step", "").strip()
+    ]
+    if not completed:
+        return None
+    prefix = "Plan checkpoint: "
+    return prefix + completed[-1][:(MAX_BOUNDARY_LABEL_CHARS - len(prefix))]
 
 
 def _hook_error(message: str) -> int:
@@ -608,15 +802,14 @@ def hook(args: argparse.Namespace) -> int:
         if state is None or state["status"] != "active":
             return 0
         event = payload.get("hook_event_name")
+        state, git_changed = _sync_git_boundary(root, state)
         if event == "SessionStart" and payload.get("source") in {
             "startup",
             "resume",
             "clear",
             "compact",
         }:
-            stale_reasons = _stale_review_reasons(
-                root, state["semantic_review"]
-            )
+            stale_reasons = _stale_review_reasons(root, state)
             print(
                 json.dumps(
                     {
@@ -631,15 +824,75 @@ def hook(args: argparse.Namespace) -> int:
                     ensure_ascii=False,
                 )
             )
+        elif event == "UserPromptSubmit":
+            stale_reasons = _stale_review_reasons(root, state)
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "UserPromptSubmit",
+                            "additionalContext": _context(
+                                state,
+                                review_result="STALE" if stale_reasons else None,
+                            ),
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        elif event == "PostToolUse":
+            plan_label = _completed_plan_label(payload)
+            if plan_label:
+                state = _mark_boundary(
+                    state,
+                    kind="stage",
+                    label=plan_label,
+                    observed_git_head=state["boundary"]["observed_git_head"],
+                )
+                _write_state(root, state)
+            if git_changed or plan_label:
+                boundary = state["boundary"]
+                reason = (
+                    "RuntimeHook observed review boundary "
+                    f"{boundary['sequence']} ({boundary['last_kind']}: "
+                    f"{boundary['last_label']}). Re-read RUN_INTENT and Acceptance, "
+                    "inspect the completed result for goal drift, unjustified "
+                    "hardcoding, hidden fallback/stale state, and dropped or "
+                    "unrequested behavior, then record an honest semantic review "
+                    "before continuing."
+                )
+                print(
+                    json.dumps(
+                        {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PostToolUse",
+                                "additionalContext": f"{reason} {_context(state)}",
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                )
         elif event == "Stop":
             review = state["semantic_review"]
+            continue_for_review = False
             if review["result"] == "PENDING" or review.get("stage") != "final":
+                boundary = state["boundary"]
+                review_state = (
+                    "STALE"
+                    if boundary["last_kind"] == "git"
+                    and boundary["reviewed_sequence"] > 0
+                    else "due"
+                )
                 message = (
-                    "RuntimeHook final semantic review remains due for activation "
-                    f"{state['activation_id']}. Review goal drift, unjustified "
+                    "RuntimeHook final semantic review is "
+                    f"{review_state} for activation "
+                    f"{state['activation_id']} after boundary "
+                    f"{boundary['sequence']} ({boundary['last_kind']}: "
+                    f"{boundary['last_label']}). Review goal drift, unjustified "
                     "hardcoding, hidden fallback/stale state, and unrequested behavior. "
                     "This reminder does not replace or override the project Stop gate."
                 )
+                continue_for_review = True
             elif review["result"] != "PASS":
                 message = (
                     "RuntimeHook final semantic review is recorded as "
@@ -647,7 +900,7 @@ def hook(args: argparse.Namespace) -> int:
                     "convergence hook remain authoritative for completion."
                 )
             else:
-                stale_reasons = _stale_review_reasons(root, review)
+                stale_reasons = _stale_review_reasons(root, state)
                 if not stale_reasons:
                     return 0
                 message = (
@@ -656,7 +909,16 @@ def hook(args: argparse.Namespace) -> int:
                     "Repeat the semantic review on a clean Git checkpoint. This "
                     "reminder does not replace or override the project Stop gate."
                 )
-            print(json.dumps({"systemMessage": message}, ensure_ascii=False))
+                continue_for_review = True
+            if continue_for_review and not bool(payload.get("stop_hook_active")):
+                print(
+                    json.dumps(
+                        {"decision": "block", "reason": message},
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(json.dumps({"systemMessage": message}, ensure_ascii=False))
         return 0
     except (RuntimeHookError, OSError, subprocess.SubprocessError) as exc:
         return _hook_error(str(exc))
@@ -685,6 +947,14 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--reference", required=True)
     review.add_argument("--next-objective", default="")
 
+    checkpoint = sub.add_parser(
+        "checkpoint",
+        help="Declare one completed semantic stage or episode boundary.",
+    )
+    checkpoint.add_argument("--kind", choices=["stage", "episode"], required=True)
+    checkpoint.add_argument("--label", required=True)
+    checkpoint.add_argument("--next-objective", default="")
+
     sub.add_parser("status", help="Show the current local RuntimeHook state.")
     sub.add_parser("hook", help="Run as a non-owning Codex lifecycle reminder.")
     return parser
@@ -704,6 +974,8 @@ def main(argv: list[str] | None = None) -> int:
             output = disable(args)
         elif args.command == "review":
             output = record_review(args)
+        elif args.command == "checkpoint":
+            output = record_checkpoint(args)
         elif args.command == "status":
             output = status(args)
         else:

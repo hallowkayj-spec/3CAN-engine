@@ -31,12 +31,16 @@ RuntimeHook writes one Git-ignored project-local file under
 - the Agent-selected internal intensity and reason;
 - an optional current episode objective;
 - the latest semantic review result and durable reference;
+- one current review-boundary epoch: sequence, reviewed sequence, last generic
+  kind/label, and observed Git HEAD;
 - for final `PASS` only, the clean Git HEAD reviewed for semantic currentness.
 
 It is replaceable current-task state, not a history database. Git commits, PR
 reviews, project receipts, and artifact manifests retain durable evidence.
-The final-review HEAD is not a candidate or artifact fingerprint: Stop only
-reminds when HEAD changes or the worktree becomes dirty after semantic review.
+The boundary is not a history ledger, and the final-review HEAD is not a
+candidate or artifact fingerprint. Git HEAD changes and completed
+`update_plan` stages advance the same current debt; an otherwise invisible
+semantic stage uses one explicit generic `checkpoint`.
 
 ## Semantic review contract
 
@@ -62,10 +66,10 @@ project evidence surface.
 ## Internal review timing
 
 The user does not select a profile. The Agent records the lightest sufficient
-timing by task meaning:
+review depth by task meaning:
 
-- `light`: final semantic review only;
-- `medium`: meaningful episode reviews plus final review;
+- `light`: concise Goal/Acceptance review at each observed boundary;
+- `medium`: completed-output and relevant-diff review at each boundary;
 - `max`: medium timing plus an existing targeted strict Oracle for only the
   criterion that needs mechanical proof.
 
@@ -82,10 +86,12 @@ RuntimeHook does not own or wrap:
 - proof/receipt freshness or history;
 - mutable bindings or fallback enforcement;
 - credential, deployment, publication, or security gates;
-- Stop allow/block decisions;
+- project evidence Stop allow/block decisions;
 - 3CAN Runtime, graph, network, database, daemon, or per-tool LLM calls.
 
-The native RuntimeHook and convergence hooks run independently. RuntimeHook OFF
+The native RuntimeHook and convergence hooks run independently. RuntimeHook may
+request one Stop continuation only to settle its own semantic review debt; it
+cannot allow completion or override another Stop gate. RuntimeHook OFF
 silences only semantic reinjection; it cannot bypass another gate.
 
 ## Dogfood acceptance

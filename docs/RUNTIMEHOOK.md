@@ -12,12 +12,15 @@ It is not a second Task Oracle. RuntimeHook owns one ignored file only:
 ```
 
 That file contains enabled/disabled state, an activation ID, RUN_INTENT,
-Agent-selected internal intensity, an optional current episode, and the latest
-semantic review result/reference. A final `PASS` also records the clean Git HEAD
-that was reviewed. This narrow anchor answers only whether the reviewed code is
-still current; it is not an artifact hash, candidate fingerprint, proof receipt,
-or history ledger. RuntimeHook does not own a convergence selector, binding
-policy, or Stop decision. Git remains engineering truth; the existing
+Agent-selected internal intensity, an optional current episode, the latest
+semantic review result/reference, and one bounded review-boundary epoch. The
+epoch retains only its sequence, reviewed sequence, last generic kind/label,
+and observed Git HEAD; it is not an event log. A final `PASS` also records the
+clean Git HEAD that was reviewed. These narrow anchors answer only whether a
+new review is due and whether the reviewed code is still current; they are not
+artifact hashes, candidate fingerprints, proof receipts, or a history ledger.
+RuntimeHook does not own a convergence selector, binding policy, or project
+evidence decision. Git remains engineering truth; the existing
 `3can_convergence.py` and Task Oracle remain the evidence kernel.
 
 The state is scoped to one physical Git worktree, not to one chat. At most one
@@ -39,10 +42,10 @@ simulate `/3CAN`; it is only product shorthand. The real explicit route is
 [developer commands](https://learn.chatgpt.com/docs/developer-commands), and
 [hooks](https://learn.chatgpt.com/docs/hooks) documentation.
 
-The Agent chooses the lightest useful review timing semantically:
+The Agent chooses the lightest useful review depth semantically:
 
-- `light`: one final semantic review for a small, clear task;
-- `medium`: meaningful episode reviews plus final review for long or cross-module work;
+- `light`: a concise Goal/Acceptance check at each observed boundary;
+- `medium`: inspect completed output and relevant diff at each boundary;
 - `max`: the same semantic reviews plus an existing targeted strict Oracle for
   only the criteria that need mechanical proof.
 
@@ -55,16 +58,24 @@ The Plugin bundles RuntimeHook only. Existing project-owned convergence,
 credential, security, deployment, or publication gates remain independent and
 all matching native Hooks continue to run. With no enabled RuntimeHook state,
 the Plugin Hook exits silently, including outside Git repositories. When
-enabled, SessionStart reinjects RUN_INTENT; Stop emits a non-owning reminder
-while final semantic review is due, non-successful, or stale. Recording final
-`PASS` requires a clean Git checkpoint. It is silent only while HEAD still
-matches that checkpoint and the worktree remains clean; later changes produce a
-semantic-review reminder. SessionStart uses the same currentness check and
+enabled, `SessionStart` and `UserPromptSubmit` reinject RUN_INTENT. A Git HEAD
+change observed after `Bash`, or an `update_plan` call containing a completed
+step, advances one review boundary without parsing commands or project domains.
+For a semantic stage/episode with neither signal, the Agent uses the same
+generic `checkpoint --kind stage|episode --label ...` command. Multiple events
+before review coalesce into one current debt; no history is retained.
+
+Stop requests at most one native continuation while final semantic review is
+due or stale. This owns semantic review timing only; it does not allow, deny, or
+replace an independent evidence, credential, deployment, or publication gate.
+On the already-continued Stop pass it reports the typed state instead of
+looping. Recording final `PASS` requires a clean Git checkpoint. It is silent
+only while HEAD still matches that checkpoint and the worktree remains clean;
+later changes produce semantic-review debt. SessionStart uses the same currentness check and
 reinjects the review as `STALE`, never as the persisted `PASS`, after either
 change. SessionStart uses native
 `hookSpecificOutput.additionalContext` with a bounded matching handler limit, so
-the context reaches the model rather than only the UI event stream. RuntimeHook
-never returns a Stop allow/block decision.
+the context reaches the model rather than only the UI event stream.
 
 `off` changes the retained state to `disabled_by_owner`; later RuntimeHook hooks
 are silent. It does not delete evidence and cannot disable credentials,
@@ -117,6 +128,7 @@ is:
 $root = (git rev-parse --show-toplevel).Trim()
 $cli = Join-Path $root 'plugins\3can-runtimehook\skills\3can-runtimehook\scripts\3can_runtimehook.py'
 python $cli --root $root on --goal 'Deliver the requested bounded result.' --acceptance 'A01=The requested result is complete.' --intensity light --reason 'Small and clear.'
+python $cli --root $root checkpoint --kind episode --label 'Implementation completed' --next-objective 'Review the result.'
 python $cli --root $root review --stage final --result PASS --reference 'git:reviewed-commit'
 python $cli --root $root off
 ```

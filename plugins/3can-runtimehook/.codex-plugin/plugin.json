@@ -1,6 +1,6 @@
 {
   "name": "3can-runtimehook",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260825053744",
   "description": "Keep task intent and semantic review current across long Codex sessions.",
   "author": {
     "name": "hallowkayj-spec",
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "3CAN RuntimeHook",
     "shortDescription": "Keep intent and semantic review current",
-    "longDescription": "An offline semantic supervisor for long Codex tasks. It restores Owner Intent after resume or compaction and reminds the Agent when goal, hardcoding, fallback, stale-state, or unrequested-behavior review is due.",
+    "longDescription": "An offline semantic supervisor for Codex tasks. It restores Owner Intent at Git, plan, prompt, resume, and final boundaries, then requests review for goal drift, hardcoding, fallback, stale state, or unrequested behavior.",
     "developerName": "hallowkayj-spec",
     "category": "Productivity",
     "capabilities": [
