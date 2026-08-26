@@ -1,9 +1,9 @@
 {
   "schema_version": "3can.benchmark-receipt/v1",
   "status": "VERIFIED_CANDIDATE",
-  "observed_at_utc": "2026-08-12T16:04:27.2566983Z",
+  "observed_at_utc": "2026-08-26T11:43:58Z",
   "scope": "fresh release seed graph",
-  "source_commit": "ae9fceb53d16ffa10d632e5427440f04467210bf",
+  "source_commit": "fa57b92f66d1ba451229d510ea80a143c6e880d3",
   "runtime": {
     "python": "3.14.0",
     "readiness_mode": "development",
@@ -14,7 +14,7 @@
     "edges": 12
   },
   "source_sha256": {
-    "3CAN.md": "f0696fe25ba48419beea6c9ed881b134b95066d26ced233da0c2526e4effb9fe",
+    "3CAN.md": "0d83772538bc9d4891124b4c5cb2522df4982cc76e052217e1fef02f268a8e62",
     "neural-memory/backend/app.py": "f199c7ced9701a8fad4366248a7f90a2721c7ac676178af7838221bfe96d8c0c",
     "neural-memory/backend/graph_engine.py": "0d713e47c40d97d4964ae0e69aefb212bacd86d70b70ba5563b7a628c01ac8fd",
     "neural-memory/backend/models.py": "77049ee3c2914654ffbc61d6cdf74d67d739292ee54fc64dcc26188e906631c6",
@@ -28,15 +28,12 @@
     "neural-memory/benchmark/substrate_bench_runner.py": "fd3253cb3a95659f137fd3f1ef7c235f734c63b26c04be769174c819cbc34169"
   },
   "run_artifact_sha256": {
-    "completion.json": "08e2280b9d91718d61aa6d089f5cd024505781c2115130a2f4f082deabfad6fe",
-    "verify.json": "e004834e07e4f5b72697e93c7b4965bbaec1b5e34fab0f4025fff5509afaea9f",
-    "route.json": "09b7311490165d7391533a02535ef163fbf1be4c3db1b6ff47449e8f8b8e2adb",
-    "run-identity.json": "03195a14b8e630ef23846408087e20547dc5406f8eec62363f7ef1b754306488",
-    "stats.json": "5bd8e4881fa7041ea1a9fce7fd9723025d32aca0395795b08cdd65a847d3fefe",
-    "substrate.json": "b45b3f5b37a384a6e15033b7cc3001c753d99dbcb34da89ed8415826b722106d"
+    "verify.json": "a1baed8f521d7240f9e820dc897856fb16d59139dcc453f32d313a15ed98f403",
+    "route.json": "b3f69daff7fce9c7d4e1d9a4a9ba03075b2eed87d545978f8dee32813c1e59fe",
+    "substrate_1787744638.json": "440d5574ad16680a5421cf4d9cdb2a0e0591ea91b9d4727ef077f99a879472d7"
   },
   "commands": [
-    "python -B scripts/verify_project.py --base-url http://127.0.0.1:9797 --min-nodes 10 --project-id public-rc --project-namespace public-scope --json",
+    "python -B scripts/verify_project.py --base-url http://127.0.0.1:9797 --min-nodes 10 --project-id 3can-engine --project-namespace 3can-engine --json",
     "python neural-memory/benchmark/run_benchmark.py --base-url http://127.0.0.1:9797 --output <task-temp>/route.json",
     "python neural-memory/benchmark/substrate_bench_runner.py --port 9797 --output-dir <task-temp>"
   ],
@@ -45,7 +42,7 @@
     "liveness": true,
     "readiness_verification_state": "development",
     "owner_intent": "APPLIED",
-    "owner_intent_digest": "sha256:f0696fe25ba48419beea6c9ed881b134b95066d26ced233da0c2526e4effb9fe",
+    "owner_intent_digest": "sha256:0d83772538bc9d4891124b4c5cb2522df4982cc76e052217e1fef02f268a8e62",
     "exact_read": true,
     "selector_unchanged": true
   },
@@ -55,7 +52,7 @@
     "Recall@1": 0.8261,
     "Recall@3": 1.0,
     "Hit@3": 1.0,
-    "latency_p95_ms": 31,
+    "latency_p95_ms": 36,
     "grep_fallback_rate": 0.0,
     "verdict": "coordination"
   },
@@ -64,7 +61,7 @@
     "top1_accuracy": 1.0,
     "top3_recall_mean": 0.8167,
     "err_proactive_rate_at_top3": 1.0,
-    "latency_p95_ms": 31
+    "latency_p95_ms": 40
   },
   "limitations": [
     "This receipt proves the public synthetic seed fixture, not a private production graph.",
