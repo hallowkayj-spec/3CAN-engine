@@ -21,10 +21,11 @@ That file contains enabled/disabled state, an activation ID, RUN_INTENT,
 Agent-selected internal intensity, an optional current episode, the latest
 semantic review result/reference, and one bounded review-boundary epoch. The
 epoch retains only its sequence, reviewed sequence, last generic kind/label,
-and observed Git HEAD; it is not an event log. A final `PASS` also records the
-clean Git HEAD that was reviewed. These narrow anchors answer only whether a
-new review is due and whether the reviewed code is still current; they are not
-artifact hashes, candidate fingerprints, proof receipts, or a history ledger.
+the last completed-plan label used for de-duplication, and observed Git HEAD; it
+is not an event log. A final `PASS` also records the clean Git HEAD that was
+reviewed. These narrow anchors answer only whether a new review is due and
+whether the reviewed code is still current; they are not artifact hashes,
+candidate fingerprints, proof receipts, or a history ledger.
 RuntimeHook does not own a convergence selector, binding policy, or project
 evidence decision. Git remains engineering truth; the existing
 `3can_convergence.py` and Task Oracle remain the evidence kernel.
@@ -106,8 +107,12 @@ RuntimeHook is distributed as the repository Plugin at
 `plugins/3can-runtimehook` and is exposed by
 `.agents/plugins/marketplace.json`. It requires Git and Python 3; the Windows
 launcher supports `python.exe`, `python3.exe`, and the standard `py.exe -3`
-launcher and reports typed `UNAVAILABLE` instead of silently disabling Hooks.
-It needs no 3CAN Runtime, graph, credentials, network service, or 9700 restart.
+launcher, while both platform launchers reject interpreters resolved inside the
+current worktree. Non-SessionStart events exit before Python and Git discovery
+when no RuntimeHook state exists; Windows uses a native batch preflight so this
+inactive path does not cold-start PowerShell. Launcher failures report typed
+`UNAVAILABLE` instead of silently disabling Hooks. It needs no 3CAN Runtime, graph,
+credentials, network service, or 9700 restart.
 
 Add the public repository as a Codex marketplace and install the Plugin:
 

@@ -1,7 +1,7 @@
 {
   "schema": "3can.adversarial-full-system-dogfood/v1",
+  "evidence_id": "EVD-20260826-3can-adversarial-full-system-dogfood",
   "recorded_at_utc": "2026-08-26T14:30:24Z",
-  "thread_id": "01a024cb-6ba7-7d22-a638-c2209462dc18",
   "repository": "hallowkayj-spec/3CAN-engine",
   "source_head_before_evidence": "1ea5fe7ae2cbd2b97d27e434b3782770dfa1a660",
   "verdict": "PASS_WITH_TYPED_LIMITS",

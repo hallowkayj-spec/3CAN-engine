@@ -1,5 +1,10 @@
+param([switch]$SessionOrientation)
+
 $ErrorActionPreference = "Stop"
 $env:NoDefaultCurrentDirectoryInExePath = "1"
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+[Console]::InputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
 
 function Write-RuntimeHookUnavailable {
     param([string]$Reason)
@@ -28,10 +33,31 @@ try {
     while ($null -ne $cursor) {
         if (Test-Path -LiteralPath (Join-Path $cursor.FullName ".git")) {
             $boundary = $cursor.FullName
+            break
         }
         $cursor = $cursor.Parent
     }
     $untrustedRoot = if ($null -ne $boundary) { $boundary } else { $current }
+
+    if (-not $SessionOrientation) {
+        $statePath = if ($null -ne $boundary) {
+            Join-Path $boundary ".codex\runtimehook\state.json"
+        }
+        else {
+            $null
+        }
+        $stateEntry = if ($null -ne $statePath) {
+            Get-Item -Force -LiteralPath $statePath -ErrorAction SilentlyContinue
+        }
+        else {
+            $null
+        }
+        if ($null -eq $stateEntry) {
+            [Console]::In.ReadToEnd() | Out-Null
+            exit 0
+        }
+    }
+    $hookInput = [Console]::In.ReadToEnd()
 
     $controller = Join-Path $env:PLUGIN_ROOT "skills\3can-runtimehook\scripts\3can_runtimehook.py"
     if (-not (Test-Path -LiteralPath $controller -PathType Leaf)) {
@@ -51,20 +77,30 @@ try {
                 (Test-Path -LiteralPath $candidate -PathType Leaf) -and
                 -not (Test-Within -Path $candidate -Root $untrustedRoot)
             ) {
+                $probeArguments = @(
+                    "-c",
+                    "import pathlib, sys; print(pathlib.Path(sys.executable).resolve() if sys.version_info.major == 3 else '')"
+                )
                 if ($name -eq "py.exe") {
-                    $resolved = & $candidate -3 -c "import sys; print(sys.executable)"
+                    $probeArguments = @("-3") + $probeArguments
+                }
+                try {
+                    $resolved = & $candidate @probeArguments 2>$null
                     if ($LASTEXITCODE -eq 0 -and $null -ne $resolved) {
-                        $resolved = [IO.Path]::GetFullPath(($resolved | Select-Object -Last 1).Trim())
-                        if (
-                            (Test-Path -LiteralPath $resolved -PathType Leaf) -and
-                            -not (Test-Within -Path $resolved -Root $untrustedRoot)
-                        ) {
-                            $python = $resolved
+                        $resolved = ($resolved | Select-Object -Last 1).Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($resolved)) {
+                            $resolved = [IO.Path]::GetFullPath($resolved)
+                            if (
+                                (Test-Path -LiteralPath $resolved -PathType Leaf) -and
+                                -not (Test-Within -Path $resolved -Root $untrustedRoot)
+                            ) {
+                                $python = $resolved
+                            }
                         }
                     }
                 }
-                else {
-                    $python = $candidate
+                catch {
+                    $python = $null
                 }
                 if ($null -ne $python) {
                     break
@@ -80,7 +116,11 @@ try {
         exit 0
     }
 
-    $controllerOutput = & $python $controller hook --session-orientation
+    $controllerArguments = @($controller, "hook")
+    if ($SessionOrientation) {
+        $controllerArguments += "--session-orientation"
+    }
+    $controllerOutput = $hookInput | & $python @controllerArguments
     $controllerExit = $LASTEXITCODE
     if ($controllerExit -ne 0) {
         Write-RuntimeHookUnavailable "Python 3 could not execute the bundled controller"

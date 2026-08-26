@@ -1,6 +1,6 @@
 {
   "name": "3can-runtimehook",
-  "version": "0.1.3+codex.20260826230729",
+  "version": "0.1.4+codex.20260827012454",
   "description": "Orient every Codex session to the 3CAN fast path and keep long-task semantic review current.",
   "author": {
     "name": "hallowkayj-spec",

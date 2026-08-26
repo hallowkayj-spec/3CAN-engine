@@ -13,6 +13,12 @@ claim that any private production graph has been migrated.
 
 ### 2026-08-23 Codex convergence hook
 
+- Hardened the packaged RuntimeHook launch path before public dogfood: POSIX and
+  Windows now resolve a working Python 3 outside the current worktree, inactive
+  non-SessionStart events skip the Python/Git hot path, a native Windows preflight
+  also avoids a PowerShell cold start on that path, and interleaved Git or prompt
+  boundaries no longer make an unchanged completed plan look new. Public dogfood
+  evidence no longer carries a local Codex thread identifier.
 - Packaged RuntimeHook as a repository Marketplace Plugin with its Skill,
   controller, and native intent/boundary Hooks. Git HEAD changes and completed
   plan stages now create one coalesced semantic review debt; a new Owner prompt

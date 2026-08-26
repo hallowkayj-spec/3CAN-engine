@@ -15,6 +15,8 @@ PLUGIN_ROOT = PACKAGE_ROOT / "plugins" / "3can-runtimehook"
 SKILL_ROOT = PLUGIN_ROOT / "skills" / "3can-runtimehook"
 PLUGIN_CLI = SKILL_ROOT / "scripts" / "3can_runtimehook.py"
 WINDOWS_LAUNCHER = PLUGIN_ROOT / "hooks" / "run_runtimehook.ps1"
+WINDOWS_PREFLIGHT = PLUGIN_ROOT / "hooks" / "run_runtimehook.cmd"
+POSIX_LAUNCHER = PLUGIN_ROOT / "hooks" / "run_runtimehook.sh"
 PROJECT_KIT_CLI = (
     PACKAGE_ROOT
     / "examples"
@@ -163,6 +165,89 @@ def test_windows_plugin_reports_unavailable_without_python(tmp_path: Path):
     )
 
     assert "RuntimeHook semantic context is UNAVAILABLE" in started["systemMessage"]
+
+
+def test_inactive_non_session_events_skip_interpreter_discovery(tmp_path: Path):
+    cwd = tmp_path / "cwd"
+    empty_bin = tmp_path / "empty-bin"
+    cwd.mkdir()
+    empty_bin.mkdir()
+
+    for event, payload in (
+        ("UserPromptSubmit", {"hook_event_name": "UserPromptSubmit"}),
+        (
+            "PostToolUse",
+            {"hook_event_name": "PostToolUse", "tool_name": "Bash"},
+        ),
+        ("Stop", {"hook_event_name": "Stop"}),
+    ):
+        assert _plugin_hook(
+            cwd,
+            event,
+            {**payload, "cwd": str(cwd)},
+            search_path=str(empty_bin),
+        ) == {}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher contract")
+def test_windows_plugin_skips_broken_python_before_py3(tmp_path: Path):
+    system_py = shutil.which("py.exe")
+    if system_py is None:
+        pytest.skip("Windows Python launcher is unavailable")
+    cwd = tmp_path / "cwd"
+    broken_bin = tmp_path / "broken-bin"
+    launcher_bin = tmp_path / "launcher-bin"
+    cwd.mkdir()
+    broken_bin.mkdir()
+    launcher_bin.mkdir()
+    shutil.copyfile(Path(os.environ["COMSPEC"]), broken_bin / "python.exe")
+    shutil.copyfile(system_py, launcher_bin / "py.exe")
+
+    started = _plugin_hook(
+        cwd,
+        "SessionStart",
+        {
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+            "cwd": str(cwd),
+        },
+        search_path=os.pathsep.join((str(broken_bin), str(launcher_bin))),
+    )
+
+    assert "hookSpecificOutput" in started, started
+    assert "3CAN fast path" in started["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX launcher contract")
+def test_posix_plugin_ignores_repo_local_python_shadow(plain_repo: Path):
+    system_python = shutil.which("python3")
+    if system_python is None:
+        pytest.skip("system Python 3 is unavailable")
+    malicious_bin = plain_repo / "bin"
+    malicious_bin.mkdir()
+    sentinel = plain_repo / "python-shadow-ran"
+    shadow = malicious_bin / "python3"
+    shadow.write_text(
+        f"#!/bin/sh\ntouch '{sentinel}'\nexit 1\n",
+        encoding="utf-8",
+    )
+    shadow.chmod(0o755)
+
+    started = _plugin_hook(
+        plain_repo,
+        "SessionStart",
+        {
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+            "cwd": str(plain_repo),
+        },
+        search_path=os.pathsep.join(
+            (str(malicious_bin), str(Path(system_python).parent))
+        ),
+    )
+
+    assert "3CAN fast path" in started["hookSpecificOutput"]["additionalContext"]
+    assert not sentinel.exists()
 
 
 def test_plugin_activation_bootstraps_only_local_git_exclude(
@@ -352,6 +437,8 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
         encoding="utf-8"
     )
     windows_launcher = WINDOWS_LAUNCHER.read_text(encoding="utf-8")
+    windows_preflight = WINDOWS_PREFLIGHT.read_text(encoding="utf-8")
+    posix_launcher = POSIX_LAUNCHER.read_text(encoding="utf-8")
 
     assert marketplace["name"] == "3can-engine"
     assert marketplace["plugins"] == [
@@ -382,11 +469,11 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
         handlers = [hook for group in event for hook in group["hooks"]]
         assert len(handlers) == 1
         assert "PLUGIN_ROOT" in handlers[0]["command"]
-        assert "3can_runtimehook.py" in handlers[0]["command"]
+        assert "run_runtimehook.sh" in handlers[0]["command"]
         assert handlers[0]["commandWindows"].startswith(
-            "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe "
+            "%SystemRoot%\\System32\\cmd.exe /d /s /c "
         )
-        assert "run_runtimehook.ps1" in handlers[0]["commandWindows"]
+        assert "run_runtimehook.cmd" in handlers[0]["commandWindows"]
         assert "statusMessage" not in handlers[0]
     assert "--session-orientation" in hooks["SessionStart"][0]["hooks"][0][
         "command"
@@ -403,4 +490,8 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
     assert "allow_implicit_invocation: true" in skill_ui
     assert "NoDefaultCurrentDirectoryInExePath" in windows_launcher
     assert 'Join-Path $cursor.FullName ".git"' in windows_launcher
+    assert "%SystemRoot%\\System32\\more.com" in windows_preflight
+    assert "runtimehook_cursor" in windows_preflight
+    assert posix_launcher.startswith("#!/bin/sh\n")
+    assert "untrusted_root" in posix_launcher
     assert PLUGIN_CLI.read_bytes() == PROJECT_KIT_CLI.read_bytes()

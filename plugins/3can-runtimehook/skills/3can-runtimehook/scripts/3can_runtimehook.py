@@ -397,13 +397,33 @@ def _validate_state(value: Any) -> dict[str, Any]:
         if boundary.get("last_kind") not in BOUNDARY_KINDS:
             raise RuntimeHookError("review boundary kind is invalid")
         _boundary_label(boundary.get("last_label"), label="review boundary label")
+        last_completed_plan_label = boundary.get("last_completed_plan_label")
+        if last_completed_plan_label is not None:
+            _boundary_label(
+                last_completed_plan_label,
+                label="last completed plan label",
+            )
     return value
 
 
 def _with_boundary(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     """Adopt pre-boundary v1 state without a migration subsystem."""
-    if state.get("boundary") is not None:
-        return state
+    existing_boundary = state.get("boundary")
+    if existing_boundary is not None:
+        if "last_completed_plan_label" in existing_boundary:
+            return state
+        return {
+            **state,
+            "boundary": {
+                **existing_boundary,
+                "last_completed_plan_label": (
+                    existing_boundary["last_label"]
+                    if existing_boundary["last_kind"] == "stage"
+                    and existing_boundary["last_label"].startswith("Plan checkpoint: ")
+                    else None
+                ),
+            },
+        }
     current_head = _git_head(root)
     review = state["semantic_review"]
     reviewed_head = review.get("reviewed_git_head")
@@ -415,6 +435,7 @@ def _with_boundary(root: Path, state: dict[str, Any]) -> dict[str, Any]:
             "observed_git_head": reviewed_head or current_head,
             "last_kind": "activation",
             "last_label": "Existing RuntimeHook state adopted",
+            "last_completed_plan_label": None,
         },
     }
 
@@ -627,6 +648,7 @@ def activate(args: argparse.Namespace) -> dict[str, Any]:
             "observed_git_head": current_head,
             "last_kind": "activation",
             "last_label": "RuntimeHook activated",
+            "last_completed_plan_label": None,
         },
     }
     _write_state(root, state)
@@ -885,8 +907,7 @@ def hook(args: argparse.Namespace) -> int:
             plan_label = _completed_plan_label(payload)
             if (
                 plan_label
-                and state["boundary"]["last_kind"] == "stage"
-                and state["boundary"]["last_label"] == plan_label
+                and state["boundary"].get("last_completed_plan_label") == plan_label
             ):
                 plan_label = None
             if plan_label:
@@ -896,6 +917,7 @@ def hook(args: argparse.Namespace) -> int:
                     label=plan_label,
                     observed_git_head=state["boundary"]["observed_git_head"],
                 )
+                state["boundary"]["last_completed_plan_label"] = plan_label
                 _write_state(root, state)
             if git_changed or plan_label:
                 boundary = state["boundary"]

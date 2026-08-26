@@ -480,6 +480,67 @@ def test_runtimehook_ignores_repeated_unchanged_plan_boundary(runtimehook_projec
     assert progressed_state["semantic_review"]["result"] == "PENDING"
 
 
+def test_runtimehook_ignores_unchanged_plan_after_git_boundary(runtimehook_project):
+    installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "update_plan",
+        "tool_input": {
+            "plan": [
+                {"step": "Implement the module", "status": "completed"},
+                {"step": "Audit it", "status": "in_progress"},
+            ]
+        },
+    }
+    native_hook("PostToolUse", payload)
+    reviewed_first, first_output = command(
+        "review",
+        "--stage",
+        "episode",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:first-stage",
+        "--next-objective",
+        "Audit it.",
+    )
+    assert reviewed_first.returncode == 0, first_output
+    (installed / "tracked.txt").write_text("next boundary\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(installed), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(installed), "commit", "-qm", "next boundary"],
+        check=True,
+    )
+    native_hook(
+        "PostToolUse",
+        {"hook_event_name": "PostToolUse", "tool_name": "Bash"},
+    )
+    reviewed_second, second_output = command(
+        "review",
+        "--stage",
+        "episode",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:second-stage",
+        "--next-objective",
+        "Audit it.",
+    )
+    assert reviewed_second.returncode == 0, second_output
+
+    repeated = native_hook("PostToolUse", payload)
+    _completed, state = command("status")
+
+    assert repeated == {}
+    assert state["boundary"]["sequence"] == 3
+    assert state["boundary"]["reviewed_sequence"] == 3
+    assert state["boundary"]["last_kind"] == "git"
+    assert state["boundary"]["last_completed_plan_label"] == (
+        "Plan checkpoint: Implement the module"
+    )
+
+
 def test_runtimehook_checkpoint_invalidates_final_pass_without_second_kernel(
     runtimehook_project,
 ):
@@ -585,6 +646,25 @@ def test_runtimehook_adopts_existing_v1_state_without_parallel_migration(
     assert checkpointed.returncode == 0, output
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted["boundary"]["sequence"] == 2
+
+
+def test_runtimehook_adopts_existing_boundary_without_plan_dedupe_field(
+    runtimehook_project,
+):
+    installed, _hooks, command, _native_hook = runtimehook_project
+    _activate(command)
+    state_path = installed / STATE_PATH
+    legacy = json.loads(state_path.read_text(encoding="utf-8"))
+    legacy["boundary"].pop("last_completed_plan_label")
+    state_path.write_text(
+        json.dumps(legacy, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    completed, state = command("status")
+
+    assert completed.returncode == 0, state
+    assert state["boundary"]["last_completed_plan_label"] is None
 
 
 def test_runtimehook_rejects_tracked_state_root_before_writing(runtimehook_project):
