@@ -392,6 +392,59 @@ def test_runtimehook_plan_and_explicit_episode_boundaries_recall_intent(
     assert state["current_episode"] == "Prepare final delivery."
 
 
+def test_runtimehook_ignores_repeated_unchanged_plan_boundary(runtimehook_project):
+    _installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "update_plan",
+        "tool_input": {
+            "plan": [
+                {"step": "Implement the module", "status": "completed"},
+                {"step": "Audit it", "status": "in_progress"},
+            ]
+        },
+    }
+
+    native_hook("PostToolUse", payload)
+    reviewed, review_output = command(
+        "review",
+        "--stage",
+        "episode",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:module-review",
+        "--next-objective",
+        "Audit the module.",
+    )
+    repeated = native_hook("PostToolUse", payload)
+    _completed, unchanged_state = command("status")
+    progressed = native_hook(
+        "PostToolUse",
+        {
+            **payload,
+            "tool_input": {
+                "plan": [
+                    {"step": "Implement the module", "status": "completed"},
+                    {"step": "Audit it", "status": "completed"},
+                ]
+            },
+        },
+    )
+    _completed, progressed_state = command("status")
+
+    assert reviewed.returncode == 0, review_output
+    assert repeated == {}
+    assert unchanged_state["boundary"]["sequence"] == 2
+    assert unchanged_state["boundary"]["reviewed_sequence"] == 2
+    assert unchanged_state["semantic_review"]["result"] == "PASS"
+    assert "stage" in progressed["hookSpecificOutput"]["additionalContext"]
+    assert progressed_state["boundary"]["sequence"] == 3
+    assert progressed_state["boundary"]["reviewed_sequence"] == 2
+    assert progressed_state["semantic_review"]["result"] == "PENDING"
+
+
 def test_runtimehook_checkpoint_invalidates_final_pass_without_second_kernel(
     runtimehook_project,
 ):

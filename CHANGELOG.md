@@ -20,7 +20,8 @@ claim that any private production graph has been migrated.
   and Stop requests at most one continuation while review is due. Installation no longer
   requires copying the project kit into every repository. The first activation
   adds only the dedicated state path to the repository-local Git exclude; an
-  inactive Plugin and non-Git tasks remain silent. This package is offline and
+  inactive Plugin emits only the stateless SessionStart 3CAN fast path, including
+  outside Git; other semantic events remain silent. This package is offline and
   does not require or restart the 3CAN Runtime.
 - Added the optional `3CAN RuntimeHook` Skill and one local control adapter.
   Natural-language or implicit activation records one ignored semantic state:

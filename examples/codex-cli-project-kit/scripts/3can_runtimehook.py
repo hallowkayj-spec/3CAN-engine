@@ -874,6 +874,12 @@ def hook(args: argparse.Namespace) -> int:
             )
         elif event == "PostToolUse":
             plan_label = _completed_plan_label(payload)
+            if (
+                plan_label
+                and state["boundary"]["last_kind"] == "stage"
+                and state["boundary"]["last_label"] == plan_label
+            ):
+                plan_label = None
             if plan_label:
                 state = _mark_boundary(
                     state,
