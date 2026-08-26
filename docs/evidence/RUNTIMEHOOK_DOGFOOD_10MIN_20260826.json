@@ -1,0 +1,174 @@
+{
+  "schema": "3can.runtimehook-dogfood-evidence/v1",
+  "evidence_id": "EVD-20260826-runtimehook-10min-dogfood",
+  "tested_at_utc": "2026-08-26T13:16:20.3117512Z",
+  "status": "PASS_WITH_LIMITS",
+  "scope": "Two bounded local tests: cross-session 3CAN.md visibility and RuntimeHook overhead during a mechanical calibration plus one real SWE-bench Lite development task; no production Runtime lifecycle change.",
+  "source": {
+    "pr": 16,
+    "pr_head": "e51174579e2676d95707c48d675d547fde435cdd",
+    "origin_main": "78e748bfa095063eda4a170fe856678ca5c3ef95",
+    "installed_plugin_version": "0.1.2+codex.20260826051855",
+    "controller_sha256": "199d234a9daa6fac02920c2b6df1198216133609579010596ca50b25d166c5b7",
+    "source_cache_equal": true
+  },
+  "research_selection": {
+    "status": "PARTIAL_SOURCE_GATE_NOT_MET",
+    "reason": "The benchmark was selected from primary official sources under the task timebox; the broader 3CAN deep-research source-count gate was not claimed as complete.",
+    "benchmark": "SWE-bench Lite",
+    "instance": "marshmallow-code__marshmallow-1343",
+    "repository": "marshmallow-code/marshmallow",
+    "base_commit": "2be2d83a1a9a6d3d9b85804f3ab545cecc409bb0",
+    "local_research_orchestration_errors": 1,
+    "primary_sources": [
+      "https://github.com/SWE-bench/SWE-bench/blob/main/docs/guides/datasets.md",
+      "https://github.com/SWE-bench/SWE-bench/blob/main/swebench/collect/make_lite/make_lite.py",
+      "https://github.com/marshmallow-code/marshmallow/issues/1342",
+      "https://github.com/marshmallow-code/marshmallow/pull/1343"
+    ]
+  },
+  "test_1_session_visibility": {
+    "method": "Invoke the installed SessionStart controller 12 times in each of three roots and independently verify whether 3CAN.md exists and is readable.",
+    "total_hook_calls": 36,
+    "controller_errors": 0,
+    "origin_main_has_3can_md": true,
+    "origin_main_matches_pr_3can_md": false,
+    "difference": "PR 16 adds the fast-client path and meaningful-only writeback rules that are not yet present in origin/main.",
+    "roots": [
+      {
+        "alias": "PR16_WORKTREE",
+        "git": true,
+        "3can_md_present": true,
+        "3can_md_readable": true,
+        "3can_md_sha256": "0d83772538bc9d4891124b4c5cb2522df4982cc76e052217e1fef02f268a8e62",
+        "sessionstart_success": 12,
+        "fast_path_emitted": 12,
+        "intent_context_emitted": 12,
+        "mean_ms": 807.02,
+        "p95_ms": 1203.03
+      },
+      {
+        "alias": "PC_C_WORKTREE",
+        "git": true,
+        "3can_md_present": false,
+        "3can_md_readable": false,
+        "sessionstart_success": 12,
+        "fast_path_emitted": 12,
+        "intent_context_emitted": 12,
+        "mean_ms": 709.57,
+        "p95_ms": 758.91
+      },
+      {
+        "alias": "NON_GIT_DESKTOP_ROOT",
+        "git": false,
+        "3can_md_present": false,
+        "3can_md_readable": false,
+        "sessionstart_success": 12,
+        "fast_path_emitted": 12,
+        "intent_context_emitted": 0,
+        "mean_ms": 234.32,
+        "p95_ms": 272.68
+      }
+    ],
+    "finding": "The Plugin gives every tested SessionStart the stateless 3CAN fast path, but it does not materialize or inject 3CAN.md. A Session can directly read that file only when its current checkout contains it."
+  },
+  "test_2_development_overhead": {
+    "method": "Combine a repeatable native-Hook calibration with a real, independently solved open-source defect, then compare the candidate against the upstream accepted semantics.",
+    "mechanical_calibration": {
+    "method": "Use one isolated temporary Git repository and the installed Windows Hook wrapper to replay stable Bash events, two real plan boundaries, repeated unchanged plans, prompt/resume, final review freshness, and Stop.",
+    "total_native_hook_calls": 60,
+    "native_hook_total_ms": 77823.67,
+    "native_hook_mean_ms": 1297.06,
+    "native_hook_p95_ms": 1517.64,
+    "empty_powershell_mean_ms": 357.95,
+    "review_cli_calls": 4,
+    "review_cli_total_ms": 4777.98,
+    "controller_errors": 0,
+    "expected_plan_boundaries": 2,
+    "observed_plan_boundary_reminders": 2,
+    "duplicate_plan_replays": 20,
+    "duplicate_false_reminders": 0,
+    "semantic_cue_coverage": {
+      "goal_drift": true,
+      "unjustified_hardcoding": true,
+      "hidden_fallback_or_stale_state": true,
+      "dropped_or_unrequested_behavior": true
+    },
+    "stale_sessionstart_detected": true,
+    "stale_stop_blocked": true,
+    "current_stop_silent_after_review": true,
+    "category_mean_ms": {
+      "stable_bash": 1293.69,
+      "duplicate_plan": 1259.53,
+      "real_plan_boundary": 1616.90,
+      "user_prompt": 1230.43,
+      "stale_sessionstart": 1656.58,
+      "stop": 1389.96
+    }
+    },
+    "real_medium_development": {
+      "benchmark_instance": "marshmallow-code__marshmallow-1343",
+      "task": "Fix invalid nested input with field validators so validation errors are preserved instead of raising a NoneType subscripting error.",
+      "elapsed_seconds": 375.58,
+      "elapsed_minutes": 6.26,
+      "independent_solution_before_gold_diff": true,
+      "first_candidate": "Guard only the None result before invoking field validators.",
+      "first_candidate_tests_passed": 244,
+      "runtimehook_episode_review": "FAIL",
+      "review_finding": "The first patch was symptom-only: the accepted behavior must also cover non-subscriptable values and many-item paths without inventing a second branch.",
+      "corrected_solution": "Catch both KeyError and TypeError at the existing scalar and many field-validator access boundaries.",
+      "matches_upstream_source_semantics": true,
+      "focused_and_broad_tests_passed": 245,
+      "full_suite_passed": 780,
+      "full_suite_failed": 0,
+      "candidate_commit": "f760b5ba4d8a5550b9c760fe0d1e7cd789e9d535",
+      "candidate_diff_sha256": "17267f16ba7214dc87093c1634edb1687557c02e96daff382762c8c46e937204",
+      "final_runtimehook_review": "PASS",
+      "runtimehook_controller_errors": 0,
+      "runtimehook_false_reminders": 0,
+      "non_runtimehook_setup_issues": [
+        "The historical project needed a Python 3.11 compatibility shim for collections.Mapping.",
+        "The focused test environment initially lacked the optional simplejson dependency."
+      ],
+      "interpretation": "The semantic episode review caught a materially incomplete fix even after 244 tests passed; this is direct evidence of value, not just reminder timing. One task is still insufficient to generalize a model-quality percentage."
+    }
+  },
+  "one_hour_projection": {
+    "type": "scenario_projection_not_model_benchmark",
+    "light_20_matched_events_2_reviews_mechanical_seconds": 28.33,
+    "typical_60_matched_events_4_reviews_mechanical_seconds": 82.60,
+    "heavy_120_matched_events_6_reviews_mechanical_seconds": 162.81,
+    "semantic_review_reasoning_not_measured": true,
+    "illustrative_reasoning_assumption": "If a one-hour task has two to four meaningful reviews and each focused semantic review consumes 15 to 45 seconds of model work, total added time is roughly two to five minutes in the typical scenario.",
+    "quality_claim": "UNVERIFIABLE_FROM_THIS_TEST",
+    "real_task_elapsed_minutes": 6.26,
+    "real_task_native_hook_overhead_exactly_observable": false,
+    "real_task_native_hook_overhead_estimate_seconds": "10-20",
+    "quality_signal": "The deterministic replay proves timing and freshness behavior. The real benchmark additionally shows one under-scoped patch caught and corrected before final acceptance, but one task cannot prove a general model-quality percentage."
+  },
+  "errors_and_cleanup": {
+    "runtimehook_controller_errors_across_96_hook_calls": 0,
+    "runtimehook_false_reminders_across_20_duplicate_plans": 0,
+    "expected_stale_stop_blocks": 1,
+    "unexpected_stale_stop_blocks": 0,
+    "cleanup_command_policy_rejections": 2,
+    "cleanup_policy_rejections_are_runtimehook_errors": false,
+    "temporary_file_count": 29,
+    "temporary_directory_count_including_root": 19,
+    "temporary_total_bytes": 29287,
+    "temporary_probe_sha256": "b14ae5a7d53e20ac84c5e9a48582e392d92cb15aa42644120039079805962bf2",
+    "mechanical_repository_cleanup": "RECYCLED_AND_PATH_ABSENT",
+    "mechanical_repository_recoverable": true,
+    "real_benchmark_repository_file_count": 154,
+    "real_benchmark_repository_directory_count_including_root": 42,
+    "real_benchmark_repository_total_bytes_after_venv_cleanup": 5332930,
+    "real_benchmark_repository_cleanup": "RECYCLED_AND_PATH_ABSENT",
+    "real_benchmark_repository_recoverable": true
+  },
+  "conclusion": {
+    "session_readability": "PARTIAL: current or updated checkouts containing 3CAN.md can read it; older task worktrees without the file cannot. All tested roots still receive the global stateless fast path.",
+    "runtimehook_correctness": "PASS for the tested lifecycle: zero controller errors, zero duplicate false reminders, two of two real boundaries observed, one of one stale final review blocked, and one real under-scoped patch rejected before final acceptance.",
+    "runtimehook_cost": "The measured mechanical cost is about 1.30 seconds per matching native Hook on this machine, or about 1.38 minutes for the tested 60-event plus four-review scenario. The real benchmark finished in 6.26 minutes; exact Hook-only attribution was not observable.",
+    "model_quality": "DIRECTIONAL_ONLY: the real benchmark ended at the accepted upstream semantics with 780 passing tests after RuntimeHook caught one incomplete patch, but one instance cannot establish an 80 percent or other general quality score."
+  }
+}
