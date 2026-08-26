@@ -1,0 +1,38 @@
+{
+  "name": "3can-runtimehook",
+  "version": "0.1.4+codex.20260827012454",
+  "description": "Orient every Codex session to the 3CAN fast path and keep long-task semantic review current.",
+  "author": {
+    "name": "hallowkayj-spec",
+    "url": "https://github.com/hallowkayj-spec"
+  },
+  "homepage": "https://github.com/hallowkayj-spec/3CAN-engine/blob/main/docs/RUNTIMEHOOK.md",
+  "repository": "https://github.com/hallowkayj-spec/3CAN-engine",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": [
+    "codex",
+    "hooks",
+    "semantic-review",
+    "task-convergence",
+    "ticket-fast-path"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "3CAN RuntimeHook",
+    "shortDescription": "Fast 3CAN orientation and semantic review",
+    "longDescription": "An offline Codex companion that gives every SessionStart a bounded 3CAN fast path, then optionally restores Owner Intent at Git, plan, prompt, resume, and final boundaries for semantic review.",
+    "developerName": "hallowkayj-spec",
+    "category": "Productivity",
+    "capabilities": [
+      "semantic-supervision",
+      "lifecycle-context",
+      "session-orientation"
+    ],
+    "websiteURL": "https://github.com/hallowkayj-spec/3CAN-engine",
+    "defaultPrompt": [
+      "Use 3CAN RuntimeHook for this task with the lightest useful review intensity.",
+      "Run this long cross-module task with 3CAN RuntimeHook.",
+      "Turn off 3CAN RuntimeHook for the current worktree."
+    ]
+  }
+}

@@ -144,6 +144,25 @@ python scripts/verify_project.py \
 Port 9711 is an explicit project-local development sidecar. Ordinary project
 clients do not start, stop, or recover a machine-owned production 9700.
 
+### Optional: install RuntimeHook once
+
+RuntimeHook is packaged as a repository Codex Plugin. It does not depend on the
+graph service and does not require starting or restarting 9700. With Git and
+Python 3 installed:
+
+```text
+codex plugin marketplace add hallowkayj-spec/3CAN-engine --ref main
+```
+
+Restart the ChatGPT desktop app, choose the `3CAN Engine` source in the Plugins
+Directory, and install `3CAN RuntimeHook`. In Codex CLI, open `/plugins`, install
+it from that marketplace, and start a new session. Review and trust the bundled
+Hook definition through the native Hook review surface. You can then say “use
+RuntimeHook for this task.” Before activation, only `SessionStart` emits the
+stateless 3CAN fast path; other semantic events remain silent. The Plugin does
+not require copying the project kit into every repository. See
+[docs/RUNTIMEHOOK.md](./docs/RUNTIMEHOOK.md).
+
 ## Reproducible public package
 
 The official archive is built from one exact, clean Git commit. It contains

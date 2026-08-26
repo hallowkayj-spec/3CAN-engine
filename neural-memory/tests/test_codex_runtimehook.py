@@ -131,11 +131,15 @@ def test_runtimehook_off_default_is_silent_and_hooks_are_independent(
     )
     assert native_hook("Stop", {"hook_event_name": "Stop"}) == {}
     assert not (installed / STATE_PATH).exists()
-    for event in ("SessionStart", "Stop"):
+    for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"):
         commands = [
             hook["command"] for group in hooks[event] for hook in group["hooks"]
         ]
-        assert sum("3can_convergence.py" in item for item in commands) == 1
+        expected_convergence = 1 if event in {"SessionStart", "Stop"} else 0
+        assert (
+            sum("3can_convergence.py" in item for item in commands)
+            == expected_convergence
+        )
         assert sum("3can_runtimehook.py" in item for item in commands) == 1
     runtime_start = next(
         hook
@@ -144,6 +148,8 @@ def test_runtimehook_off_default_is_silent_and_hooks_are_independent(
         if "3can_runtimehook.py" in hook["command"]
     )
     assert runtime_start["additionalContextLimit"] == 5000
+    assert "UTF8Encoding" in runtime_start["commandWindows"]
+    assert "PYTHONUTF8" in runtime_start["commandWindows"]
 
 
 @pytest.mark.parametrize("intensity", ["light", "medium", "max"])
@@ -172,8 +178,16 @@ def test_runtimehook_records_agent_selected_intensity_and_reinjects_utf8(
     assert "交付当前任务" in session_context["additionalContext"]
     assert "不得修改独立的生产门禁" in session_context["additionalContext"]
     assert "hardcoded" in session_context["additionalContext"]
-    assert "final semantic review remains due" in stopped["systemMessage"]
-    assert "decision" not in stopped
+    assert "current Owner prompt is authoritative" in session_context[
+        "additionalContext"
+    ]
+    assert stopped["decision"] == "block"
+    assert "final semantic review is due" in stopped["reason"]
+    repeated = native_hook(
+        "Stop", {"hook_event_name": "Stop", "stop_hook_active": True}
+    )
+    assert "final semantic review is due" in repeated["systemMessage"]
+    assert "decision" not in repeated
     assert not (installed / ".codex" / "convergence.json").exists()
     assert not (
         installed / ".codex" / "task-hooks" / "runtimehook-current.json"
@@ -282,10 +296,278 @@ def test_runtimehook_marks_post_review_git_change_stale(
     context = started["hookSpecificOutput"]["additionalContext"]
     assert "Semantic review: STALE" in context
     assert "Semantic review: PASS" not in context
-    assert "STALE" in stopped["systemMessage"]
-    expected_reason = "worktree is dirty" if change == "dirty" else "Git HEAD changed"
-    assert expected_reason in stopped["systemMessage"]
-    assert "decision" not in stopped
+    assert stopped["decision"] == "block"
+    assert "STALE" in stopped["reason"]
+    expected_reason = "worktree is dirty" if change == "dirty" else "Git HEAD"
+    assert expected_reason in stopped["reason"]
+
+
+def test_runtimehook_git_checkpoint_becomes_one_review_debt(runtimehook_project):
+    installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    (installed / "tracked.txt").write_text("committed boundary\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(installed), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(installed), "commit", "-qm", "completed module"],
+        check=True,
+    )
+
+    observed = native_hook(
+        "PostToolUse",
+        {"hook_event_name": "PostToolUse", "tool_name": "Bash"},
+    )
+    repeated = native_hook(
+        "PostToolUse",
+        {"hook_event_name": "PostToolUse", "tool_name": "Bash"},
+    )
+    _completed, state = command("status")
+
+    assert set(observed) == {"hookSpecificOutput"}
+    observed_context = observed["hookSpecificOutput"]["additionalContext"]
+    assert "Git HEAD" in observed_context
+    assert "Boundary review: DUE" in observed_context
+    assert repeated == {}
+    assert state["boundary"]["sequence"] == 2
+    assert state["boundary"]["reviewed_sequence"] == 0
+    assert state["boundary"]["last_kind"] == "git"
+    assert state["semantic_review"]["result"] == "PENDING"
+
+
+def test_runtimehook_new_owner_prompt_invalidates_one_reviewed_conversation(
+    runtimehook_project,
+):
+    _installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    reviewed, review_output = command(
+        "review",
+        "--stage",
+        "final",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:previous-turn-review",
+    )
+
+    prompted = native_hook(
+        "UserPromptSubmit",
+        {"hook_event_name": "UserPromptSubmit", "prompt": "continue"},
+    )
+    repeated = native_hook(
+        "UserPromptSubmit",
+        {"hook_event_name": "UserPromptSubmit", "prompt": "status?"},
+    )
+    _completed, state = command("status")
+
+    assert reviewed.returncode == 0, review_output
+    context = prompted["hookSpecificOutput"]["additionalContext"]
+    assert "episode=Owner prompt opened a new conversation episode" in context
+    assert "Boundary review: DUE" in context
+    assert "RUN_INTENT" in repeated["hookSpecificOutput"]["additionalContext"]
+    assert state["boundary"]["sequence"] == 2
+    assert state["boundary"]["reviewed_sequence"] == 1
+    assert state["semantic_review"]["result"] == "PENDING"
+
+
+def test_runtimehook_plan_and_explicit_episode_boundaries_recall_intent(
+    runtimehook_project,
+):
+    _installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+
+    stage = native_hook(
+        "PostToolUse",
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "update_plan",
+            "tool_input": {
+                "plan": [
+                    {"step": "Implement the module", "status": "completed"},
+                    {"step": "Audit it", "status": "in_progress"},
+                ]
+            },
+        },
+    )
+    reviewed, review_output = command(
+        "review",
+        "--stage",
+        "episode",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:module-review",
+        "--next-objective",
+        "Audit the module.",
+    )
+    checkpointed, checkpoint_output = command(
+        "checkpoint",
+        "--kind",
+        "episode",
+        "--label",
+        "Audit episode completed",
+        "--next-objective",
+        "Prepare final delivery.",
+    )
+    prompted = native_hook(
+        "UserPromptSubmit",
+        {"hook_event_name": "UserPromptSubmit", "prompt": "continue"},
+    )
+    _completed, state = command("status")
+
+    assert "decision" not in stage
+    assert "stage" in stage["hookSpecificOutput"]["additionalContext"]
+    assert reviewed.returncode == 0, review_output
+    assert checkpointed.returncode == 0, checkpoint_output
+    assert checkpoint_output["status"] == "review_due"
+    context = prompted["hookSpecificOutput"]["additionalContext"]
+    assert "交付当前任务" in context
+    assert "episode=Audit episode completed" in context
+    assert "Boundary review: DUE" in context
+    assert state["boundary"]["sequence"] == 3
+    assert state["boundary"]["reviewed_sequence"] == 2
+    assert state["current_episode"] == "Prepare final delivery."
+
+
+def test_runtimehook_ignores_repeated_unchanged_plan_boundary(runtimehook_project):
+    _installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "update_plan",
+        "tool_input": {
+            "plan": [
+                {"step": "Implement the module", "status": "completed"},
+                {"step": "Audit it", "status": "in_progress"},
+            ]
+        },
+    }
+
+    native_hook("PostToolUse", payload)
+    reviewed, review_output = command(
+        "review",
+        "--stage",
+        "episode",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:module-review",
+        "--next-objective",
+        "Audit the module.",
+    )
+    repeated = native_hook("PostToolUse", payload)
+    _completed, unchanged_state = command("status")
+    progressed = native_hook(
+        "PostToolUse",
+        {
+            **payload,
+            "tool_input": {
+                "plan": [
+                    {"step": "Implement the module", "status": "completed"},
+                    {"step": "Audit it", "status": "completed"},
+                ]
+            },
+        },
+    )
+    _completed, progressed_state = command("status")
+
+    assert reviewed.returncode == 0, review_output
+    assert repeated == {}
+    assert unchanged_state["boundary"]["sequence"] == 2
+    assert unchanged_state["boundary"]["reviewed_sequence"] == 2
+    assert unchanged_state["semantic_review"]["result"] == "PASS"
+    assert "stage" in progressed["hookSpecificOutput"]["additionalContext"]
+    assert progressed_state["boundary"]["sequence"] == 3
+    assert progressed_state["boundary"]["reviewed_sequence"] == 2
+    assert progressed_state["semantic_review"]["result"] == "PENDING"
+
+
+def test_runtimehook_ignores_unchanged_plan_after_git_boundary(runtimehook_project):
+    installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "update_plan",
+        "tool_input": {
+            "plan": [
+                {"step": "Implement the module", "status": "completed"},
+                {"step": "Audit it", "status": "in_progress"},
+            ]
+        },
+    }
+    native_hook("PostToolUse", payload)
+    reviewed_first, first_output = command(
+        "review",
+        "--stage",
+        "episode",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:first-stage",
+        "--next-objective",
+        "Audit it.",
+    )
+    assert reviewed_first.returncode == 0, first_output
+    (installed / "tracked.txt").write_text("next boundary\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(installed), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(installed), "commit", "-qm", "next boundary"],
+        check=True,
+    )
+    native_hook(
+        "PostToolUse",
+        {"hook_event_name": "PostToolUse", "tool_name": "Bash"},
+    )
+    reviewed_second, second_output = command(
+        "review",
+        "--stage",
+        "episode",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:second-stage",
+        "--next-objective",
+        "Audit it.",
+    )
+    assert reviewed_second.returncode == 0, second_output
+
+    repeated = native_hook("PostToolUse", payload)
+    _completed, state = command("status")
+
+    assert repeated == {}
+    assert state["boundary"]["sequence"] == 3
+    assert state["boundary"]["reviewed_sequence"] == 3
+    assert state["boundary"]["last_kind"] == "git"
+    assert state["boundary"]["last_completed_plan_label"] == (
+        "Plan checkpoint: Implement the module"
+    )
+
+
+def test_runtimehook_checkpoint_invalidates_final_pass_without_second_kernel(
+    runtimehook_project,
+):
+    _installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    passed, pass_output = command(
+        "review",
+        "--stage",
+        "final",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:first-final-review",
+    )
+    checkpointed, checkpoint_output = command(
+        "checkpoint",
+        "--kind",
+        "stage",
+        "--label",
+        "A later delivery stage completed",
+    )
+    stopped = native_hook("Stop", {"hook_event_name": "Stop"})
+
+    assert passed.returncode == 0, pass_output
+    assert checkpointed.returncode == 0, checkpoint_output
+    assert stopped["decision"] == "block"
+    assert "later delivery stage" in stopped["reason"]
 
 
 def test_runtimehook_off_retains_state_without_touching_independent_gate(
@@ -334,6 +616,55 @@ def test_runtimehook_new_intent_replaces_only_current_semantic_state(
     assert [path.name for path in (installed / STATE_PATH.parent).iterdir()] == [
         "state.json"
     ]
+
+
+def test_runtimehook_adopts_existing_v1_state_without_parallel_migration(
+    runtimehook_project,
+):
+    installed, _hooks, command, _native_hook = runtimehook_project
+    _activate(command)
+    state_path = installed / STATE_PATH
+    legacy = json.loads(state_path.read_text(encoding="utf-8"))
+    legacy.pop("boundary")
+    state_path.write_text(
+        json.dumps(legacy, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    completed, state = command("status")
+    checkpointed, output = command(
+        "checkpoint",
+        "--kind",
+        "stage",
+        "--label",
+        "Legacy task continued",
+    )
+
+    assert completed.returncode == 0
+    assert state["boundary"]["sequence"] == 1
+    assert state["boundary"]["last_label"] == "Existing RuntimeHook state adopted"
+    assert checkpointed.returncode == 0, output
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["boundary"]["sequence"] == 2
+
+
+def test_runtimehook_adopts_existing_boundary_without_plan_dedupe_field(
+    runtimehook_project,
+):
+    installed, _hooks, command, _native_hook = runtimehook_project
+    _activate(command)
+    state_path = installed / STATE_PATH
+    legacy = json.loads(state_path.read_text(encoding="utf-8"))
+    legacy["boundary"].pop("last_completed_plan_label")
+    state_path.write_text(
+        json.dumps(legacy, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    completed, state = command("status")
+
+    assert completed.returncode == 0, state
+    assert state["boundary"]["last_completed_plan_label"] is None
 
 
 def test_runtimehook_rejects_tracked_state_root_before_writing(runtimehook_project):

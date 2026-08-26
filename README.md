@@ -140,6 +140,22 @@ POST /api/activity/log
 GET  /api/token-usage/overview
 ```
 
+### 可选：一次安装 RuntimeHook
+
+RuntimeHook 已作为仓库级 Codex Plugin 打包；它不依赖图谱服务，也不需要启动
+或重启 9700。安装 Git 与 Python 3 后执行：
+
+```text
+codex plugin marketplace add hallowkayj-spec/3CAN-engine --ref main
+```
+
+重启 ChatGPT 桌面版，在 Plugins Directory 选择 `3CAN Engine` 来源并安装
+`3CAN RuntimeHook`；Codex CLI 用户则打开 `/plugins`，从该 marketplace
+安装后新建 Session。通过原生 Hook 审阅界面核对并信任当前 Hook 定义后，即可
+直接说“这个任务按 RuntimeHook 执行”。未激活时，仅 `SessionStart` 提供无状态
+3CAN 快速指引；其他语义 Hook 保持静默，也不要求向每个项目复制 Project Kit。详见
+[docs/RUNTIMEHOOK.md](./docs/RUNTIMEHOOK.md)。
+
 ## 新项目会得到什么
 
 发布包不携带任何维护者图谱。初始化时会生成一个通用、可重复运行的基础图谱，用于表达项目身份、环境、文档、接口、流程、决策、Session 和错误知识等基础类型。真实业务节点只来自你的项目扫描、明确导入或后续 writeback。

@@ -13,12 +13,32 @@ claim that any private production graph has been migrated.
 
 ### 2026-08-23 Codex convergence hook
 
+- Hardened the packaged RuntimeHook launch path before public dogfood: POSIX and
+  Windows now resolve a working Python 3 outside the current worktree, inactive
+  non-SessionStart events skip the Python/Git hot path, a native Windows preflight
+  also avoids a PowerShell cold start on that path, and interleaved Git or prompt
+  boundaries no longer make an unchanged completed plan look new. Public dogfood
+  evidence no longer carries a local Codex thread identifier.
+- Packaged RuntimeHook as a repository Marketplace Plugin with its Skill,
+  controller, and native intent/boundary Hooks. Git HEAD changes and completed
+  plan stages now create one coalesced semantic review debt; a new Owner prompt
+  automatically closes the prior reviewed conversation episode, while internal
+  semantic-only stages use the same generic checkpoint. Session/user context
+  recalls Intent, and Stop requests at most one continuation while review is
+  due. Installation no longer requires copying the project kit into every
+  repository. The first activation adds only the dedicated state path to the
+  repository-local Git exclude; an
+  inactive Plugin emits only the stateless SessionStart 3CAN fast path, including
+  outside Git; other semantic events remain silent. This package is offline and
+  does not require or restart the 3CAN Runtime.
+- Added Windows `py.exe -3` discovery and typed launcher failures so an installed
+  Python 3 environment cannot silently disable all RuntimeHook events.
 - Added the optional `3CAN RuntimeHook` Skill and one local control adapter.
   Natural-language or implicit activation records one ignored semantic state:
   Owner Intent, the Agent-selected light/medium/max review timing and reason,
   optional episode, and semantic review result/reference. It does not create a
-  Task Hook, selector, proof lifecycle, candidate-freshness path, or Stop
-  decision; those remain independently owned by the existing convergence engine
+  Task Hook, selector, proof lifecycle, candidate-freshness path, or project
+  evidence decision; those remain independently owned by the convergence engine
   and Git. Final semantic `PASS` now records only the reviewed clean Git HEAD;
   a later commit or dirty edit makes that review stale without adding artifact
   hashing or another candidate kernel. Owner off retains the state as

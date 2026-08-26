@@ -1,6 +1,6 @@
 ---
 name: 3can-runtimehook
-description: Keep Owner Intent and semantic review timing stable across long, multi-stage, cross-module, drift-prone Codex work. Use implicitly when this lightweight supervision materially helps, or when the user says RuntimeHook, 开启 RuntimeHook, 按 RuntimeHook 执行, 这个任务用 RuntimeHook, /3CAN, or asks to turn it off. Reviews goal drift, unjustified hardcoding, hidden fallback or stale state, and unrequested behavior without replacing Git or project evidence gates.
+description: Keep Owner Intent and semantic review timing stable across long, multi-stage, cross-module, drift-prone Codex work. Use implicitly when this lightweight supervision materially helps, or when the user says RuntimeHook, 开启 RuntimeHook, 按 RuntimeHook 执行, 这个任务用 RuntimeHook, /3CAN, or asks to turn it off. Uses the plugin-bundled controller without requiring a project kit, and reviews goal drift, unjustified hardcoding, hidden fallback or stale state, and unrequested behavior without replacing Git or project evidence gates.
 ---
 
 # 3CAN RuntimeHook
@@ -10,13 +10,33 @@ asking the user to choose a mode when the task is long, multi-stage,
 cross-module, historically drift-prone, or explicitly requests RuntimeHook. Do
 not invoke it for every small edit merely because it is installed.
 
+## Apply the 3CAN fast path
+
+The Plugin's `SessionStart` Hook provides a stateless orientation even before
+RuntimeHook activation. Start safe local work immediately. Git owns exact
+source state; use 3CAN route or retrieval only when durable project meaning
+improves the decision. Obtain a fresh ticket just in time only for an operation
+whose current project contract requires one, with exact Agent, project,
+workspace/worktree, Workorder, target, and scope bindings. Honor the returned
+TTL and completion deadline. Never blind-retry a typed refusal: refresh expired
+state once only for the still-pending operation, reread a version conflict, and
+stop on an identity or digest mismatch. Durable writeback defaults to a
+meaningful `AUTO_CLOSEOUT` or explicit `OWNER_REQUESTED` checkpoint.
+
 ## Locate and inspect
 
-Resolve the physical root with `git rev-parse --show-toplevel`. Use the absolute
-`<root>/scripts/3can_runtimehook.py` path and pass that same root through
-`--root`. If the script or native project hooks are absent, report
-`UNAVAILABLE`; do not create a daemon, parser, graph call, global state store, or
-replacement Hook.
+Use `scripts/3can_runtimehook.py` inside this loaded Skill directory as the
+controller. Resolve its absolute path from the Skill location; do not require or
+copy a controller into the target repository. Resolve the physical worktree with
+`git rev-parse --show-toplevel` and pass that exact root through `--root`.
+If Git, Python 3, or the bundled controller is unavailable, report
+`UNAVAILABLE`; do not create a daemon, parser, graph call, global state store,
+or replacement Hook.
+
+The first `on` in a repository adds only `/.codex/runtimehook/` to that
+repository's local Git exclude when no existing ignore already covers it. It
+does not edit tracked project files. A tracked, redirected, or unsafe state root
+remains `UNAVAILABLE`.
 
 RuntimeHook state is current-task state for one physical Git worktree, not
 per-chat state. Never run concurrent RuntimeHook tasks in the same worktree;
@@ -106,3 +126,8 @@ The explicit Codex route is `$3can-runtimehook` (or `/skills`), and natural
 language may invoke it implicitly. `/3CAN` is product shorthand only; Codex does
 not currently expose a reliable custom slash-command registration path, so do
 not implement a slash parser.
+
+Only the stateless 3CAN fast path is emitted before activation; all semantic
+RuntimeHook events remain silent. Installing or enabling the Plugin does not
+authorize a task activation; activate only when semantic supervision materially
+helps or the Owner asks for it.

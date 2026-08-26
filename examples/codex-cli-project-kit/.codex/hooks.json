@@ -14,7 +14,34 @@
           {
             "type": "command",
             "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
-            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
+            "commandWindows": "powershell -NoProfile -NonInteractive -Command \"$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONUTF8 = '1'; $root = (& git rev-parse --show-toplevel | Out-String).Trim(); python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
+            "timeout": 10,
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
+            "commandWindows": "powershell -NoProfile -NonInteractive -Command \"$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONUTF8 = '1'; $root = (& git rev-parse --show-toplevel | Out-String).Trim(); python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
+            "timeout": 10,
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|update_plan)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
+            "commandWindows": "powershell -NoProfile -NonInteractive -Command \"$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONUTF8 = '1'; $root = (& git rev-parse --show-toplevel | Out-String).Trim(); python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
             "timeout": 10,
             "additionalContextLimit": 5000
           }
@@ -47,7 +74,7 @@
           {
             "type": "command",
             "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
-            "commandWindows": "powershell -NoProfile -Command \"$root = git rev-parse --show-toplevel; python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
+            "commandWindows": "powershell -NoProfile -NonInteractive -Command \"$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONUTF8 = '1'; $root = (& git rev-parse --show-toplevel | Out-String).Trim(); python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook\"",
             "timeout": 10
           }
         ]
