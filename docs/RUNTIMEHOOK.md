@@ -5,6 +5,12 @@ current Owner Intent across resume/clear/compaction and prompts an Agent to
 review four general failure modes: goal drift, unjustified hardcoding, hidden
 fallback or stale state, and unrequested behavior.
 
+The Plugin also emits one bounded 3CAN fast-path orientation at `SessionStart`,
+including outside Git repositories. That orientation tells a Session to start
+safe local work immediately, use fresh ticket context only just in time for a
+ticket-governed operation, and write durable meaning only at a real checkpoint.
+It does not activate RuntimeHook or contact 9700.
+
 It is not a second Task Oracle. RuntimeHook owns one ignored file only:
 
 ```text
@@ -42,6 +48,15 @@ simulate `/3CAN`; it is only product shorthand. The real explicit route is
 [developer commands](https://learn.chatgpt.com/docs/developer-commands), and
 [hooks](https://learn.chatgpt.com/docs/hooks) documentation.
 
+The SessionStart orientation follows the repository [3CAN steering
+contract](../3CAN.md): Git owns exact source state; 3CAN supplies durable
+project meaning and relevant history. Read-only and safe local work needs no
+ticket. A ticket is requested and consumed immediately before the operation
+whose current project contract requires it, with the current Agent, project,
+workspace/worktree, Workorder, target, and scope bindings. The Agent honors the
+returned TTL and completion deadline and never blind-retries an expired,
+conflicting, or mismatched request.
+
 The Agent chooses the lightest useful review depth semantically:
 
 - `light`: a concise Goal/Acceptance check at each observed boundary;
@@ -57,8 +72,9 @@ duration, file-count, domain, command-name, or Oracle-name classifier.
 The Plugin bundles RuntimeHook only. Existing project-owned convergence,
 credential, security, deployment, or publication gates remain independent and
 all matching native Hooks continue to run. With no enabled RuntimeHook state,
-the Plugin Hook exits silently, including outside Git repositories. When
-enabled, `SessionStart` and `UserPromptSubmit` reinject RUN_INTENT. A Git HEAD
+only `SessionStart` emits the stateless 3CAN fast path; other RuntimeHook events
+remain silent. When enabled, `SessionStart` emits that fast path plus RUN_INTENT,
+and `UserPromptSubmit` reinjects RUN_INTENT. A Git HEAD
 change observed after `Bash`, or an `update_plan` call containing a completed
 step, advances one review boundary without parsing commands or project domains.
 For a semantic stage/episode with neither signal, the Agent uses the same
@@ -77,8 +93,9 @@ change. SessionStart uses native
 `hookSpecificOutput.additionalContext` with a bounded matching handler limit, so
 the context reaches the model rather than only the UI event stream.
 
-`off` changes the retained state to `disabled_by_owner`; later RuntimeHook hooks
-are silent. It does not delete evidence and cannot disable credentials,
+`off` changes the retained state to `disabled_by_owner`; later semantic
+RuntimeHook reminders are silent while the stateless SessionStart orientation
+remains available. It does not delete evidence and cannot disable credentials,
 deployment, publication, security, or the independent PR15 convergence gate.
 
 ## Install and remove
@@ -99,7 +116,8 @@ Restart the ChatGPT desktop app, open the Plugins Directory, choose the
 open `/plugins` and install it from the configured marketplace, then start a new
 session. Review the exact bundled Hook definition and trust it before use; in
 Codex CLI, `/hooks` is the native inspection and trust surface. Installation
-does not activate a task. The Plugin stays silent until Codex semantically
+does not activate a task or create state. It only makes the bounded 3CAN
+SessionStart orientation automatic; semantic supervision starts when Codex
 selects the Skill or the Owner asks for RuntimeHook.
 
 The first activation in a Git repository adds only

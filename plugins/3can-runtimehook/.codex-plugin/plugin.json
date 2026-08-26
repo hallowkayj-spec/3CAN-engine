@@ -1,7 +1,7 @@
 {
   "name": "3can-runtimehook",
-  "version": "0.1.0+codex.20260825053744",
-  "description": "Keep task intent and semantic review current across long Codex sessions.",
+  "version": "0.1.1+codex.20260826112026",
+  "description": "Orient every Codex session to the 3CAN fast path and keep long-task semantic review current.",
   "author": {
     "name": "hallowkayj-spec",
     "url": "https://github.com/hallowkayj-spec"
@@ -13,18 +13,20 @@
     "codex",
     "hooks",
     "semantic-review",
-    "task-convergence"
+    "task-convergence",
+    "ticket-fast-path"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "3CAN RuntimeHook",
-    "shortDescription": "Keep intent and semantic review current",
-    "longDescription": "An offline semantic supervisor for Codex tasks. It restores Owner Intent at Git, plan, prompt, resume, and final boundaries, then requests review for goal drift, hardcoding, fallback, stale state, or unrequested behavior.",
+    "shortDescription": "Fast 3CAN orientation and semantic review",
+    "longDescription": "An offline Codex companion that gives every SessionStart a bounded 3CAN fast path, then optionally restores Owner Intent at Git, plan, prompt, resume, and final boundaries for semantic review.",
     "developerName": "hallowkayj-spec",
     "category": "Productivity",
     "capabilities": [
       "semantic-supervision",
-      "lifecycle-context"
+      "lifecycle-context",
+      "session-orientation"
     ],
     "websiteURL": "https://github.com/hallowkayj-spec/3CAN-engine",
     "defaultPrompt": [

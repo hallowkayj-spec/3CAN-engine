@@ -20,9 +20,7 @@ try {
         }
         $cursor = $cursor.Parent
     }
-    if ($null -eq $boundary) {
-        exit 0
-    }
+    $untrustedRoot = if ($null -ne $boundary) { $boundary } else { $current }
 
     $controller = Join-Path $env:PLUGIN_ROOT "skills\3can-runtimehook\scripts\3can_runtimehook.py"
     if (-not (Test-Path -LiteralPath $controller -PathType Leaf)) {
@@ -39,7 +37,7 @@ try {
             $candidate = [IO.Path]::GetFullPath((Join-Path $expanded $name))
             if (
                 (Test-Path -LiteralPath $candidate -PathType Leaf) -and
-                -not (Test-Within -Path $candidate -Root $boundary)
+                -not (Test-Within -Path $candidate -Root $untrustedRoot)
             ) {
                 $python = $candidate
                 break
@@ -53,7 +51,7 @@ try {
         exit 0
     }
 
-    & $python $controller hook
+    & $python $controller hook --session-orientation
     exit $LASTEXITCODE
 }
 catch {

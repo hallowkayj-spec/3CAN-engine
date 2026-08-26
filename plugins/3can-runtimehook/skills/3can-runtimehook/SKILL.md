@@ -10,6 +10,19 @@ asking the user to choose a mode when the task is long, multi-stage,
 cross-module, historically drift-prone, or explicitly requests RuntimeHook. Do
 not invoke it for every small edit merely because it is installed.
 
+## Apply the 3CAN fast path
+
+The Plugin's `SessionStart` Hook provides a stateless orientation even before
+RuntimeHook activation. Start safe local work immediately. Git owns exact
+source state; use 3CAN route or retrieval only when durable project meaning
+improves the decision. Obtain a fresh ticket just in time only for an operation
+whose current project contract requires one, with exact Agent, project,
+workspace/worktree, Workorder, target, and scope bindings. Honor the returned
+TTL and completion deadline. Never blind-retry a typed refusal: refresh expired
+state once only for the still-pending operation, reread a version conflict, and
+stop on an identity or digest mismatch. Durable writeback defaults to a
+meaningful `AUTO_CLOSEOUT` or explicit `OWNER_REQUESTED` checkpoint.
+
 ## Locate and inspect
 
 Use `scripts/3can_runtimehook.py` inside this loaded Skill directory as the
@@ -110,6 +123,7 @@ language may invoke it implicitly. `/3CAN` is product shorthand only; Codex does
 not currently expose a reliable custom slash-command registration path, so do
 not implement a slash parser.
 
-Plugin lifecycle hooks are intentionally silent until an active state exists.
-Installing or enabling the Plugin does not authorize a task activation; activate
-only when semantic supervision materially helps or the Owner asks for it.
+Only the stateless 3CAN fast path is emitted before activation; all semantic
+RuntimeHook events remain silent. Installing or enabling the Plugin does not
+authorize a task activation; activate only when semantic supervision materially
+helps or the Owner asks for it.

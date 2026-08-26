@@ -40,6 +40,20 @@ REVIEW_RESULTS = {
 BOUNDARY_KINDS = {"activation", "git", "stage", "episode"}
 MAX_BOUNDARY_LABEL_CHARS = 240
 ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+SESSION_FAST_PATH = (
+    "3CAN fast path: start safe local work immediately. Git owns exact source "
+    "truth; 3CAN supplies durable project meaning, relevant history, and typed "
+    "coordination. Use route or retrieval only when that context improves the "
+    "decision. Obtain a fresh ticket just in time only for an operation whose "
+    "current project contract requires one; bind the current AgentId, project "
+    "identity/namespace, physical workspace or worktree, and required Workorder, "
+    "target, and scope, then honor its returned TTL and completion deadline. On a "
+    "typed refusal, never blind-retry: refresh expired state once only for the "
+    "still-pending operation, reread a version conflict, and stop on an identity "
+    "or digest mismatch. Write durable meaning only at AUTO_CLOSEOUT or when the "
+    "Owner requests it. This orientation does not activate RuntimeHook or replace "
+    "project safety and evidence gates."
+)
 
 
 class RuntimeHookError(ValueError):
@@ -795,29 +809,47 @@ def hook(args: argparse.Namespace) -> int:
             raise RuntimeHookError("native Hook payload is unreadable") from exc
         if not isinstance(payload, dict):
             raise RuntimeHookError("native Hook payload must be an object")
-        root = _hook_root(args.root, payload)
-        if root is None or not os.path.lexists(root / STATE_PATH):
-            return 0
-        state = _load_state(root)
-        if state is None or state["status"] != "active":
-            return 0
         event = payload.get("hook_event_name")
-        state, git_changed = _sync_git_boundary(root, state)
-        if event == "SessionStart" and payload.get("source") in {
+        is_session_start = event == "SessionStart" and payload.get("source") in {
             "startup",
             "resume",
             "clear",
             "compact",
-        }:
+        }
+        root = _hook_root(args.root, payload)
+        state = None
+        if root is not None and os.path.lexists(root / STATE_PATH):
+            state = _load_state(root)
+        if state is None or state["status"] != "active":
+            if is_session_start and args.session_orientation:
+                print(
+                    json.dumps(
+                        {
+                            "hookSpecificOutput": {
+                                "hookEventName": "SessionStart",
+                                "additionalContext": SESSION_FAST_PATH,
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            return 0
+        state, git_changed = _sync_git_boundary(root, state)
+        if is_session_start:
             stale_reasons = _stale_review_reasons(root, state)
             print(
                 json.dumps(
                     {
                         "hookSpecificOutput": {
                             "hookEventName": "SessionStart",
-                            "additionalContext": _context(
-                                state,
-                                review_result="STALE" if stale_reasons else None,
+                            "additionalContext": (
+                                (f"{SESSION_FAST_PATH} " if args.session_orientation else "")
+                                + _context(
+                                    state,
+                                    review_result=(
+                                        "STALE" if stale_reasons else None
+                                    ),
+                                )
                             ),
                         }
                     },
@@ -956,7 +988,14 @@ def build_parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--next-objective", default="")
 
     sub.add_parser("status", help="Show the current local RuntimeHook state.")
-    sub.add_parser("hook", help="Run as a non-owning Codex lifecycle reminder.")
+    hook_parser = sub.add_parser(
+        "hook", help="Run as a non-owning Codex lifecycle reminder."
+    )
+    hook_parser.add_argument(
+        "--session-orientation",
+        action="store_true",
+        help="Emit the stateless 3CAN fast path at SessionStart.",
+    )
     return parser
 
 

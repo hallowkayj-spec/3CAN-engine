@@ -92,6 +92,33 @@ Exact Git state remains in Git; runtime state remains in Runtime; CI status
 remains in CI; provider completion remains at the Provider; verification
 remains in Evidence.
 
+## Fast client path
+
+Start safe local work immediately. 3CAN readiness, route, and retrieval improve
+decisions when durable project meaning is relevant; they are not universal
+pre-edit gates. A Session needs a ticket only when the current project contract
+marks the pending operation as ticket-governed.
+
+Request and consume that ticket just in time for the governed operation, not as
+a task-opening ceremony. Bind the current AgentId, project identity/namespace,
+physical workspace or worktree, and any required Workorder, target, and scope.
+Honor the returned TTL and completion deadline instead of caching ticket state
+across a long development episode.
+
+Handle one typed refusal at its canonical boundary:
+
+- expired or inactive state: obtain one fresh preflight only if the governed
+  operation is still pending;
+- identity or digest mismatch: correct the exact binding and do not retry with
+  guessed context;
+- version conflict: reread the canonical node and retry once with its current
+  compare-and-swap version, or report `CONFLICT` when meaning has diverged;
+- 3CAN unavailable: continue unrelated safe local work and keep only the
+  dependent operation `UNAVAILABLE`.
+
+Never blind-retry the same request, reuse another Session's private ticket
+state, or repeat already-completed local work merely to refresh authorization.
+
 ## ErrorKnowledge
 
 Use the existing ErrorKnowledge lifecycle. The first occurrence records the
@@ -118,9 +145,28 @@ architectural decision, rollback boundary, or release boundary changes.
 Do not create a node for every commit, test, tool call, provider call, or
 session. Do not add a Git watcher, commit daemon, or Git-state mirror.
 
-When an Agent observes that Git may be newer than durable project meaning, the
-Agent routes to the relevant module, verifies Git as the exact authority, and
-uses the existing writeback path only for an accepted meaningful checkpoint.
+Ordinary development follows `understand -> edit -> test -> Git checkpoint ->
+deliver` with zero forced 3CAN calls. A route is a read tool used when project
+meaning would materially improve the decision; it is not a universal pre-edit
+gate.
+
+Durable writeback has only two default triggers:
+
+- `AUTO_CLOSEOUT`: after a meaningful module or milestone has finished local
+  verification, record its semantic delta and remaining typed evidence state;
+- `OWNER_REQUESTED`: the Owner explicitly asks to record, summarize, compact,
+  or checkpoint current meaning at any point.
+
+Both triggers use the existing writeback path. They do not introduce a watcher,
+queue, daemon, or second execution state. If 3CAN is unavailable or concurrent
+state has moved, local Git work remains complete and the receipt stays typed
+`UNAVAILABLE`, `PARTIAL`, or `CONFLICT`.
+
+Concurrent convergence is node-first and compare-and-swap. Update the canonical
+owner with its observed `expected_updated_at`, then add only edges whose
+endpoints are present. A stale node update, missing endpoint, or already-applied
+semantic delta is a typed convergence result, never permission to guess,
+duplicate a node, or block unrelated local development.
 
 ## Provenance boundary
 

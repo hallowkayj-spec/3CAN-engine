@@ -181,7 +181,7 @@ def test_plugin_rejects_tracked_state_before_local_git_mutation(
     assert not (plain_repo / STATE_PATH).exists()
 
 
-def test_plugin_hooks_are_silent_until_active_and_resolve_nested_cwd(
+def test_plugin_orients_before_activation_and_resolves_nested_cwd(
     plain_repo: Path,
 ):
     nested = plain_repo / "nested"
@@ -192,7 +192,18 @@ def test_plugin_hooks_are_silent_until_active_and_resolve_nested_cwd(
         "cwd": str(nested),
     }
 
-    assert _plugin_hook(nested, "SessionStart", start_payload) == {}
+    inactive = _plugin_hook(nested, "SessionStart", start_payload)
+    inactive_context = inactive["hookSpecificOutput"]["additionalContext"]
+    assert "start safe local work immediately" in inactive_context
+    assert "fresh ticket just in time" in inactive_context
+    assert "AUTO_CLOSEOUT" in inactive_context
+    assert "RUN_INTENT" not in inactive_context
+    assert not (plain_repo / STATE_PATH).exists()
+    assert _plugin_hook(
+        nested,
+        "UserPromptSubmit",
+        {"hook_event_name": "UserPromptSubmit", "cwd": str(nested)},
+    ) == {}
     _activate(plain_repo)
     started = _plugin_hook(nested, "SessionStart", start_payload)
     stopped = _plugin_hook(
@@ -202,14 +213,15 @@ def test_plugin_hooks_are_silent_until_active_and_resolve_nested_cwd(
     )
 
     context = started["hookSpecificOutput"]["additionalContext"]
+    assert "start safe local work immediately" in context
     assert "交付当前开源任务" in context
     assert "Semantic review: PENDING" in context
     assert stopped["decision"] == "block"
     assert "final semantic review is due" in stopped["reason"]
 
 
-def test_plugin_hook_is_silent_outside_git(tmp_path: Path):
-    assert _plugin_hook(
+def test_plugin_orients_outside_git_without_creating_state(tmp_path: Path):
+    started = _plugin_hook(
         tmp_path,
         "SessionStart",
         {
@@ -217,6 +229,17 @@ def test_plugin_hook_is_silent_outside_git(tmp_path: Path):
             "source": "startup",
             "cwd": str(tmp_path),
         },
+    )
+
+    context = started["hookSpecificOutput"]["additionalContext"]
+    assert "start safe local work immediately" in context
+    assert "current AgentId" in context
+    assert "does not activate RuntimeHook" in context
+    assert not (tmp_path / STATE_PATH).exists()
+    assert _plugin_hook(
+        tmp_path,
+        "Stop",
+        {"hook_event_name": "Stop", "cwd": str(tmp_path)},
     ) == {}
 
 
@@ -308,6 +331,9 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
         )
         assert "run_runtimehook.ps1" in handlers[0]["commandWindows"]
         assert "statusMessage" not in handlers[0]
+    assert "--session-orientation" in hooks["SessionStart"][0]["hooks"][0][
+        "command"
+    ]
     assert hooks["SessionStart"][0]["hooks"][0][
         "additionalContextLimit"
     ] == 5000
@@ -316,6 +342,7 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
     ] == 5000
     assert hooks["PostToolUse"][0]["matcher"] == "^(Bash|update_plan)$"
     assert "do not require or\ncopy a controller" in skill
+    assert "fresh ticket just in time" in skill
     assert "allow_implicit_invocation: true" in skill_ui
     assert "NoDefaultCurrentDirectoryInExePath" in windows_launcher
     assert 'Join-Path $cursor.FullName ".git"' in windows_launcher
