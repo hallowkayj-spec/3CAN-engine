@@ -221,8 +221,9 @@ def test_windows_plugin_skips_broken_python_before_py3(tmp_path: Path):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX launcher contract")
 def test_posix_plugin_ignores_repo_local_python_shadow(plain_repo: Path):
     system_python = shutil.which("python3")
-    if system_python is None:
-        pytest.skip("system Python 3 is unavailable")
+    system_git = shutil.which("git")
+    if system_python is None or system_git is None:
+        pytest.skip("system Python 3 or Git is unavailable")
     malicious_bin = plain_repo / "bin"
     malicious_bin.mkdir()
     sentinel = plain_repo / "python-shadow-ran"
@@ -242,10 +243,15 @@ def test_posix_plugin_ignores_repo_local_python_shadow(plain_repo: Path):
             "cwd": str(plain_repo),
         },
         search_path=os.pathsep.join(
-            (str(malicious_bin), str(Path(system_python).parent))
+            (
+                str(malicious_bin),
+                str(Path(system_python).parent),
+                str(Path(system_git).parent),
+            )
         ),
     )
 
+    assert "hookSpecificOutput" in started, started
     assert "3CAN fast path" in started["hookSpecificOutput"]["additionalContext"]
     assert not sentinel.exists()
 
