@@ -7,7 +7,15 @@
   "verdict": "PASS_WITH_TYPED_LIMITS",
   "purpose": "Raise the prior ten-minute dogfood to an adversarial system test covering the production client contract, isolated black-box behavior, repository-wide regressions, RuntimeHook in a real development episode, and an independently attempted public benchmark task.",
   "safety": {
-    "production_9700_mutated": false,
+    "production_9700_read_only_during_tests": true,
+    "production_9700_mutated": true,
+    "production_graph_writeback": {
+      "scope": "DOC-3can-runtimehook-dogfood-20260826 only",
+      "method": "exact read plus expected_updated_at CAS",
+      "successful_cas_updates": 2,
+      "purpose": "Owner-requested checkpoint followed by final exact-head/CI alignment",
+      "broad_business_graph_changes": false
+    },
     "production_9700_restarted": false,
     "second_production_runtime_created": false,
     "isolated_test_runtime": {
