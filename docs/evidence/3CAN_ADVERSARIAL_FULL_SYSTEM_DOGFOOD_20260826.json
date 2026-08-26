@@ -1,0 +1,397 @@
+{
+  "schema": "3can.adversarial-full-system-dogfood/v1",
+  "recorded_at_utc": "2026-08-26T14:30:24Z",
+  "thread_id": "01a024cb-6ba7-7d22-a638-c2209462dc18",
+  "repository": "hallowkayj-spec/3CAN-engine",
+  "source_head_before_evidence": "1ea5fe7ae2cbd2b97d27e434b3782770dfa1a660",
+  "verdict": "PASS_WITH_TYPED_LIMITS",
+  "purpose": "Raise the prior ten-minute dogfood to an adversarial system test covering the production client contract, isolated black-box behavior, repository-wide regressions, RuntimeHook in a real development episode, and an independently attempted public benchmark task.",
+  "safety": {
+    "production_9700_mutated": false,
+    "production_9700_restarted": false,
+    "second_production_runtime_created": false,
+    "isolated_test_runtime": {
+      "port": 19701,
+      "mode": "development",
+      "scope": "task-owned temporary graph",
+      "stopped_after_test": true,
+      "port_released": true
+    },
+    "pull_requests_merged": false,
+    "unrelated_worktrees_modified": false
+  },
+  "production_readback": {
+    "observed_at_utc": "2026-08-26T14:30:24Z",
+    "live_http": 200,
+    "alive": true,
+    "deep_ready_http": 200,
+    "mode": "production",
+    "production_ready": true,
+    "development_ready": false,
+    "nodes": 2581,
+    "edges": 1031,
+    "invalid_node_files": 0,
+    "orphan_edges": 0,
+    "embedding": {
+      "backend": "sentence-transformers:BAAI/bge-m3",
+      "model_revision": "5617a9f61b028005a4858fdac845db406aefb181",
+      "dimension": 1024,
+      "degraded": false,
+      "fallback_policy": "error",
+      "cache_synchronized": true,
+      "deep_cache_check": "verified",
+      "reranker_mode": "off"
+    },
+    "physical_integrity": "verified_production",
+    "identity": {
+      "engine_root_sha256": "33ad2cebb2c2845532eae5fdb65ffe67534ff86b1ebb263f5889d763db2a7a90",
+      "graph_root_sha256": "c14d3d2e9dd7df2b3fddd734816a29599c00f8432e3168b0bbc5b387e36aa8bb",
+      "startup_nonce_sha256": "c65699d0f8ba35cd7fd960edfa994ef4178b6bb6a7161c15fa4faafbe6454db3"
+    }
+  },
+  "test_layers": [
+    {
+      "id": "repository-adversarial-targeted",
+      "status": "PASS_WITH_SKIP",
+      "scope": "15 targeted security, identity, project-isolation, ticket, ErrorKnowledge, readiness, RuntimeHook and harness test files",
+      "result": {
+        "passed": 371,
+        "skipped": 1,
+        "elapsed_seconds": 353.8
+      },
+      "limitation": "The Windows dynamic-directory-symlink counterexample was skipped because that host capability was unavailable; source-level protection remains tested by the remaining artifact-protection cases."
+    },
+    {
+      "id": "repository-full-suite",
+      "status": "PASS_WITH_SKIP",
+      "scope": "neural-memory/tests",
+      "result": {
+        "passed": 558,
+        "skipped": 1,
+        "elapsed_seconds": 466.98
+      },
+      "interpretation": "This is the complete collected repository test suite at the tested head, not proof of every production, provider or distributed failure mode."
+    },
+    {
+      "id": "isolated-black-box-runtime",
+      "status": "PASS_WITH_FINDINGS",
+      "scope": "fresh temporary graph on port 19701",
+      "result": {
+        "liveness": "PASS",
+        "development_readiness_semantics": "PASS",
+        "route": "PASS",
+        "owner_intent": "PASS_AFTER_SUPPORTED_ENV_BINDING",
+        "exact_read": "PASS",
+        "project_isolation": "PASS",
+        "writeback": "PASS",
+        "error_knowledge_recorded": "PASS",
+        "error_knowledge_promoted": "PASS",
+        "token_usage": "PASS",
+        "audit_chain": {
+          "valid": true,
+          "entries": 4
+        },
+        "deep_http": 503,
+        "mode": "development",
+        "production_ready": false,
+        "development_ready": true,
+        "reason": "development_mode_not_production",
+        "project_isolation_foreign_nodes_excluded": 2
+      },
+      "process_identity": {
+        "listener_pid_matched_owned_process": true,
+        "executable_and_command_bound": true,
+        "normalized_command_sha256": "1b7de5af9f574fe2cfdbf7533c99a71ab87296d93eeaa53cc330b1896a918cab"
+      }
+    },
+    {
+      "id": "retrieval-benchmarks",
+      "status": "PASS_AS_SELF_BENCHMARK",
+      "route_benchmark": {
+        "queries": 46,
+        "mrr": 0.9783,
+        "recall_at_1": 0.8043,
+        "recall_at_3": 1.0,
+        "precision_at_3": 0.5072,
+        "ndcg_at_3": 0.9818,
+        "p50_ms": 13,
+        "p95_ms": 28,
+        "grep_fallback_count": 0
+      },
+      "substrate_benchmark": {
+        "queries": 10,
+        "top1_accuracy": 1.0,
+        "mean_top3_recall": 0.8167,
+        "error_proactive_top3": 1.0,
+        "p50_ms": 13,
+        "p95_ms": 27
+      },
+      "harness_benchmark": {
+        "passed": 8,
+        "total": 8,
+        "p50_ms": 177,
+        "p95_ms": 205
+      },
+      "limitation": "Fixtures and expectations are maintained in this repository; these figures validate regression behavior, not superiority over an independent RAG system."
+    },
+    {
+      "id": "external-research-contract",
+      "status": "PASS_AFTER_TWO_FAIL_CLOSED_RUNS",
+      "final_ledger": {
+        "ledger_id": "20260826T140513Z_53da8b1da03754e3",
+        "sources": 35,
+        "verified_external_sources": 35,
+        "external_source_families": 5,
+        "query_variants": 6,
+        "weighted_score_out_of_5": 4.32,
+        "decision_state": "ready_for_decision",
+        "elapsed_seconds": 9.9
+      },
+      "prior_runs": [
+        {
+          "status": "BLOCKED",
+          "reason": "only three verified external source families"
+        },
+        {
+          "status": "BLOCKED",
+          "reason": "duplicate URL exposed positional source-type misbinding"
+        }
+      ]
+    },
+    {
+      "id": "real-open-source-task",
+      "status": "PASS_WITH_BASELINE_ENVIRONMENT_LIMITS",
+      "benchmark": "SWE-bench Verified",
+      "instance_id": "astropy__astropy-13398",
+      "difficulty": "1-4 hours",
+      "base_commit": "6500928dc0e57be8f06d1162eacc3ba5e2eff692",
+      "independent_candidate_commit": "cccb29983b223fd3e214da20f64bfa1ec5c89289",
+      "final_candidate_commit": "adb9c686e20ed293ce591aeff5c79b1ce2e7fbee",
+      "independence_protocol": {
+        "accepted_patch_read_before_candidate": false,
+        "candidate_review_before_accepted_patch": true,
+        "candidate_result": "PARTIAL",
+        "candidate_new_tests": "4 passed",
+        "candidate_existing_related_tests": "64 passed, 5 failed, 3 skipped",
+        "semantic_counterexample": "The independent implementation incorrectly equated a geocentric and topocentric CIRS result and duplicated refraction semantics."
+      },
+      "final_result": {
+        "fail_to_pass": "4 of 4 passed",
+        "pass_to_pass_and_related_file": "73 passed, 3 skipped",
+        "broader_coordinates_final": "1425 passed, 83 failed, 67 skipped, 22 xfailed",
+        "broader_coordinates_base": "1421 passed, 83 failed, 67 skipped, 22 xfailed",
+        "new_broad_failures": 0,
+        "accepted_source_blobs_exact": "3 of 4",
+        "accepted_source_semantics": "4 of 4; the only source-blob difference was documentation blank-line formatting"
+      },
+      "environment_limits": [
+        "The 2022 project required historical setuptools, setuptools-scm, Cython, NumPy and extension-helper pins to install in 2026.",
+        "Current pytest raised a removed-in-10 collection warning unless explicitly suppressed.",
+        "The 83 broad failures reproduced unchanged at the exact base and are therefore not regressions from the candidate."
+      ]
+    }
+  ],
+  "capability_matrix": [
+    {
+      "capability": "production liveness, deep readiness and typed development-vs-production semantics",
+      "status": "PASS",
+      "evidence": ["production readback", "isolated black-box runtime", "repository full suite"]
+    },
+    {
+      "capability": "runtime/process identity beyond PID",
+      "status": "PASS",
+      "evidence": ["production identity hashes", "isolated executable-command-listener binding"]
+    },
+    {
+      "capability": "semantic routing, budgets, confidence, query expansion and fallback accounting",
+      "status": "PASS_AS_REGRESSION",
+      "evidence": ["46-query route benchmark", "10-query substrate benchmark", "repository full suite"]
+    },
+    {
+      "capability": "BGE-M3 dense embedding cache integrity, revision pin, dimension and fail-closed fallback policy",
+      "status": "PASS",
+      "evidence": ["production forced deep readback", "isolated development deep check"]
+    },
+    {
+      "capability": "project identity, namespace and foreign-node isolation",
+      "status": "PASS",
+      "evidence": ["isolated foreign-node exclusion", "targeted identity and namespace counterexamples"]
+    },
+    {
+      "capability": "Owner Intent and project-kit verification",
+      "status": "PASS_WITH_CLI_FINDING",
+      "evidence": ["isolated owner-intent/project-kit readback", "repository tests"]
+    },
+    {
+      "capability": "ticket, scope digest, target digest, version and expiry fail-closed gates",
+      "status": "PASS_IN_TEST_SUITE",
+      "evidence": ["targeted adversarial suite", "repository full suite"],
+      "production_mutation_tested": false
+    },
+    {
+      "capability": "CAS, graph lock, single-writer and concurrent update behavior",
+      "status": "PASS_IN_TEST_SUITE",
+      "evidence": ["targeted adversarial suite", "repository full suite"]
+    },
+    {
+      "capability": "writeback, compact notes and audit hash chain",
+      "status": "PASS",
+      "evidence": ["isolated black-box writeback and four-entry audit", "repository full suite"]
+    },
+    {
+      "capability": "ErrorKnowledge record, repeat promotion, resolution and family indexing",
+      "status": "PASS_WITH_PRODUCTION_READ_ONLY_BOUNDARY",
+      "evidence": ["isolated recorded/promoted lifecycle", "production family-index readback", "repository tests"]
+    },
+    {
+      "capability": "history, supersession, archival and current-project-reality filtering",
+      "status": "PASS_IN_TEST_SUITE",
+      "evidence": ["repository full suite", "production effective-project-reality readback"]
+    },
+    {
+      "capability": "task ledger, milestone recovery, token accounting, handoff/checkin/briefing",
+      "status": "PASS_IN_TEST_SUITE_WITH_TOKEN_BLACK_BOX",
+      "evidence": ["isolated token usage", "repository full suite"]
+    },
+    {
+      "capability": "release scanner, project-kit builder, PR review harness, Task Oracle and convergence hook",
+      "status": "PASS_IN_TEST_SUITE",
+      "evidence": ["repository full suite", "targeted harness tests"]
+    },
+    {
+      "capability": "RuntimeHook intent persistence, episode review, clean-Git final anchor and stale-review checks",
+      "status": "PASS_WITH_AUTOMATION_LIMIT",
+      "evidence": ["two live dogfood activations", "targeted RuntimeHook tests", "real benchmark PARTIAL-to-PASS review trail"]
+    },
+    {
+      "capability": "HTTP route surface",
+      "status": "INVENTORIED_NOT_EXHAUSTIVELY_BLACK_BOXED",
+      "evidence": ["66 registered routes: 30 GET, 31 POST, 2 PUT, 2 DELETE, 1 WebSocket"]
+    },
+    {
+      "capability": "enterprise authentication, multi-tenant hostile traffic, distributed crash recovery, external provider side effects and large-scale load",
+      "status": "UNTESTED",
+      "reason": "Not safely provable in a local read-only production test and not represented by the isolated graph."
+    }
+  ],
+  "runtimehook_dogfood": {
+    "main_activation_id": "rh-583571a9d8924261",
+    "real_task_activation_id": "rh-2b9694ff6eaa40fd",
+    "intensity": "max",
+    "actual_value": [
+      "Owner intent and the independent-before-gold constraint survived the multi-stage task.",
+      "The first candidate stayed PARTIAL when five legacy semantic regressions remained, despite four new green tests.",
+      "The final PASS was recorded only on a clean Git checkpoint after exact and broad baseline-parity tests."
+    ],
+    "automation_limit": "RuntimeHook does not autonomously infer every Git commit or semantic episode. Native SessionStart/Stop protects resume and final freshness, but mid-task checkpoint quality still depends on Skill invocation by the active agent. This test therefore does not prove zero-prompt, Ponytail-like transparency for every Session.",
+    "false_reminders_observed": 0,
+    "meaningful_reviews": 4,
+    "bad_candidate_prevented_from_being_final": 1,
+    "explicit_activation_parse_error": "The first real-task activation rejected acceptance criteria written with ':' instead of the documented STABLE-ID=text syntax; the retry succeeded."
+  },
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "P1",
+      "owner": "3CAN research harness",
+      "status": "OPEN",
+      "finding": "record_done de-duplicates artifact URLs but keeps the original positional artifact_source_types array, so a duplicate URL shifts provenance types onto later unique sources.",
+      "impact": "A valid research run can fail its source-family gate or, worse, carry incorrect provenance classification.",
+      "minimal_fix": "De-duplicate URL and source type as one pair before validation; add one duplicate-URL counterexample."
+    },
+    {
+      "id": "F-02",
+      "severity": "P1_PRODUCT",
+      "owner": "3CAN project-kit CLI",
+      "status": "OPEN",
+      "finding": "The runtime CLI --engine-root selection was not honored by the Owner Intent module loader; the documented environment binding was required for project-kit verification to pass.",
+      "impact": "A correct explicit CLI root can still report owner_intent_loader_unavailable, causing first-attempt friction.",
+      "minimal_fix": "Use the already-resolved CLI engine root in the loader instead of consulting a second environment-only source."
+    },
+    {
+      "id": "F-03",
+      "severity": "P2",
+      "owner": "3CAN benchmark harness",
+      "status": "OPEN",
+      "finding": "Invoking the benchmark runner with --help executed the benchmark and wrote an artifact instead of returning help.",
+      "impact": "Surprising side effect and repository dirt during discovery.",
+      "minimal_fix": "Use an argparse help path that exits before benchmark execution."
+    },
+    {
+      "id": "F-04",
+      "severity": "P1_METHOD",
+      "owner": "benchmark protocol",
+      "status": "MITIGATED_IN_THIS_RUN",
+      "finding": "The first selected SymPy task was contaminated because the accepted pull-request body embedded the exact patch even though the patch endpoint itself had not been opened.",
+      "impact": "A benchmark can appear independent while answer leakage enters through metadata.",
+      "minimal_fix": "Delay all accepted PR, issue-hint and patch-chain access until a clean independent candidate commit exists. The Astropy rerun followed this rule."
+    },
+    {
+      "id": "F-05",
+      "severity": "P2_EXTERNAL",
+      "owner": "historical benchmark environment",
+      "status": "TYPED_LIMIT",
+      "finding": "The 2022 Astropy base does not install or collect cleanly against current unpinned build/test dependencies.",
+      "impact": "Setup retries add time and can be misdiagnosed as candidate failures.",
+      "minimal_fix": "Use the benchmark's historical environment contract or official Docker image when disk capacity permits."
+    },
+    {
+      "id": "F-06",
+      "severity": "P1_PRODUCT",
+      "owner": "RuntimeHook product UX",
+      "status": "KNOWN_LIMIT",
+      "finding": "Mid-task episode enforcement is semantic and caller-driven, not an independent always-on watcher of every Git or workflow boundary.",
+      "impact": "If an agent ignores the Skill after attention drift, only native resume/Stop hooks can reassert state; they cannot reconstruct an omitted semantic review for every completed module.",
+      "minimal_fix": "Dogfood a minimal native boundary signal from existing Git/Task events before adding state; do not create a second task kernel."
+    },
+    {
+      "id": "F-07",
+      "severity": "P2_PLATFORM",
+      "owner": "Windows test host",
+      "status": "PARTIAL",
+      "finding": "One dynamic-directory-symlink artifact-protection test was skipped because the host capability was unavailable.",
+      "impact": "That exact Windows primitive is not evidenced on this host.",
+      "minimal_fix": "Run the same case on a symlink-enabled Windows CI lane; do not weaken the production protection."
+    }
+  ],
+  "time_cost": {
+    "repository_targeted_seconds": 353.8,
+    "repository_full_seconds": 466.98,
+    "isolated_research_final_seconds": 9.9,
+    "astropy_exact_related_seconds": 3.21,
+    "astropy_broad_final_seconds": 32.53,
+    "astropy_broad_base_seconds": 28.89,
+    "known_overhead_sources": [
+      "two intentionally blocked research-ledger attempts",
+      "one discarded contaminated SymPy baseline",
+      "historical Astropy dependency pinning",
+      "one independent candidate disproved by five regression cases",
+      "one broad-suite baseline comparison"
+    ],
+    "interpretation": "3CAN and RuntimeHook added bounded review and evidence cost, but most elapsed expansion in this harder run came from full repository tests, historical environment repair and the deliberate independent-before-gold benchmark protocol."
+  },
+  "external_primary_sources": [
+    "https://openai.com/index/introducing-swe-bench-verified/",
+    "https://github.com/SWE-bench/SWE-bench",
+    "https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified",
+    "https://arxiv.org/abs/2310.06770",
+    "https://github.com/xiaowu0162/LongMemEval",
+    "https://github.com/getzep/graphiti",
+    "https://github.com/astropy/astropy/pull/13398"
+  ],
+  "cleanup_contract": {
+    "retain": [
+      "this evidence packet",
+      "Git commit and Draft PR exact-head CI",
+      "one sanitized 3CAN checkpoint"
+    ],
+    "recycle_after_validation": [
+      "isolated Python environment and graph",
+      "research source and ledger scratch data",
+      "contaminated SymPy clone",
+      "Astropy clone and virtual environment",
+      "benchmark help side-effect artifact",
+      "test result hook state"
+    ]
+  }
+}
