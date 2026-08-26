@@ -857,6 +857,15 @@ def hook(args: argparse.Namespace) -> int:
                 )
             )
         elif event == "UserPromptSubmit":
+            boundary = state["boundary"]
+            if boundary["reviewed_sequence"] == boundary["sequence"]:
+                state = _mark_boundary(
+                    state,
+                    kind="episode",
+                    label="Owner prompt opened a new conversation episode",
+                    observed_git_head=boundary["observed_git_head"],
+                )
+                _write_state(root, state)
             stale_reasons = _stale_review_reasons(root, state)
             print(
                 json.dumps(

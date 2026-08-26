@@ -85,7 +85,13 @@ def _activate(root: Path, *, goal: str = "交付当前开源任务。") -> dict:
     return output
 
 
-def _plugin_hook(cwd: Path, event: str, payload: dict) -> dict:
+def _plugin_hook(
+    cwd: Path,
+    event: str,
+    payload: dict,
+    *,
+    search_path: str | None = None,
+) -> dict:
     definitions = json.loads(
         (PLUGIN_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
     )["hooks"][event]
@@ -93,6 +99,8 @@ def _plugin_hook(cwd: Path, event: str, payload: dict) -> dict:
     assert len(handlers) == 1
     command = handlers[0]["commandWindows" if os.name == "nt" else "command"]
     environment = {**os.environ, "PLUGIN_ROOT": str(PLUGIN_ROOT)}
+    if search_path is not None:
+        environment["PATH"] = search_path
     completed = subprocess.run(
         command,
         cwd=cwd,
@@ -106,6 +114,55 @@ def _plugin_hook(cwd: Path, event: str, payload: dict) -> dict:
     stderr = completed.stderr.decode("utf-8")
     assert completed.returncode == 0, stdout + stderr
     return json.loads(stdout) if stdout.strip() else {}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher contract")
+def test_windows_plugin_uses_py_launcher_when_python_names_are_absent(
+    tmp_path: Path,
+):
+    system_py = shutil.which("py.exe")
+    if system_py is None:
+        pytest.skip("Windows Python launcher is unavailable")
+    cwd = tmp_path / "cwd"
+    launcher_bin = tmp_path / "launcher-bin"
+    cwd.mkdir()
+    launcher_bin.mkdir()
+    shutil.copyfile(system_py, launcher_bin / "py.exe")
+
+    started = _plugin_hook(
+        cwd,
+        "SessionStart",
+        {
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+            "cwd": str(cwd),
+        },
+        search_path=str(launcher_bin),
+    )
+
+    assert "hookSpecificOutput" in started, started
+    assert "3CAN fast path" in started["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher contract")
+def test_windows_plugin_reports_unavailable_without_python(tmp_path: Path):
+    cwd = tmp_path / "cwd"
+    empty_bin = tmp_path / "empty-bin"
+    cwd.mkdir()
+    empty_bin.mkdir()
+
+    started = _plugin_hook(
+        cwd,
+        "SessionStart",
+        {
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+            "cwd": str(cwd),
+        },
+        search_path=str(empty_bin),
+    )
+
+    assert "RuntimeHook semantic context is UNAVAILABLE" in started["systemMessage"]
 
 
 def test_plugin_activation_bootstraps_only_local_git_exclude(
@@ -251,7 +308,7 @@ def test_windows_plugin_ignores_repo_local_executable_shadows(
     system_command = Path(os.environ["COMSPEC"])
     malicious_bin = plain_repo / "bin"
     malicious_bin.mkdir()
-    for name in ("git.exe", "python.exe", "powershell.exe"):
+    for name in ("git.exe", "python.exe", "py.exe", "powershell.exe"):
         shutil.copyfile(system_command, plain_repo / name)
         shutil.copyfile(system_command, malicious_bin / name)
     monkeypatch.setenv(

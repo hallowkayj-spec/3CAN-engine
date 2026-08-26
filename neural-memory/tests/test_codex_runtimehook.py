@@ -333,6 +333,41 @@ def test_runtimehook_git_checkpoint_becomes_one_review_debt(runtimehook_project)
     assert state["semantic_review"]["result"] == "PENDING"
 
 
+def test_runtimehook_new_owner_prompt_invalidates_one_reviewed_conversation(
+    runtimehook_project,
+):
+    _installed, _hooks, command, native_hook = runtimehook_project
+    _activate(command)
+    reviewed, review_output = command(
+        "review",
+        "--stage",
+        "final",
+        "--result",
+        "PASS",
+        "--reference",
+        "git:previous-turn-review",
+    )
+
+    prompted = native_hook(
+        "UserPromptSubmit",
+        {"hook_event_name": "UserPromptSubmit", "prompt": "continue"},
+    )
+    repeated = native_hook(
+        "UserPromptSubmit",
+        {"hook_event_name": "UserPromptSubmit", "prompt": "status?"},
+    )
+    _completed, state = command("status")
+
+    assert reviewed.returncode == 0, review_output
+    context = prompted["hookSpecificOutput"]["additionalContext"]
+    assert "episode=Owner prompt opened a new conversation episode" in context
+    assert "Boundary review: DUE" in context
+    assert "RUN_INTENT" in repeated["hookSpecificOutput"]["additionalContext"]
+    assert state["boundary"]["sequence"] == 2
+    assert state["boundary"]["reviewed_sequence"] == 1
+    assert state["semantic_review"]["result"] == "PENDING"
+
+
 def test_runtimehook_plan_and_explicit_episode_boundaries_recall_intent(
     runtimehook_project,
 ):

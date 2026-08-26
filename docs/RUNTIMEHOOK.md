@@ -73,13 +73,15 @@ The Plugin bundles RuntimeHook only. Existing project-owned convergence,
 credential, security, deployment, or publication gates remain independent and
 all matching native Hooks continue to run. With no enabled RuntimeHook state,
 only `SessionStart` emits the stateless 3CAN fast path; other RuntimeHook events
-remain silent. When enabled, `SessionStart` emits that fast path plus RUN_INTENT,
-and `UserPromptSubmit` reinjects RUN_INTENT. A Git HEAD
-change observed after `Bash`, or an `update_plan` call containing a completed
-step, advances one review boundary without parsing commands or project domains.
-For a semantic stage/episode with neither signal, the Agent uses the same
-generic `checkpoint --kind stage|episode --label ...` command. Multiple events
-before review coalesce into one current debt; no history is retained.
+remain silent. When enabled, `SessionStart` emits that fast path plus RUN_INTENT.
+After the current boundary is reviewed, the next `UserPromptSubmit`
+automatically closes the prior conversation episode and creates one review debt
+while reinjecting RUN_INTENT. A Git HEAD change observed after `Bash`, or an
+`update_plan` call containing a completed step, also advances one review
+boundary without parsing commands or project domains. For an internal semantic
+stage with none of those signals, the Agent uses the same generic
+`checkpoint --kind stage|episode --label ...` command. Multiple events before
+review coalesce into one current debt; no history is retained.
 
 Stop requests at most one native continuation while final semantic review is
 due or stale. This owns semantic review timing only; it does not allow, deny, or
@@ -102,8 +104,10 @@ deployment, publication, security, or the independent PR15 convergence gate.
 
 RuntimeHook is distributed as the repository Plugin at
 `plugins/3can-runtimehook` and is exposed by
-`.agents/plugins/marketplace.json`. It requires Git and Python 3, but no 3CAN
-Runtime, graph, credentials, network service, or 9700 restart.
+`.agents/plugins/marketplace.json`. It requires Git and Python 3; the Windows
+launcher supports `python.exe`, `python3.exe`, and the standard `py.exe -3`
+launcher and reports typed `UNAVAILABLE` instead of silently disabling Hooks.
+It needs no 3CAN Runtime, graph, credentials, network service, or 9700 restart.
 
 Add the public repository as a Codex marketplace and install the Plugin:
 

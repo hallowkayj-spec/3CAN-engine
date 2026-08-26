@@ -65,14 +65,17 @@ When uncertain between light and medium, use medium. Do not classify by elapsed
 minutes, file count, domain name, command string, or Oracle name. Do not ask the
 user to choose the intensity. Run `on` with Goal, repeated Acceptance, selected
 intensity, and a short semantic reason. Then work normally—understand, edit,
-test, Git checkpoint, PR or delivery. Native Hooks observe Git HEAD changes and
-completed `update_plan` stages; do not parse command text or add per-tool calls.
+test, Git checkpoint, PR or delivery. Native Hooks observe Git HEAD changes,
+completed `update_plan` stages, and the next Owner prompt after a reviewed
+conversation episode; do not parse command text or add per-tool calls.
 
 ## Review semantically
 
-Every observed Git or completed-plan boundary creates one coalesced semantic
-review debt and immediately reinjects RUN_INTENT. When a meaningful semantic
-stage or episode completes without either signal, run one generic boundary:
+Every observed Git, completed-plan, or new Owner-prompt boundary creates one
+coalesced semantic review debt and immediately reinjects RUN_INTENT. A new
+prompt closes the previously reviewed conversation episode automatically. When
+a meaningful internal stage completes without one of those signals, run one
+generic boundary:
 
 ```text
 checkpoint --kind stage|episode --label "what completed" --next-objective "what is next"
@@ -99,10 +102,11 @@ and verify the worktree is clean. RuntimeHook records that HEAD only to make the
 semantic review stale after a later commit or dirty edit; it does not fingerprint
 the candidate or artifact.
 
-`SessionStart` and `UserPromptSubmit` reassert current Intent. If review debt is
-still due at `Stop`, the native Hook requests one continuation so the Agent must
-review or report an honest typed non-success state; it does not loop forever or
-override an independent project gate.
+`SessionStart` reasserts current Intent. `UserPromptSubmit` also creates at most
+one coalesced episode debt when the prior boundary was reviewed. If review debt
+is still due at `Stop`, the native Hook requests one continuation so the Agent
+must review or report an honest typed non-success state; it does not loop
+forever or override an independent project gate.
 
 If a criterion needs mechanical proof, use the project's existing convergence
 or Task Oracle path separately and reference that result. RuntimeHook never
