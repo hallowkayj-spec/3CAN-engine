@@ -158,6 +158,20 @@ claim that any private production graph has been migrated.
   gates passing. It remains `VALIDATING`, is not live-deployed, and still
   requires a comparable HTTP latency run and maintainer review.
 
+### 2026-09-03 project-reality frontend overview
+
+- Replaced the legacy hard-coded dashboard with a live, privacy-bounded project
+  overview backed by the existing graph and stats APIs. The overview separates
+  Git, execution receipts, and 3CAN project meaning, and limits attention items
+  instead of expanding the complete error or secret registries.
+- Distinguished production, development, deep-recheck-required, and unavailable
+  states without treating liveness as readiness. The graph remains an on-demand
+  view, and the route panel now accepts the current `3can.route-response/v1`
+  `nodes` field while retaining compatibility with the older field name.
+- Removed the broken WebSocket reconnect loop and added fixed-interval polling,
+  responsive layouts, accessible controls, escaped graph content, and a usable
+  overview fallback when the optional 3D dependency is unavailable.
+
 ### 2026-08-20 portable public-release packaging
 
 - Reworked the repository landing page into a Chinese-first OPC guide while
