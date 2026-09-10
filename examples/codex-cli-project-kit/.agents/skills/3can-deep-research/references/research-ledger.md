@@ -1,54 +1,61 @@
 # Research Ledger Reference
 
-Use this reference only when recording or auditing a mandatory 3CAN research run.
+Use this reference only when recording or auditing a 3CAN research run.
 
-Required fields:
+## Authority boundary
 
-- `question`: exact research question.
-- `source_urls`: opened source URLs used for material claims.
-- `source_count`: number of unique valid sources.
-- `session_id` and `turn_id`: Codex hook identifiers when available.
-- `notes`: short synthesis, decision impact, or caveat.
+- Git owns exact source, history, and the checked-in Skill contract.
+- Opened external sources and bounded artifacts own external evidence.
+- Tests and runtime receipts prove behavior.
+- 3CAN stores durable project meaning, evidence status, and superseded lineage; it does not duplicate the entire search log.
 
-Recommended fields:
+## Required ledger fields
 
-- `research_tier`: `quick`, `standard`, `deep`, or `rpa_deep`.
-- `time_budget`: decision check, target minutes, hard cap, and whether sidecar judgement was required.
-- `query_plan`: seed terms, semantic variants, platform terms, and terms that were discarded.
-- `source_types`: official primary, GitHub issue, community practice, benchmark/user report, public platform signal, RPA video/comment/ASR/OCR, or internal 3CAN context.
-- `source_artifacts`: public URL collector artifacts with title, meta description, text excerpt, content hash, HTTP status, content type, and adapter name.
-- `evidence_scores`: authority, recency, practice value, reproducibility, task relevance, community signal, risk, and conflict.
-- `sidecar_judgement`: whether evidence is sufficient and whether it fits the task decision.
-- `rpa_metadata`: public URL, platform, capture time, engagement signals, transcript/OCR/frame evidence, and approval id when automation/login/paid access was used.
+- `question`: exact question and decision supported.
+- `research_tier`: `standard` or `deep`; legacy `quick` and `rpa_deep` normalize to these two values.
+- `elapsed_minutes`: active research time. A passing ledger is no higher than the tier hard cap; an incomplete run becomes typed terminal at or after the cap.
+- `source_urls` / `source_records`: opened sources and their types.
+- `source_count`: unique valid source count.
+- `query_plan.query_variants`: materially different queries used.
+- `internal_context.status`: `used`, `unavailable`, or `not_applicable`; `used` also requires evidence references.
+- `contradiction_status`: `checked_no_material_conflict`, `resolved`, `unresolved`, or `not_applicable`.
+- `evidence_scores`: bounded `0..5` authority, recency, practice value, reproducibility, relevance, community signal, risk, and conflict evidence.
+- `sidecar_judgement`: evidence sufficiency and task fit.
+- `session_id` and `turn_id`: current correlation identifiers when available.
+- `requirement_id`: required for a hook-bound turn and must match the prompt hash emitted by `UserPromptSubmit`; standalone manual ledgers may omit it.
 
-Sidecar decisions:
+## Tier gates
 
-- `ready_for_decision`: enough sources, source type coverage, evidence score, and sidecar judgement.
-- `continue_research`: missing source count, missing practice/platform evidence, low score, or unresolved conflicts.
-- `needs_review`: enough raw material exists but sidecar judgement is absent or ambiguous.
+`standard` has a 10-minute hard cap and requires at least five opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, three source families, three query variants, a primary/boundary source, implementation or practice evidence, context status, contradiction review, evidence scores, and sidecar pass.
 
-Evidence scores are `0..5`. Higher is better for authority, recency, practice value, reproducibility, task relevance, and community signal. Higher is worse for risk and conflict.
+`deep` has a 30-minute hard cap and requires at least 12 opened, relevant, unique external sources backed by successful collected or approved RPA artifacts, four external source families, six query variants, primary/boundary evidence, paper/standard or benchmark evidence, GitHub or Hugging Face implementation evidence, community evidence, context status, contradiction review, evidence scores, and sidecar pass. Platform/RPA topics additionally require a public platform signal or approved RPA artifact.
 
-3CAN mapping:
+Source families are:
+
+- primary: official docs, specifications, releases, regulators;
+- academic: papers, standards, reproducible benchmarks;
+- implementation: GitHub source/issues/releases and Hugging Face model/dataset artifacts;
+- community: Reddit, professional forums, and practitioner cases;
+- platform: public creator/video/comment evidence or approved RPA artifacts;
+- web: other targeted current sources;
+- internal: applicable 3CAN context, counted only when recorded as `used`.
+
+Source count alone never completes a run. The harness also checks family coverage, queries, contradictions, elapsed time, context status, evidence quality, and sidecar judgement. Before the hard cap, a missing gate remains `block`. At the hard cap, the harness records terminal `PARTIAL` when at least one external source was verified or `UNAVAILABLE` when none was verified. Stop may then return the matching typed result, but mutation stays blocked unless status is `pass`.
+
+## Safe collection
+
+`collect-url` accepts only public `http`/`https` pages and stores a bounded text excerpt plus metadata and content hash, never raw HTML or credentials. Dynamic/login pages, paid APIs, private content, bulk scraping, account/store writes, and publishing stay behind their existing approval boundaries.
+
+`import-search-result` normalizes already available provider JSON for discovery and makes no provider call; those records do not satisfy the opened-source gate until collected. `import-rpa-artifact` imports bounded output from an existing project-owned lane. `rpa-probe` may call adapters from the explicit `--project-root`, `THREECAN_PROJECT_ROOT`, or current working directory, in that order; absence returns typed `unavailable`. Project RPA modules are isolated per call, and default state/evidence output stays under the selected/current physical project. A global Skill is discoverable, while project hooks are the enforcement boundary. This Skill never creates a second RPA runtime.
+
+Do not store prompts, completions, secrets, cookies, recovery codes, private messages, raw runtime logs, or copyrighted long-form source copies.
+
+## Durable 3CAN mapping
 
 - `DOC-*`: reusable research summary or operating guide.
-- `DEC-*`: technology selection or architecture decision.
-- `INTF-*`: API or contract facts that future code must respect.
-- `ERR-*`: lesson learned from failed search, stale docs, hallucinated claim, or provider mismatch.
-- `SES-*`: handoff or stage completion with evidence.
+- `DEC-*`: technology or architecture decision.
+- `INTF-*`: interface/contract fact future code must obey.
+- `ERR-*`: deterministic reusable failure knowledge.
+- `SES-*`: bounded handoff or milestone evidence status.
 
-Do not store prompts, completions, secrets, cookies, recovery codes, private messages, or raw runtime logs in the ledger.
-
-Do not treat official sources as automatically best for practice-heavy questions. For model quality, RPA operations, creator workflows, and benchmark realism, user reports and reproducible field evidence can outweigh vendor claims, while official docs remain boundary constraints.
-
-The `public_url_extract` adapter only accepts `http` and `https`. It stores a bounded text excerpt and content hash, not raw HTML. Dynamic pages, logged-in pages, paid APIs, platform automation, or bulk scraping must move to an approval-gated collector.
-
-When `done` receives `--source-artifact`, the ledger should derive `source_urls`, `source_type`, title, content hash, HTTP status, and artifact path from the artifact. This keeps collector output and final research ledgers connected.
-
-The `search_result_import` adapter is provider-neutral and offline. It accepts JSON with `results`, `items`, `data`, or `organic_results`, and normalizes result `url/link/href`, `title/name`, `snippet/content/description`, and score fields into source artifacts. It does not call Tavily, Firecrawl, or any paid API by itself.
-
-The `rpa_pipeline_artifact_import` adapter is also offline. It exists so the mainbrain RPA pipeline can later pass bounded evidence artifacts into the research ledger without this skill taking over RPA collection. Expected input fields include `source_url`, `platform`, `task_id`, `evidence_kind`, title/text/transcript/OCR excerpt, `engagement`, `captured_at`, `content_hash`, `risk_flags`, and optional `approval_id`. Login, private data, paid API, bulk scrape, account write, publish, or store-data-write flags require an approval id. The adapter stores no cookies, secrets, raw HTML, private messages, or runtime logs.
-
-The `status` command is a read-only audit surface. It reports skill file presence, Codex hook configuration, unresolved hook turns, ledger/source-artifact counts, recent status/type summaries, and failure-signature counts. It hashes questions and URLs and must not print source excerpts, raw HTML, secrets, cookies, private messages, or runtime logs.
-
-The `rpa-probe` command is the controlled bridge from research skill to local RPA execution. `rpa-probe --mode control-plane` is read-only. `rpa-probe --mode adapter-review` can run the local adapter review pipeline and emit `rpa_pipeline_artifact` source artifacts from review cards. Safe default targets are offline/local adapters such as `creator-content` and mock/record-backed `taobao` paths. Login, unknown platforms, live platform collection, paid APIs, bulk scrape, account write, publish, or store-data-write paths require an approval id. Probe artifacts should be passed to `done --source-artifact`; raw review cards and raw RPA ledgers should not be copied into 3CAN writeback.
+Prefer updating or superseding the canonical existing node. Write one concise conclusion with Git/source-ledger evidence references; do not create a node per source or mirror the ledger into the graph.
