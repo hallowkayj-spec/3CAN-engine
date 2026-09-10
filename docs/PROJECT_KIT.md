@@ -167,6 +167,14 @@ when the Owner explicitly requests it.
 Ordinary safe work has no mandatory ceremony. Convergence is opt-in when the
 project declares an evidence-bearing long task.
 
+The canonical server owns errors returned by 3CAN and records them through the
+existing Activity and ErrorKnowledge lifecycle without changing the response
+seen by the caller. Clients must not submit a second copy when the capabilities
+endpoint advertises the server observer. Health/stats probes and endpoints that
+directly return an error-shaped response are not included. Clients own helper
+validation and connection failures that occur before a request reaches 3CAN;
+those remain explicitly `UNAVAILABLE` until ticketed delivery succeeds.
+
 ## Optional GitHub PR Fallback
 
 If `gh` is unavailable or a GitHub connector cannot create a PR for a private
