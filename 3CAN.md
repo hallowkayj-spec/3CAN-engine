@@ -111,8 +111,9 @@ Handle one typed refusal at its canonical boundary:
   operation is still pending;
 - identity or digest mismatch: correct the exact binding and do not retry with
   guessed context;
-- version conflict: reread the canonical node and retry once with its current
-  compare-and-swap version, or report `CONFLICT` when meaning has diverged;
+- version conflict: preserve the returned compare-and-swap version/timestamp
+  as an opaque string, without date/timezone reformatting; reread the canonical
+  node and retry once, or report `CONFLICT` when meaning has diverged;
 - 3CAN unavailable: continue unrelated safe local work and keep only the
   dependent operation `UNAVAILABLE`.
 

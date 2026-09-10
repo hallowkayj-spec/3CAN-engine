@@ -25,23 +25,37 @@ and aligning installation is preferable to a new memory/orchestration engine.
   deep-ready, synchronized BGE-M3 cache. This is service integrity, not quality.
 - Separate 9711: 19 nodes / 10 edges, development-ready and not production-ready.
   Startup used the existing no-seed path. Neither count is a client hardcode.
-- Browser test replaced only the candidate HTML document; API reads reached
-  the existing production owner. No second backend or business-graph copy/write.
+- Initial browser tests replaced only the candidate HTML document; API reads
+  reached the existing production owner. Final checks removed interception and
+  loaded both deployed HTTP documents. No second production backend was created.
 - Before the fix, graph → overview → graph removed its only canvas:
   `GRAPH_REENTRY: before=1, after=0`. After the fix, reentry, combined interface /
   dormant filtering, endpoint-consistent links and selection focus were exercised
   on the actual graph. Desktop and 390px overview screenshots stayed private.
-- Initial focused research/PR/frontend tests: 39 passed. Full regression and
-  deployment are tracked separately in `../FOUNDATION_CONVERGENCE.md`.
+- Initial focused research/PR/frontend tests: 39 passed, then 40 after the
+  incomplete-closeout counterexample. The full run, corrected fixture failures,
+  native lifecycle events and rollout are tracked in `../FOUNDATION_CONVERGENCE.md`.
+- The installed Windows Plugin failed despite cmd-based unit tests and trusted
+  hook metadata. Native PowerShell reproduction exposed the actual transport
+  mismatch. One direct launcher and exact native-shell tests replaced the bad
+  assumption; no additional runtime was introduced. The legacy Project Kit's
+  nested-shell interpolation issue was reproduced and fixed in the same way.
+- A real CAS writeback refusal came from caller-side timestamp normalization,
+  not a changed node or expired ticket. Preserving the wire version string
+  allowed the bounded retry and exact readback; the server's existing observer
+  recorded the refusal. Do not weaken concurrency checks to mask client errors.
 
 ## Acceptance and remaining limits
 
 Source collection may establish structural readiness for review, never semantic
 or implementation correctness. No amount of research guarantees zero defects.
-The local validation plan is: focused failure counterexamples; native launcher
+The executed local validation path was: focused failure counterexamples; native launcher
 and lifecycle smoke tests; clean public seed benchmark; full test suite; one
 independent review; immutable release rehearsal; supported Supervisor cutover
 with exact rollback; live identity, route/retrieval and bounded writeback readback.
+Failures and later focused reruns are preserved rather than relabeled as a
+first-pass all-green run. The deployed frontend adds practical exploration; it
+does not automatically repair graph facts or establish semantic quality.
 
 This release does not prove a 72-hour RPA repair, an improved video, unlimited
 context retention or a cross-product benchmark win. Those need their own actual

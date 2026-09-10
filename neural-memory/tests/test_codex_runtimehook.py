@@ -18,7 +18,7 @@ STATE_PATH = Path(".codex/runtimehook/state.json")
 
 @pytest.fixture
 def runtimehook_project(tmp_path: Path):
-    installed = tmp_path / "runtimehook-project"
+    installed = tmp_path / "runtimehook project"
     shutil.copytree(PROJECT_KIT, installed)
     shutil.rmtree(installed / "test-results", ignore_errors=True)
     shutil.copyfile(installed / ".gitignore.template", installed / ".gitignore")
@@ -67,12 +67,17 @@ def runtimehook_project(tmp_path: Path):
         assert len(definitions) == 1
         definition = definitions[0]
         native_command = definition["commandWindows" if os.name == "nt" else "command"]
+        if os.name == "nt":
+            native_command = [
+                str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", native_command,
+            ]
         completed = subprocess.run(
             native_command,
             cwd=installed / "scripts",
             input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             capture_output=True,
-            shell=True,
+            shell=os.name != "nt",
             timeout=30,
         )
         stdout = completed.stdout.decode("utf-8")

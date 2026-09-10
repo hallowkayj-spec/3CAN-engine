@@ -898,6 +898,11 @@ def installed_project_kit(tmp_path):
     def run_hook(event, payload):
         native_hook = hooks[event][0]["hooks"][0]
         command = native_hook["commandWindows" if os.name == "nt" else "command"]
+        if os.name == "nt":
+            command = [
+                str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command,
+            ]
         result = subprocess.run(
             command,
             cwd=installed / "scripts",
@@ -906,7 +911,7 @@ def installed_project_kit(tmp_path):
             text=True,
             encoding="utf-8",
             errors="replace",
-            shell=True,
+            shell=os.name != "nt",
             timeout=30,
         )
         assert result.returncode == 0, result.stdout + result.stderr

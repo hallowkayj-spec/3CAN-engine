@@ -15,7 +15,6 @@ PLUGIN_ROOT = PACKAGE_ROOT / "plugins" / "3can-runtimehook"
 SKILL_ROOT = PLUGIN_ROOT / "skills" / "3can-runtimehook"
 PLUGIN_CLI = SKILL_ROOT / "scripts" / "3can_runtimehook.py"
 WINDOWS_LAUNCHER = PLUGIN_ROOT / "hooks" / "run_runtimehook.ps1"
-WINDOWS_PREFLIGHT = PLUGIN_ROOT / "hooks" / "run_runtimehook.cmd"
 POSIX_LAUNCHER = PLUGIN_ROOT / "hooks" / "run_runtimehook.sh"
 PROJECT_KIT_CLI = (
     PACKAGE_ROOT
@@ -100,6 +99,11 @@ def _plugin_hook(
     handlers = [hook for group in definitions for hook in group["hooks"]]
     assert len(handlers) == 1
     command = handlers[0]["commandWindows" if os.name == "nt" else "command"]
+    if os.name == "nt":
+        command = [
+            str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
+            "-NoProfile", "-NonInteractive", "-Command", command,
+        ]
     environment = {**os.environ, "PLUGIN_ROOT": str(PLUGIN_ROOT)}
     if search_path is not None:
         environment["PATH"] = search_path
@@ -109,13 +113,38 @@ def _plugin_hook(
         env=environment,
         input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         capture_output=True,
-        shell=True,
+        shell=os.name != "nt",
         timeout=30,
     )
     stdout = completed.stdout.decode("utf-8")
     stderr = completed.stderr.decode("utf-8")
     assert completed.returncode == 0, stdout + stderr
     return json.loads(stdout) if stdout.strip() else {}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native PowerShell contract")
+@pytest.mark.parametrize("event", ["SessionStart", "PostToolUse"])
+def test_windows_native_argv_and_spaced_plugin_path(tmp_path: Path, event: str):
+    copied = tmp_path / "plugin with spaces"
+    shutil.copytree(PLUGIN_ROOT, copied)
+    definitions = json.loads((copied / "hooks/hooks.json").read_text(encoding="utf-8"))
+    command = definitions["hooks"][event][0]["hooks"][0]["commandWindows"]
+    payload = {"cwd": str(tmp_path), "hook_event_name": event, "source": "startup"}
+    # Native Codex uses the selected PowerShell, not Python shell=True's cmd.
+    completed = subprocess.run(
+        [str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
+         "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=tmp_path,
+        env={**os.environ, "PLUGIN_ROOT": str(copied)},
+        input=json.dumps(payload).encode("utf-8"),
+        capture_output=True,
+        timeout=15,
+    )
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
+    if event == "SessionStart":
+        assert "3CAN fast path" in json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
+    else:
+        assert not completed.stdout.strip()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows launcher contract")
@@ -443,7 +472,6 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
         encoding="utf-8"
     )
     windows_launcher = WINDOWS_LAUNCHER.read_text(encoding="utf-8")
-    windows_preflight = WINDOWS_PREFLIGHT.read_text(encoding="utf-8")
     posix_launcher = POSIX_LAUNCHER.read_text(encoding="utf-8")
 
     assert marketplace["name"] == "3can-engine"
@@ -476,10 +504,11 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
         assert len(handlers) == 1
         assert "PLUGIN_ROOT" in handlers[0]["command"]
         assert "run_runtimehook.sh" in handlers[0]["command"]
-        assert handlers[0]["commandWindows"].startswith(
-            "%SystemRoot%\\System32\\cmd.exe /d /s /c "
-        )
-        assert "run_runtimehook.cmd" in handlers[0]["commandWindows"]
+        command_windows = handlers[0]["commandWindows"]
+        assert command_windows in {
+            "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
+            "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1') -SessionOrientation",
+        }
         assert "statusMessage" not in handlers[0]
     assert "--session-orientation" in hooks["SessionStart"][0]["hooks"][0][
         "command"
@@ -496,8 +525,7 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
     assert "allow_implicit_invocation: true" in skill_ui
     assert "NoDefaultCurrentDirectoryInExePath" in windows_launcher
     assert 'Join-Path $cursor.FullName ".git"' in windows_launcher
-    assert "%SystemRoot%\\System32\\more.com" in windows_preflight
-    assert "runtimehook_cursor" in windows_preflight
+    assert 'if (-not $SessionOrientation)' in windows_launcher
     assert posix_launcher.startswith("#!/bin/sh\n")
     assert "untrusted_root" in posix_launcher
     assert PLUGIN_CLI.read_bytes() == PROJECT_KIT_CLI.read_bytes()

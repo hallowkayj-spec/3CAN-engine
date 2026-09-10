@@ -4,7 +4,10 @@ $ErrorActionPreference = "Stop"
 $env:NoDefaultCurrentDirectoryInExePath = "1"
 $utf8NoBom = New-Object Text.UTF8Encoding($false)
 [Console]::InputEncoding = $utf8NoBom
-$OutputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+# Codex invokes this script in a child scope; native pipe encoding is read by
+# its parent host. This dedicated hook process needs UTF-8 in that scope.
+$global:OutputEncoding = $utf8NoBom
 
 function Write-RuntimeHookUnavailable {
     param([string]$Reason)

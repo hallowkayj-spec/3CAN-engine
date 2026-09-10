@@ -66,10 +66,17 @@ pinned production profile.
 
 ## Codex Kit
 
-Copy `examples/codex-cli-project-kit/` into the target project, rename
-`AGENTS.template.md` to `AGENTS.md`, and copy the release root `3CAN.md` to the
-target project root. `3CAN.md` is the only Owner steering file; keep its flat
-front matter small and do not add a policy/profile directory.
+For RuntimeHook alone, install the [Plugin](./RUNTIMEHOOK.md); copying this kit
+into each repository is unnecessary. The full kit is an explicit project
+integration choice, not a prerequisite for safe local work or read-only route.
+
+For a fresh project opting into the full kit, copy
+`examples/codex-cli-project-kit/`, review `AGENTS.template.md` before adopting it
+as `AGENTS.md`, and optionally adopt the release root `3CAN.md` for local Owner
+steering. Preserve existing project instructions and hooks rather than
+overwriting them. On a managed machine, read its canonical global `3CAN.md`;
+a missing optional project copy is normal. Keep project steering front matter
+small and do not add a policy/profile directory.
 
 Before any mutation, also rename
 `.agents/project.template.json` to `.agents/project.json`, fill the project
@@ -122,6 +129,13 @@ LLM, or call 3CAN on the edit/test path. See
 [`CODEX_CONVERGENCE_HOOK.md`](./CODEX_CONVERGENCE_HOOK.md). The tracked files are
 examples only; selecting a Task Hook and trusting the exact native definitions
 remain explicit Owner/project setup actions.
+
+The kit's Windows command definitions execute directly in Codex's native
+PowerShell host. They deliberately do not wrap a second `powershell -Command`:
+the outer shell would interpolate variables before the inner shell receives
+them. Exact-command tests use native PowerShell argv, not Python's cmd-based
+`shell=True`. Project-owned evidence hooks remain independent of the global
+RuntimeHook Plugin; review the matching definitions when combining them.
 
 For RuntimeHook's implicit/natural-language UX, installation/removal commands,
 one-file semantic state, and current custom-slash limitation, see

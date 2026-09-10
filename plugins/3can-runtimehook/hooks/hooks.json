@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\" --session-orientation",
-            "commandWindows": "%SystemRoot%\\System32\\cmd.exe /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run_runtimehook.cmd\" -SessionOrientation\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1') -SessionOrientation",
             "timeout": 10,
             "additionalContextLimit": 5000
           }
@@ -21,7 +21,7 @@
           {
             "type": "command",
             "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\"",
-            "commandWindows": "%SystemRoot%\\System32\\cmd.exe /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run_runtimehook.cmd\"\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
             "timeout": 10,
             "additionalContextLimit": 5000
           }
@@ -35,7 +35,7 @@
           {
             "type": "command",
             "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\"",
-            "commandWindows": "%SystemRoot%\\System32\\cmd.exe /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run_runtimehook.cmd\"\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
             "timeout": 10,
             "additionalContextLimit": 5000
           }
@@ -48,7 +48,7 @@
           {
             "type": "command",
             "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\"",
-            "commandWindows": "%SystemRoot%\\System32\\cmd.exe /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run_runtimehook.cmd\"\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
             "timeout": 10
           }
         ]

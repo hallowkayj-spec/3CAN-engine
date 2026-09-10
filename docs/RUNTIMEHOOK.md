@@ -109,8 +109,9 @@ RuntimeHook is distributed as the repository Plugin at
 launcher supports `python.exe`, `python3.exe`, and the standard `py.exe -3`
 launcher, while both platform launchers reject interpreters resolved inside the
 current worktree. Non-SessionStart events exit before Python and Git discovery
-when no RuntimeHook state exists; Windows uses a native batch preflight so this
-inactive path does not cold-start PowerShell. Launcher failures report typed
+when no RuntimeHook state exists. Windows commands run directly in the native
+PowerShell hook host; there is no nested shell or batch wrapper. A custom cmd
+or Git Bash hook shell on Windows is not a validated configuration. Launcher failures report typed
 `UNAVAILABLE` instead of silently disabling Hooks. It needs no 3CAN Runtime, graph,
 credentials, network service, or 9700 restart.
 
@@ -119,6 +120,9 @@ Add the public repository as a Codex marketplace and install the Plugin:
 ```text
 codex plugin marketplace add hallowkayj-spec/3CAN-engine --ref main
 ```
+
+Use an explicitly reviewed candidate ref instead of `main` when testing a
+pending release. A local installation or an open PR does not update public main.
 
 Restart the ChatGPT desktop app, open the Plugins Directory, choose the
 `3CAN Engine` marketplace source, and install `3CAN RuntimeHook`. In Codex CLI,
@@ -140,6 +144,12 @@ that source. To remove it, first say `关闭 RuntimeHook` in active worktrees, t
 disable or uninstall it through the Plugins browser. Uninstalling deliberately
 does not delete retained project-local state or rewrite a repository's Git
 exclude file.
+
+After an update, use a new task or safely reopen a paused task to load the new
+definition. An already-running task is not proven to hot-reload it. Check the
+native event result, not only the enabled/trusted entry in Settings. An active
+task's existing worktree state remains in place; do not activate over another
+task's Intent merely to check installation.
 
 The legacy project-kit copy remains a compatibility and clean-clone test fixture;
 new users do not need to copy it into each repository. Distribution is governed
