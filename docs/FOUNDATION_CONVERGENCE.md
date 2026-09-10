@@ -14,13 +14,13 @@ task runtime, evidence kernel or unconditional research gate.
 ## Delivery modules
 
 - [x] Recover canonical production runtime and isolated development sidecar.
-- [ ] Compare memory/retrieval, research, hooks and graph UI with maintained
+- [x] Compare memory/retrieval, research, hooks and graph UI with maintained
       upstream implementations; record adopted and rejected ideas.
-- [ ] Integrate existing client, research, error-governance and hook changes
+- [x] Integrate existing client, research, error-governance and hook changes
       into a coherent source candidate without merging remote pull requests.
 - [ ] Correct research applicability/verification, native semantic reminders,
       stale PR assumptions and global/project guidance conflicts.
-- [ ] Integrate and verify graph frontend against realistic current data.
+- [x] Integrate and verify graph frontend against realistic current data.
 - [ ] Run focused counterexamples, the full suite once and a scoped independent
       review; fix demonstrated release blockers only.
 - [ ] Install/deploy with backups and rollback, recheck actual running versions,
@@ -44,3 +44,16 @@ are time-specific observations, not minimums to hardcode into clients.
 Public main and several open feature branches differ. Integration starts from
 the existing RuntimeHook plugin candidate and must retain error governance and
 client-context changes rather than replacing the runtime with an older base.
+
+## Candidate verification
+
+The integrated backend/expansions/token frontend/proxy files match the selected
+production release after newline normalization. Runtime deployment is therefore
+a frontend release, not a business-graph or embedding migration. Research,
+RuntimeHook and global guidance are client-side artifacts installed separately.
+
+Focused research/PR/frontend tests passed (39); native RuntimeHook/controller
+tests passed (32, two platform skips). Independent review found no demonstrated
+P0/P1 and two local P2s: explicit incomplete research closeout lost to structural
+PASS, and graph refresh retained old visibility. Both were corrected with no
+new state machine. Full regression and installed-native delivery remain pending.

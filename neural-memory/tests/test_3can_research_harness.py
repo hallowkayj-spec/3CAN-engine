@@ -91,6 +91,7 @@ def _record(tmp_path: Path, *, tier: str, source_types: list[str], **overrides):
         artifact_files.append(str(path))
     values = {
         "question": "How should the existing 3CAN research skill investigate difficult engineering work?",
+        "decision_reference": "docs/research-decision.md#local-validation-plan",
         "source_urls": [],
         "source_artifact_files": artifact_files,
         "session_id": "session-research-test",
@@ -223,7 +224,9 @@ def test_standard_passes_only_with_complete_evidence(tmp_path: Path) -> None:
 
     assert result["ok"] is True
     assert result["status"] == "pass"
-    assert result["sidecar_decision"]["decision"] == "ready_for_decision"
+    assert result["sidecar_decision"]["decision"] == "ready_for_review"
+    assert result["sidecar_decision"]["implementation_verified"] is False
+    assert result["sidecar_decision"]["semantic_review_required"] is True
     state = HARNESS._safe_load_json(tmp_path / "state.json", {})
     assert next(iter(state["turns"].values()))["status"] == "research_done"
 
@@ -241,7 +244,7 @@ def test_source_count_alone_cannot_complete(tmp_path: Path) -> None:
     )
 
     assert result["ok"] is False
-    assert "insufficient_source_family_coverage" in result["sidecar_decision"]["risks"]
+    assert "below_recommended_source_family_coverage" in result["sidecar_decision"]["warnings"]
     assert "missing_internal_context_status" in result["sidecar_decision"]["risks"]
     assert "missing_contradiction_status" in result["sidecar_decision"]["risks"]
     state = HARNESS._safe_load_json(tmp_path / "state.json", {})
@@ -353,7 +356,7 @@ def test_deep_requires_community_and_platform_evidence(tmp_path: Path) -> None:
     )
 
     assert result["ok"] is False
-    assert "missing_community_evidence" in result["sidecar_decision"]["risks"]
+    assert "community_evidence_not_recorded" in result["sidecar_decision"]["warnings"]
     assert "missing_platform_signal" in result["sidecar_decision"]["risks"]
 
 
@@ -403,7 +406,7 @@ def test_missing_or_excess_elapsed_time_blocks_completion(tmp_path: Path) -> Non
     assert next(iter(exceeded_state["turns"].values()))["status"] == "research_partial"
 
 
-def test_hard_cap_records_typed_terminal_without_unlocking_mutation(
+def test_hard_cap_records_typed_terminal_without_blocking_safe_local_work(
     tmp_path: Path,
 ) -> None:
     partial_root = tmp_path / "partial"
@@ -461,7 +464,7 @@ def test_hard_cap_records_typed_terminal_without_unlocking_mutation(
             state_file,
         )
 
-        assert pretool_code == 2
+        assert pretool_code == 0
         assert first_stop_code == second_stop_code == 0
         assert typed_status in first_stop["systemMessage"]
         assert first_stop == second_stop
@@ -561,8 +564,9 @@ def test_hook_binds_prompt_tier_and_completion_identity(tmp_path: Path) -> None:
 
     assert replay_code == 0
     assert "already terminal" in replay_payload["systemMessage"]
-    assert conflict_code == 2
-    assert conflict_payload["reason"] == "research_turn_identity_conflict"
+    assert conflict_code == 0
+    assert "UNAVAILABLE" in conflict_payload["systemMessage"]
+    assert "research_turn_identity_conflict" in conflict_payload["systemMessage"]
     assert HARNESS._load_state(state_file)["turns"][
         "session-bound::turn-bound"
     ]["status"] == "research_done"
@@ -581,7 +585,7 @@ def test_hook_without_stable_turn_identity_does_not_create_shared_state(
     )
 
     assert code == 0
-    assert "Automatic mutation/Stop gating is unavailable" in payload[
+    assert "stable session_id/turn_id are unavailable" in payload[
         "hookSpecificOutput"
     ]["additionalContext"]
     assert not state_file.exists()
@@ -612,7 +616,7 @@ def test_hook_without_stable_turn_identity_does_not_create_shared_state(
     assert pretool_code == stop_code == 0
 
 
-def test_pending_research_blocks_mutating_shell_and_mcp_tools(tmp_path: Path) -> None:
+def test_research_does_not_replace_independent_operation_authorization(tmp_path: Path) -> None:
     state_file = tmp_path / "state.json"
     session_id = "session-tools"
     turn_id = "turn-tools"
@@ -640,14 +644,53 @@ def test_pending_research_blocks_mutating_shell_and_mcp_tools(tmp_path: Path) ->
         return code
 
     assert pretool("mcp__server__list_items", {}) == 0
-    assert pretool("mcp__server__create_item", {}) == 2
-    assert pretool("mcp__server__fetch_items", {}) == 2
+    assert pretool("mcp__server__create_item", {}) == 0
+    assert pretool("mcp__server__fetch_items", {}) == 0
     assert pretool("Bash", {"command": "git status"}) == 0
-    assert pretool("Bash", {"command": "git status && rm -rf ./tmp"}) == 2
+    assert pretool("Bash", {"command": "git status && rm -rf ./tmp"}) == 0
     assert pretool(
         "PowerShell", {"command": "Get-Content input.txt | Out-File output.txt"}
-    ) == 2
-    assert pretool("PowerShell", {"command": "Set-Content output.txt value"}) == 2
+    ) == 0
+    assert pretool("PowerShell", {"command": "Set-Content output.txt value"}) == 0
+
+
+def test_opened_evidence_needs_decision_reference_not_self_assigned_pass(tmp_path: Path) -> None:
+    result = _record(tmp_path, tier="standard", source_types=["official_primary", "github_or_issue"], decision_reference="")
+    assert not result["ok"]
+    assert "missing_decision_reference" in result["sidecar_decision"]["risks"]
+
+
+def test_small_complete_packet_is_reviewable_without_source_padding(tmp_path: Path) -> None:
+    result = _record(tmp_path, tier="standard", source_types=["official_primary", "github_or_issue"],
+                     evidence_scores={}, sidecar_evidence_sufficiency="not_recorded", sidecar_task_fit="not_recorded")
+    assert result["ok"]
+    assert "below_recommended_source_count" in result["sidecar_decision"]["warnings"]
+    assert result["sidecar_decision"]["validation_scope"] == "structural_evidence_only"
+    assert result["sidecar_decision"]["implementation_verified"] is False
+
+
+def test_actual_unavailability_can_close_before_timer_expires(tmp_path: Path) -> None:
+    result = _record(tmp_path, tier="standard", source_types=[], elapsed_minutes=1,
+                     incomplete_reason="Provider unavailable; local reproduction retained.")
+    assert result["status"] == "UNAVAILABLE"
+    assert result["terminal"] and not result["ok"]
+
+
+def test_explicit_incomplete_reason_wins_over_structural_readiness(tmp_path: Path) -> None:
+    result = _record(tmp_path, tier="standard", source_types=["official_primary", "github_or_issue"],
+                     incomplete_reason="The critical local probe is not available.")
+    assert result["status"] == "PARTIAL"
+    assert not result["ok"]
+
+
+def test_stop_research_reminder_cannot_loop_forever(tmp_path: Path) -> None:
+    state = tmp_path / "state.json"
+    _bind_requirement(state_file=state, prompt="research current API", tier="standard", session_id="s", turn_id="t")
+    payload = {"hook_event_name": "Stop", "session_id": "s", "turn_id": "t"}
+    assert HARNESS._hook_json(payload, state)[0] == 2
+    code, output = HARNESS._hook_json({**payload, "stop_hook_active": True}, state)
+    assert code == 0
+    assert "PARTIAL" in output["systemMessage"]
 
 
 def test_legacy_tiers_normalize_without_a_second_protocol(tmp_path: Path) -> None:

@@ -43,7 +43,8 @@ ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 SESSION_FAST_PATH = (
     "3CAN fast path: start safe local work immediately. Git owns exact source "
     "truth; 3CAN supplies durable project meaning, relevant history, and typed "
-    "coordination. Use route or retrieval only when that context improves the "
+    "coordination. Read the machine-global 3CAN.md under CODEX_HOME before a "
+    "3CAN call; a missing optional project copy is normal. Use route or retrieval only when that context improves the "
     "decision. Obtain a fresh ticket just in time only for an operation whose "
     "current project contract requires one; bind the current AgentId, project "
     "identity/namespace, physical workspace or worktree, and required Workorder, "
@@ -52,7 +53,10 @@ SESSION_FAST_PATH = (
     "still-pending operation, reread a version conflict, and stop on an identity "
     "or digest mismatch. Write durable meaning only at AUTO_CLOSEOUT or when the "
     "Owner requests it. This orientation does not activate RuntimeHook or replace "
-    "project safety and evidence gates."
+    "project safety and evidence gates. For an uncertain external contract or "
+    "repeated unexplained failure, use 3can-deep-research to connect opened "
+    "evidence to a decision and an executable local probe; research is not a "
+    "source-count contest or proof of business success."
 )
 
 
@@ -494,7 +498,11 @@ def _context(
         f"{boundary_text} "
         "At the selected review boundary, check goal/acceptance drift, decisions "
         "hardcoded without a requirement or declared contract, hidden fallback or "
-        "stale state, and unrequested behavior. Use existing targeted strict "
+        "stale state, and unrequested behavior. Inspect the actual module output "
+        "against each applicable acceptance criterion; tests, rendering or a "
+        "research ledger alone are not output-quality acceptance. State unmet "
+        "criteria and the next bounded objective in the existing review reference. "
+        "Use existing targeted strict "
         "evidence only for criteria needing mechanical proof. Git and the project "
         "convergence hook remain authoritative for evidence freshness and Stop. "
         "The current Owner prompt is authoritative; if it changes this task, "

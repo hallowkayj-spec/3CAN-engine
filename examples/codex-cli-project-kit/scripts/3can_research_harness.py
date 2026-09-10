@@ -223,7 +223,7 @@ TIME_BUDGETS: dict[str, dict[str, Any]] = {
         "min_source_families": 3,
         "min_query_variants": 3,
         "max_query_variants": 8,
-        "sidecar_required": True,
+        "sidecar_required": False,
     },
     "deep": {
         "decision_check_minutes": 15,
@@ -233,33 +233,10 @@ TIME_BUDGETS: dict[str, dict[str, Any]] = {
         "min_source_families": 4,
         "min_query_variants": 6,
         "max_query_variants": 16,
-        "sidecar_required": True,
+        "sidecar_required": False,
         "approval_note": "Real platform login, paid API, bulk scraping, or private data requires approval.",
     },
 }
-
-MUTATING_COMMAND = re.compile(
-    r"(\bapply_patch\b|\bgit\s+(add|branch|checkout|cherry-pick|clean|commit|merge|push|rebase|"
-    r"reset|restore|revert|switch|tag)\b|\bnpm\s+install\b|\bpip\s+install\b|"
-    r"\buv\s+add\b|\bpoetry\s+add\b|\bsed\s+-i\b|\btee\b.*>|>\s*[\w./-]+|"
-    r"\bmkdir\b|\btouch\b|\bmv\b|\bcp\b|\brm\b|\bchmod\b|\bdel\b|\berase\b|"
-    r"\brd\b|\brmdir\b|\bmd\b|\bren\b|"
-    r"\b(?:Set|Add|Clear)-Content\b|\bOut-File\b|\b(?:Remove|Move|Copy|New|Rename)-Item\b)",
-    re.I,
-)
-
-READ_ONLY_MCP_TOOL = re.compile(
-    r"^(?:mcp__)?(?:[a-z0-9_]+__)*(?:get|list|read|search|find|query|open|view|status|health|stats|screenshot)"
-    r"(?:_[a-z0-9]+)*$",
-    re.I,
-)
-
-MUTATING_MCP_TOOL = re.compile(
-    r"(?:^|_)(?:create|write|update|delete|remove|purge|set|send|submit|post|publish|merge|apply|"
-    r"edit|modify|patch|execute|run|trigger|dispatch|start|stop|restart|install|upload|move|copy|"
-    r"rename|archive|unarchive)(?:_|$)",
-    re.I,
-)
 
 TERMINAL_RESEARCH_STATUSES = frozenset(
     {"research_done", "research_partial", "research_unavailable"}
@@ -1183,7 +1160,7 @@ def detect_research_requirement(prompt: str) -> dict[str, Any]:
         "requires_research": requires,
         "status": "research_required" if requires else "pass",
         "trigger_rules": hits,
-        "trigger_layer": "semantic_prompt",
+        "trigger_layer": "prompt_heuristic",
         "research_tier": tier,
         "time_budget": time_budget,
         "min_sources": min_sources if requires else 0,
@@ -1194,7 +1171,8 @@ def detect_research_requirement(prompt: str) -> dict[str, Any]:
         "sidecar_judges": ["evidence_sufficiency", "task_fit"] if time_budget.get("sidecar_required") else [],
         "reason": (
             "External evidence is explicit or material to a current decision; use the repo skill "
-            "and record a source ledger before research-dependent mutation or final conclusions."
+            "and validate the full Owner request (including negation/quoted text) before acting. "
+            "Record evidence and a local verification plan before relying on the conclusion."
             if requires
             else "No mandatory research trigger detected."
         ),
@@ -1519,7 +1497,8 @@ def _turn_research_gate(state_file: Path, session_id: str, turn_id: str) -> dict
     return {
         "turn": item,
         "status": status,
-        "mutation_blocked": required and status != "research_done",
+        # Research is evidence guidance, never a second authorization system.
+        "mutation_blocked": False,
         "stop_blocked": required and status not in TERMINAL_RESEARCH_STATUSES,
         "terminal_incomplete": status in {"research_partial", "research_unavailable"},
     }
@@ -1540,9 +1519,9 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
                     "additionalContext": (
-                        "External research is required, but the hook did not receive a stable session_id and "
-                        "turn_id. Automatic mutation/Stop gating is unavailable for this turn. Invoke "
-                        "$3can-deep-research explicitly and report completion as PASS, PARTIAL, or UNAVAILABLE."
+                        "A research heuristic matched, but stable session_id/turn_id are unavailable. "
+                        "Check the full Owner request, then use $3can-deep-research when external evidence "
+                        "is material. Safe local work may continue; do not claim unverified results."
                     ),
                 }
             }
@@ -1555,7 +1534,7 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
                 requirement=requirement,
             )
         except ValueError as exc:
-            return 2, {"decision": "block", "reason": str(exc)}
+            return 0, {"systemMessage": f"Research binding UNAVAILABLE: {exc}. Do not reuse another turn's ledger."}
         saved_status = str(saved.get("status") or "")
         if saved_status in TERMINAL_RESEARCH_STATUSES:
             return 0, {
@@ -1577,72 +1556,43 @@ def _hook_json(data: dict[str, Any], state_file: Path) -> tuple[int, dict[str, A
             "--query-variant \"<query used>\" [...] "
             "--context-status <used|unavailable|not_applicable> "
             "--contradiction-status <checked_no_material_conflict|resolved|unresolved|not_applicable> "
-            "--sidecar-evidence-sufficiency pass --sidecar-task-fit pass"
+            "--decision-ref <decision-and-local-validation-plan-reference>"
         )
         budget = requirement.get("time_budget", {})
         return 0, {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": (
-                    f"3CAN deep research is mandatory for this turn. Tier={tier}, "
+                    f"3CAN research heuristic matched. Check the full Owner request, including negation "
+                    f"and quoted examples; this is not a semantic classification. Tier={tier}, "
                     f"decision_check={budget.get('decision_check_minutes', 5)}min, "
                     f"target={budget.get('target_minutes', 5)}min, "
                     f"hard_cap={budget.get('hard_cap_minutes', 10)}min. Invoke "
-                    "$3can-deep-research, cover the required source families, keep citations visible, "
-                    "run query planning and contradiction checks, use sidecar evidence/task-fit judgement, "
-                    "and record the source ledger before file edits or final conclusions. "
+                    "$3can-deep-research when material. Link the decision to opened evidence, local "
+                    "constraints, a rejected alternative/counterexample, and an executable validation plan. "
+                    "Source counts and self-assigned PASS are not proof of task success. Safe local "
+                    "experiments may continue; existing project authorization gates remain independent. "
                     f"Ledger command shape: {command}"
                 ),
             }
         }
 
     if event == "PreToolUse":
-        gate = _turn_research_gate(state_file, session_id, turn_id)
-        if not gate["mutation_blocked"]:
-            return 0, {"continue": True}
-        tool_name = str(data.get("tool_name") or "")
-        tool_input = data.get("tool_input") or {}
-        command = ""
-        if isinstance(tool_input, dict):
-            command = str(tool_input.get("command") or tool_input)
-        else:
-            command = str(tool_input)
-        mutating = tool_name in {"apply_patch", "Edit", "Write"}
-        if tool_name in {"Bash", "PowerShell", "exec_command"}:
-            mutating = bool(MUTATING_COMMAND.search(command))
-        elif tool_name.startswith("mcp__"):
-            mutating = bool(
-                MUTATING_MCP_TOOL.search(tool_name)
-                or not READ_ONLY_MCP_TOOL.fullmatch(tool_name)
-            )
-        if not mutating:
-            return 0, {
-                "systemMessage": "3CAN research has not passed; read-only exploration is allowed."
-            }
-        if gate["terminal_incomplete"]:
-            return 2, {
-                "decision": "block",
-                "reason": (
-                    f"Research ended as {gate['status']} at the hard cap. Report the typed incomplete "
-                    "result or obtain direction before research-dependent mutation."
-                ),
-            }
-        return 2, {
-            "decision": "block",
-            "reason": (
-                "3CAN deep research ledger is required before mutating tools for this turn. "
-                f"Tier={gate['turn'].get('research_tier', 'unknown')}. "
-                "Use $3can-deep-research and run scripts/3can_research_harness.py done with sources."
-            ),
-        }
+        # Compatibility no-op for old project registrations. Tool-name regexes
+        # cannot determine whether an edit is an experiment or a deployment.
+        return 0, {"continue": True}
 
     if event == "Stop":
         gate = _turn_research_gate(state_file, session_id, turn_id)
         if gate["stop_blocked"]:
+            if data.get("stop_hook_active") is True:
+                return 0, {"systemMessage": "Research remains PARTIAL. State the missing evidence; do not claim a verified solution."}
             return 2, {
                 "decision": "block",
                 "reason": (
-                    "Complete the mandatory 3CAN deep research source ledger and cite sources before final answer."
+                    "Review the research need against the Owner request. Record the evidence/decision "
+                    "reference, or report PARTIAL/UNAVAILABLE with the concrete missing evidence. "
+                    "Do not equate a ledger PASS with a working solution. This reminder does not authorize external actions."
                 ),
             }
         if gate["terminal_incomplete"]:
@@ -1789,6 +1739,7 @@ def score_evidence(evidence_scores: dict[str, Any]) -> dict[str, Any]:
 
 def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     risks: list[str] = []
+    warnings: list[str] = []
     tier = _normalize_research_tier(str(ledger.get("research_tier") or "standard"))
     budget = TIME_BUDGETS[tier]
     ledger_status = str(ledger.get("status") or "").strip().casefold()
@@ -1825,34 +1776,37 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         elapsed_minutes
     ) >= float(budget["hard_cap_minutes"])
     score = score_evidence(ledger.get("evidence_scores", {}) if isinstance(ledger.get("evidence_scores"), dict) else {})
-    sidecar = ledger.get("sidecar_judgement", {}) if isinstance(ledger.get("sidecar_judgement"), dict) else {}
 
     if ledger_status not in {"pass", "partial", "unavailable"}:
         risks.append("ledger_status_not_pass")
-    if typed_terminal_status and not hard_cap_reached:
-        risks.append("terminal_status_before_hard_cap")
+    if typed_terminal_status and not hard_cap_reached and not str(ledger.get("incomplete_reason") or "").strip():
+        risks.append("missing_incomplete_reason")
     if not isinstance(elapsed_minutes, (int, float)) or float(elapsed_minutes) <= 0:
         risks.append("missing_elapsed_time")
     elif float(elapsed_minutes) > float(budget["hard_cap_minutes"]):
         risks.append("research_timebox_exceeded")
-    if verified_external_source_count < min_sources:
+    if not verified_external_source_count:
         risks.append("insufficient_verified_external_source_count")
+    elif verified_external_source_count < min_sources:
+        warnings.append("below_recommended_source_count")
     if source_family_count < int(budget["min_source_families"]):
-        risks.append("insufficient_source_family_coverage")
+        warnings.append("below_recommended_source_family_coverage")
     if not source_types.intersection({"official_primary", "academic_or_standard"}):
         risks.append("missing_boundary_or_contract_source")
     if not source_types.intersection({"github_or_issue", "model_hub_or_dataset", "community_practice", "community_forum"}):
         risks.append("missing_implementation_or_practice_source")
     if tier == "deep" and not source_types.intersection({"academic_or_standard", "benchmark_or_user_report"}):
-        risks.append("missing_academic_or_benchmark_source")
+        warnings.append("academic_or_benchmark_evidence_not_recorded")
     if tier == "deep" and not source_types.intersection({"github_or_issue", "model_hub_or_dataset"}):
         risks.append("missing_implementation_evidence")
     if tier == "deep" and not source_types.intersection({"community_practice", "community_forum"}):
-        risks.append("missing_community_evidence")
+        warnings.append("community_evidence_not_recorded")
     if platform_relevant and not source_types.intersection(SOURCE_FAMILIES["platform"]):
         risks.append("missing_platform_signal")
     if len(query_variants) < int(budget["min_query_variants"]):
-        risks.append("missing_query_plan")
+        warnings.append("below_recommended_query_count")
+    if not str(ledger.get("decision_reference") or "").strip():
+        risks.append("missing_decision_reference")
     if context_status not in {"used", "unavailable", "not_applicable"}:
         risks.append("missing_internal_context_status")
     elif context_status == "used" and not _as_string_list(context.get("evidence_refs")):
@@ -1861,22 +1815,14 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         risks.append("missing_contradiction_status")
     elif contradiction_status == "unresolved":
         risks.append("unresolved_material_conflict")
-    if not score["score_available"]:
-        risks.append("missing_evidence_scores")
-    elif score["weighted_score"] < score["threshold"]:
-        risks.append("low_evidence_score")
+    # Scores and legacy sidecar strings are declarations, not independent review.
+    if score["score_available"] and score["weighted_score"] < score["threshold"]:
+        warnings.append("low_declared_evidence_score")
 
-    sidecar_required = bool(budget.get("sidecar_required"))
-    if sidecar_required:
-        if sidecar.get("evidence_sufficiency") not in {"pass", "sufficient"}:
-            risks.append("sidecar_evidence_sufficiency_not_pass")
-        if sidecar.get("task_fit") not in {"pass", "fit"}:
-            risks.append("sidecar_task_fit_not_pass")
-
-    if typed_terminal_status and hard_cap_reached:
+    if typed_terminal_status and (hard_cap_reached or ledger.get("incomplete_reason")):
         decision = typed_terminal_status
     elif not risks:
-        decision = "ready_for_decision"
+        decision = "ready_for_review"
     elif (
         "ledger_status_not_pass" in risks
         or "insufficient_verified_external_source_count" in risks
@@ -1888,7 +1834,10 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         decision = "needs_review"
 
     return {
-        "ok": decision == "ready_for_decision",
+        "ok": decision == "ready_for_review",
+        "validation_scope": "structural_evidence_only",
+        "semantic_review_required": True,
+        "implementation_verified": False,
         "terminal": decision in {"PARTIAL", "UNAVAILABLE"},
         "decision": decision,
         "research_tier": tier,
@@ -1905,13 +1854,14 @@ def judge_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
         },
         "evidence_score": score,
         "risks": risks,
+        "warnings": warnings,
         "next_action": {
-            "ready_for_decision": "Proceed to engineering decision/writeback.",
-            "PARTIAL": "Return a typed PARTIAL result with the missing evidence and keep mutation blocked.",
-            "UNAVAILABLE": "Return a typed UNAVAILABLE result with the missing evidence and keep mutation blocked.",
+            "ready_for_review": "Review the decision reference against opened evidence and local constraints, then run the validation plan. This is not solution acceptance.",
+            "PARTIAL": "Report missing evidence. Continue safe local work; defer only claims or operations that actually depend on it.",
+            "UNAVAILABLE": "Report the unavailable evidence. Continue safe local work without fabricating research or bypassing independent gates.",
         }.get(
             decision,
-            "Continue targeted research or record sidecar judgement before mutating work.",
+            "Resolve the named evidence gaps or record a concrete incomplete reason. Safe local experiments remain possible.",
         ),
     }
 
@@ -1941,6 +1891,8 @@ def record_done(
     contradiction_status: str = "",
     platform_relevant: bool = False,
     elapsed_minutes: float = 0.0,
+    decision_reference: str = "",
+    incomplete_reason: str = "",
 ) -> dict[str, Any]:
     source_artifacts, invalid_artifacts = load_source_artifacts(source_artifact_files or [])
     artifact_urls = [str(item["url"]) for item in source_artifacts if item.get("url")]
@@ -2002,7 +1954,7 @@ def record_done(
     )
     structural_status = (
         "pass"
-        if verified_external_source_count >= required_min_sources
+        if verified_external_source_count > 0
         and not invalid
         and not invalid_artifacts
         else "block"
@@ -2013,6 +1965,8 @@ def record_done(
     ledger = {
         "status": structural_status,
         "question": question,
+        "decision_reference": decision_reference.strip(),
+        "incomplete_reason": incomplete_reason.strip(),
         "research_tier": selected_tier,
         "elapsed_minutes": elapsed_minutes,
         "time_budget": TIME_BUDGETS[selected_tier],
@@ -2065,7 +2019,9 @@ def record_done(
     hard_cap_reached = float(elapsed_minutes) >= float(
         TIME_BUDGETS[selected_tier]["hard_cap_minutes"]
     )
-    if structural_status == "pass" and initial_decision["ok"]:
+    if incomplete_reason.strip():
+        status = "PARTIAL" if verified_external_source_count else "UNAVAILABLE"
+    elif structural_status == "pass" and initial_decision["ok"]:
         status = "pass"
     elif hard_cap_reached:
         status = "PARTIAL" if verified_external_source_count else "UNAVAILABLE"
@@ -2099,7 +2055,7 @@ def record_done(
     elif status in {"PARTIAL", "UNAVAILABLE"}:
         ledger["ok"] = False
         ledger["reason"] = (
-            f"Research reached the hard cap as {status}: "
+            f"Research ended as {status}: {incomplete_reason.strip()} "
             f"{', '.join(ledger['sidecar_decision']['risks']) or 'evidence remains incomplete'}."
         )
     else:
@@ -2193,6 +2149,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     done.add_argument("--ledger-dir", default=str(DEFAULT_LEDGER_DIR))
     done.add_argument("--notes", default="")
+    done.add_argument("--decision-ref", default="", help="Existing decision/evidence note with local constraints, counterexample and validation plan; presence is not semantic proof.")
+    done.add_argument("--incomplete-reason", default="", help="Close as PARTIAL/UNAVAILABLE before the cap when evidence is genuinely unavailable or the task must pause.")
     done.add_argument("--min-sources", type=int, default=DEFAULT_MIN_SOURCES)
     done.add_argument(
         "--research-tier",
@@ -2216,7 +2174,7 @@ def build_parser() -> argparse.ArgumentParser:
     done.add_argument("--platform-relevant", action="store_true")
     done.add_argument("--rpa-meta", action="append", default=[], help="key=value metadata for approved RPA/platform evidence.")
 
-    judge = sub.add_parser("judge", help="Evaluate whether a research ledger is sufficient for task decision.")
+    judge = sub.add_parser("judge", help="Check structural evidence readiness; never certify semantic correctness or a working solution.")
     judge.add_argument("--ledger-file", required=True)
     return parser
 
@@ -2337,6 +2295,8 @@ def main(argv: list[str] | None = None) -> int:
                 state_file=state_file,
                 ledger_dir=Path(args.ledger_dir),
                 notes=args.notes,
+                decision_reference=args.decision_ref,
+                incomplete_reason=args.incomplete_reason,
                 min_sources=args.min_sources,
                 research_tier=args.research_tier,
                 source_types=args.source_type,

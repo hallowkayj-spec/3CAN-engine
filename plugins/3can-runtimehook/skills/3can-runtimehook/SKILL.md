@@ -93,6 +93,14 @@ request, current diff or output, tests, and delivered result. Review:
    current truth?
 4. Was unrequested behavior added, or requested behavior silently dropped?
 
+Inspect actual module outputs, not just the command that produced them. In the
+existing review reference, map the applicable acceptance criteria to observed
+results, name unmet/untested criteria, and state the next bounded objective.
+Rendering success, a source ledger, hook invocation and a self-assigned PASS do
+not establish content, design, business execution or end-to-end quality. An
+early episode may pass its own scoped review while the overall task remains
+incomplete; never silently promote that episode to final acceptance.
+
 Record an honest result (`PASS`, `PARTIAL`, `FAIL`, `UNVERIFIABLE`,
 `CONTRADICTS`, or `UNREQUESTED`) and a durable reference with `review`. For an
 episode review, include the next bounded objective. A reference may be a Git

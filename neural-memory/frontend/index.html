@@ -133,7 +133,8 @@
         font-size: 12px;
         font-weight: 700;
         cursor: pointer;
-        transition: 0.2s ease;
+        white-space: nowrap;
+        transition: color 0.2s ease, background-color 0.2s ease;
       }
       .view-tab:hover {
         color: var(--text);
@@ -1066,6 +1067,11 @@
     </aside>
     <aside id="visual-controls" hidden>
       <h2>Graph Controls</h2>
+      <p id="graph-scope" role="status" aria-live="polite"></p>
+      <div class="control-row">
+        <label class="control-label"><input type="checkbox" id="focus-toggle" disabled /> 只看所选节点及关系</label>
+      </div>
+      <div class="control-row"><button id="graph-fit" class="node-action" type="button">适配可见图谱</button> <button id="graph-reset" class="node-action" type="button">清除选择</button></div>
       <div class="control-row">
         <label class="control-label"
           ><input type="checkbox" id="intf-toggle" checked />
@@ -1151,6 +1157,8 @@
         highlightLinks = new Set(),
         activeCluster = null,
         showINTF = true,
+        showDormant = true,
+        focusSelection = false,
         nodeSizeMultiplier = 1,
         statusTimer = null,
         panelReturnFocus = null;
@@ -1233,7 +1241,6 @@
           updateTopbar();
           buildLegend();
           buildDashboard();
-          if (Graph) Graph.graphData(graphData);
           if (announce)
             showStatus(
               graphLoaded
@@ -1261,6 +1268,14 @@
           links: Array.isArray(graph?.links) ? graph.links : [],
         };
         graphLoaded = true;
+        const ids = new Set(graphData.nodes.map(node => node.id));
+        highlightNodes = new Set([...highlightNodes].filter(id => ids.has(id)));
+        highlightLinks = new Set(graphData.links.filter(link =>
+          linkIds(link).every(id => highlightNodes.has(id))));
+        if (Graph) {
+          Graph.graphData(graphData);
+          refreshGraph();
+        }
       }
       async function ensureGraphData() {
         if (graphLoaded) return graphData;
@@ -1269,7 +1284,6 @@
           .then((graph) => {
             applyGraphData(graph);
             buildDashboard();
-            if (Graph) Graph.graphData(graphData);
             return graphData;
           })
           .finally(() => {
@@ -1462,6 +1476,7 @@
         const container = document.getElementById("graph-container");
         if (Graph) {
           Graph.width(container.clientWidth).height(container.clientHeight);
+          Graph.resumeAnimation();
           return;
         }
         if (typeof ForceGraph3D !== "function") {
@@ -1521,6 +1536,7 @@
           .d3VelocityDecay(0.28)
           .warmupTicks(120)
           .cooldownTicks(180);
+        refreshGraph();
         setTimeout(
           () =>
             Graph &&
@@ -1530,6 +1546,22 @@
       }
       function refreshGraph() {
         if (!Graph) return;
+        const focusToggle = document.getElementById("focus-toggle");
+        focusToggle.disabled = highlightNodes.size === 0;
+        if (!highlightNodes.size) focusSelection = false;
+        focusToggle.checked = focusSelection;
+        const visibleIds = new Set(graphData.nodes.filter((node) =>
+          (showINTF || node.cluster !== "接口契约") &&
+          (showDormant || node.status !== "dormant") &&
+          (!focusSelection || highlightNodes.has(node.id))
+        ).map((node) => node.id));
+        const visibleLinks = graphData.links.filter((link) =>
+          linkIds(link).every((id) => visibleIds.has(id))
+        );
+        document.getElementById("graph-scope").textContent =
+          `可见 ${visibleIds.size}/${graphData.nodes.length} 节点 · ${visibleLinks.length}/${graphData.links.length} 关系 · 选中 ${highlightNodes.size}`;
+        Graph.nodeVisibility((node) => visibleIds.has(node.id))
+          .linkVisibility((link) => linkIds(link).every((id) => visibleIds.has(id)));
         Graph.nodeColor(Graph.nodeColor())
           .linkColor(Graph.linkColor())
           .linkWidth(Graph.linkWidth())
@@ -1540,6 +1572,16 @@
           typeof link.source === "object" ? link.source.id : link.source,
           typeof link.target === "object" ? link.target.id : link.target,
         ];
+      }
+      function fitVisibleGraph() {
+        if (!Graph) return;
+        const visible = graphData.nodes.filter(Graph.nodeVisibility());
+        if (visible.length === 1) {
+          const node = visible[0];
+          Graph.cameraPosition({ x: node.x || 0, y: node.y || 0, z: (node.z || 0) + 130 }, node, REDUCED_MOTION ? 0 : 450);
+        } else if (visible.length) {
+          Graph.zoomToFit(REDUCED_MOTION ? 0 : 450, 70, Graph.nodeVisibility());
+        }
       }
       function onNodeClick(node, returnFocus = null) {
         if (!node) return;
@@ -1684,7 +1726,7 @@
           tab.setAttribute("aria-pressed", String(active));
         });
         if (graphView) {
-          container.innerHTML =
+          if (!Graph) container.innerHTML =
             '<div class="graph-message">正在加载 3D 图谱…</div>';
           try {
             await ensureGraphData();
@@ -1692,13 +1734,14 @@
               await loadGraphDependency();
             } catch (_) {}
             initGraph();
-            return true;
+            return Boolean(Graph);
           } catch (error) {
             container.innerHTML = `<div class="graph-message">${escapeHtml(error.message || error)}</div>`;
             showStatus("图谱数据不可用；实时概览仍可继续使用");
             return false;
           }
         }
+        Graph?.pauseAnimation();
         closePanel();
         return true;
       }
@@ -1794,8 +1837,11 @@
           });
         document
           .getElementById("search-input")
-          .addEventListener("input", (event) => {
+          .addEventListener("input", async (event) => {
             const query = event.target.value.toLowerCase().trim();
+            if (query && !(await switchView("graph"))) return;
+            if (document.getElementById("search-input").value.toLowerCase().trim() !== query) return;
+            activeCluster = null;
             highlightNodes.clear();
             highlightLinks.clear();
             if (query)
@@ -1805,30 +1851,13 @@
                 if (haystack.includes(query)) highlightNodes.add(node.id);
               });
             refreshGraph();
+            if (query && !highlightNodes.size) showStatus("没有匹配节点；可修改关键词或使用语义路由");
           });
         document
           .getElementById("intf-toggle")
           .addEventListener("change", (event) => {
             showINTF = event.target.checked;
-            graphData.nodes.forEach((node) => {
-              if (node.cluster === "接口契约") node._hidden = !showINTF;
-            });
-            if (Graph) {
-              Graph.nodeVisibility((node) => !node._hidden);
-              Graph.linkVisibility((link) => {
-                const [source, target] = linkIds(link),
-                  sourceNode = graphData.nodes.find(
-                    (node) => node.id === source,
-                  ),
-                  targetNode = graphData.nodes.find(
-                    (node) => node.id === target,
-                  );
-                return (
-                  !(sourceNode && sourceNode._hidden) &&
-                  !(targetNode && targetNode._hidden)
-                );
-              });
-            }
+            refreshGraph();
           });
         document
           .getElementById("size-slider")
@@ -1847,12 +1876,23 @@
         document
           .getElementById("dormant-toggle")
           .addEventListener("change", (event) => {
-            graphData.nodes.forEach((node) => {
-              if (node.status === "dormant")
-                node._hidden = !event.target.checked;
-            });
-            if (Graph) Graph.nodeVisibility((node) => !node._hidden);
+            showDormant = event.target.checked;
+            refreshGraph();
           });
+        document.getElementById("focus-toggle").addEventListener("change", (event) => {
+          focusSelection = event.target.checked;
+          refreshGraph();
+          fitVisibleGraph();
+        });
+        document.getElementById("graph-fit").addEventListener("click", fitVisibleGraph);
+        document.getElementById("graph-reset").addEventListener("click", () => {
+          activeCluster = null;
+          highlightNodes.clear(); highlightLinks.clear();
+          document.getElementById("search-input").value = "";
+          document.querySelectorAll(".legend-item").forEach((item) => item.classList.remove("dimmed"));
+          closePanel(); refreshGraph();
+          fitVisibleGraph();
+        });
         document.addEventListener("keydown", (event) => {
           if (
             event.key === "Escape" &&
