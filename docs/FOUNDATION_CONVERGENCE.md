@@ -68,7 +68,7 @@ the earlier source review and unit tests did not prove that transport worked.
 | Final Hook/controller/Project Kit regression | 71 passed, 2 platform skips; 239.28 seconds. Windows command fixtures now use native PowerShell argv rather than cmd-based `shell=True`. |
 | Installed native Plugin | Version `0.1.4+codex.20260910054301`; enabled with four reviewed/trusted native handlers. Actual SessionStart, UserPromptSubmit, PostToolUse and Stop completed in an isolated native task. |
 | Native counterexample | Chinese RUN_INTENT was restored; intentional PENDING final review caused one blocked Stop followed by a bounded typed continuation. Individual Hook executions in this small probe took 1.277–1.888 seconds. This is not a one-hour task-overhead benchmark. |
-| Public seed benchmark | 46 synthetic queries: MRR 0.9783, Recall@3 1.0, local p95 31 ms. Ten substrate cases: top1 accuracy 1.0, mean top3 recall 0.8167. Hashing/development fixture only. |
+| Public seed benchmark | Fresh final rerun at source checkpoint `119933b`: 46 synthetic queries, MRR 0.9783, Recall@3 1.0, local p95 29 ms. Ten substrate cases: top1 accuracy 1.0, mean top3 recall 0.8167, p95 32 ms. Hashing/development fixture only; isolated process/listener cleanup and unchanged production selector verified. |
 | Deployed frontend | Actual HTTP documents, without interception, exercised against production 2655/1035 and development 19/10. Graph reentry, composed filters, focus, refresh and 390px overview passed. A missing favicon remains cosmetic. |
 | Durable checkpoint | CAS notes update to the existing RuntimeHook dogfood document succeeded with exact readback; historical notes were preserved. No duplicate checkpoint node or bulk graph cleanup. |
 
@@ -112,6 +112,10 @@ the differently formatted version. Fresh raw readback proved unchanged content;
 preserving the exact wire string allowed the one supported retry. The server
 recorded the first refusal in existing issue intake, so no duplicate client
 observation was sent. Guidance now explicitly preserves opaque version tokens.
+The guidance change invalidated the prior benchmark's exact source hash. The
+small isolated benchmark was rerun rather than relabeling the old measurement;
+both dated runs remain available. Final release-manifest checks also removed
+the obsolete batch wrapper from the required-file list.
 
 ## Remaining acceptance boundaries
 

@@ -1,9 +1,9 @@
 {
   "schema_version": "3can.benchmark-receipt/v1",
   "status": "VERIFIED_CANDIDATE",
-  "observed_at_utc": "2026-09-10T04:49:09.3696744Z",
+  "observed_at_utc": "2026-09-10T05:55:31.7358907Z",
   "scope": "fresh release seed graph",
-  "source_commit": "045c77f57b46c2a6e1822dff4b6dc32ae2e62f08",
+  "source_commit": "119933bb7ed1f5a506e9451553348ea5c2fad34f",
   "runtime": {
     "python": "3.14.0",
     "readiness_mode": "development",
@@ -14,7 +14,7 @@
     "edges": 12
   },
   "source_sha256": {
-    "3CAN.md": "0d83772538bc9d4891124b4c5cb2522df4982cc76e052217e1fef02f268a8e62",
+    "3CAN.md": "52afdb42d5698654e33f628235f3f1881d44b6e2ff773b29dcfc1db4862b1ca9",
     "neural-memory/backend/app.py": "b057ce0cd6a2c37ba08441a7e626222ce3b818e89d6355921fc8f18eb2cbf4ff",
     "neural-memory/backend/graph_engine.py": "8c00a59fedb1560eb88e87507004aa741bd5b74229035a4129f27b45dead34b1",
     "neural-memory/backend/models.py": "77049ee3c2914654ffbc61d6cdf74d67d739292ee54fc64dcc26188e906631c6",
@@ -28,11 +28,11 @@
     "neural-memory/benchmark/substrate_bench_runner.py": "fd3253cb3a95659f137fd3f1ef7c235f734c63b26c04be769174c819cbc34169"
   },
   "run_artifact_sha256": {
-    "verify.json": "298e3b9ba9783aab91e10016ada8fbe17690f13ce672752014f02d609db9d6e0",
-    "route.json": "7a5caf68c6f61cd6b65c880b8497e705a20348c6a51ce8cea2eb82358b2c6a4b",
-    "substrate.json": "1a61367cc08b547fede2e447712afc55e157829fdc95cc1a49cc516b6dc58dc1",
-    "completion.json": "0352c51bfbc9563f9fbf15c6c59160c17bb18d75e52751f881cb8f526751823b",
-    "run-identity.json": "12558e4fa4bb1143d51ac80b45e76abe355111fb89ccb06037d94ed88f438f05"
+    "verify.json": "a886695ee218f936091690a5b7ddb92b805d0753ff4e013b8ec979f39024b10f",
+    "route.json": "3248e5bb9a480a5e2648e774f998607b140141e5b7965c89a8e41b08bd85ccea",
+    "substrate.json": "6342d0796e6b1d55d3baba76c6b94d3ffc53d9710cd755be6e32dfbbf98816e0",
+    "completion.json": "0cde72cf028019c5afcfcadfaf01bf739e1a9125c134be5234e43f990149fff7",
+    "run-identity.json": "a8638fb71c07bc1ac665c0afe23f2d58927c9c9e86d81354fc5b5389964aeb02"
   },
   "commands": [
     "python -B scripts/verify_project.py --base-url http://127.0.0.1:9797 --min-nodes 10 --project-id public-rc --project-namespace public-scope --json",
@@ -44,7 +44,7 @@
     "liveness": true,
     "readiness_verification_state": "development",
     "owner_intent": "APPLIED",
-    "owner_intent_digest": "sha256:0d83772538bc9d4891124b4c5cb2522df4982cc76e052217e1fef02f268a8e62",
+    "owner_intent_digest": "sha256:52afdb42d5698654e33f628235f3f1881d44b6e2ff773b29dcfc1db4862b1ca9",
     "exact_read": true,
     "selector_unchanged": true
   },
@@ -54,7 +54,7 @@
     "Recall@1": 0.8261,
     "Recall@3": 1.0,
     "Hit@3": 1.0,
-    "latency_p95_ms": 31,
+    "latency_p95_ms": 29,
     "grep_fallback_rate": 0.0,
     "verdict": "coordination"
   },
@@ -63,20 +63,20 @@
     "top1_accuracy": 1.0,
     "top3_recall_mean": 0.8167,
     "err_proactive_rate_at_top3": 1.0,
-    "latency_p95_ms": 27
+    "latency_p95_ms": 32
   },
   "limitations": [
     "This receipt proves the public synthetic seed fixture, not a private production graph.",
     "Development readiness does not claim a pinned production profile.",
     "Latency is one local observation and is not a cross-machine performance guarantee.",
-    "The reused wrapper reported a Wait-Process race after the benchmark process had already exited. Original FAIL receipt is retained; independent process/listener/selector postchecks verified cleanup."
+    "The earlier run cleanup race is retained in private evidence; this fresh run used process-handle wait and verified listener release."
   ],
   "cleanup_postcheck": {
     "benchmark_process_absent": true,
     "isolated_port_unbound": true,
     "production_selector_unchanged": true,
-    "wrapper_status": "FAIL",
-    "wrapper_cleanup_error_retained": "Cannot find a process with the process identifier 28720.",
-    "observed_at_utc": "2026-09-10T04:49:09.4433229Z"
+    "wrapper_status": "PASS",
+    "wrapper_cleanup_error_retained": "",
+    "observed_at_utc": "2026-09-10T05:55:31.7868306Z"
   }
 }
