@@ -461,7 +461,10 @@ def _load_state(root: Path) -> dict[str, Any] | None:
 
 
 def _context(
-    state: dict[str, Any], *, review_result: str | None = None
+    state: dict[str, Any],
+    *,
+    review_result: str | None = None,
+    worktree: Path | None = None,
 ) -> str:
     intent = state["run_intent"]
     acceptance = "; ".join(
@@ -490,8 +493,10 @@ def _context(
         f"{boundary['last_label']}. Boundary review: "
         f"{'DUE' if boundary_due else 'CURRENT'}."
     )
+    worktree_text = f"Worktree: {worktree}. " if worktree is not None else ""
     message = (
         f"RuntimeHook semantic context [{state['activation_id']}]. "
+        f"{worktree_text}"
         f"RUN_INTENT: {intent['goal']}. Acceptance: {acceptance}.{non_goal_text} "
         f"Internal intensity: {state['internal_intensity']['level']} because "
         f"{state['internal_intensity']['reason']}.{episode_text}{review_text}."
@@ -818,7 +823,16 @@ def _hook_root(
     payload: dict[str, Any],
 ) -> Path | None:
     if requested_root is not None:
-        return _repository_root(requested_root)
+        root = _repository_root(requested_root)
+        if "cwd" in payload:
+            native_root = _hook_root(None, payload)
+            if native_root != root:
+                raise RuntimeHookError(
+                    "CONTEXT_MISMATCH: native Hook worktree "
+                    f"{native_root} does not match requested worktree {root}; "
+                    "do not read or replace another task's semantic state"
+                )
+        return root
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not cwd.strip():
         raise RuntimeHookError("native Hook payload has no working directory")
@@ -876,6 +890,7 @@ def hook(args: argparse.Namespace) -> int:
                                 (f"{SESSION_FAST_PATH} " if args.session_orientation else "")
                                 + _context(
                                     state,
+                                    worktree=root,
                                     review_result=(
                                         "STALE" if stale_reasons else None
                                     ),
@@ -904,6 +919,7 @@ def hook(args: argparse.Namespace) -> int:
                             "hookEventName": "UserPromptSubmit",
                             "additionalContext": _context(
                                 state,
+                                worktree=root,
                                 review_result="STALE" if stale_reasons else None,
                             ),
                         }
@@ -943,7 +959,7 @@ def hook(args: argparse.Namespace) -> int:
                         {
                             "hookSpecificOutput": {
                                 "hookEventName": "PostToolUse",
-                                "additionalContext": f"{reason} {_context(state)}",
+                                "additionalContext": f"{reason} {_context(state, worktree=root)}",
                             },
                         },
                         ensure_ascii=False,
@@ -987,6 +1003,7 @@ def hook(args: argparse.Namespace) -> int:
                     "reminder does not replace or override the project Stop gate."
                 )
                 continue_for_review = True
+            message = f"RuntimeHook worktree: {root}. {message}"
             if continue_for_review and not bool(payload.get("stop_hook_active")):
                 print(
                     json.dumps(
@@ -1006,6 +1023,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Control the optional 3CAN RuntimeHook semantic supervisor."
     )
     parser.add_argument("--root", type=Path)
+    parser.add_argument(
+        "--native-cwd", type=Path,
+        help="Check an independently observed native task cwd before a local command; does not rebind the task.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     on = sub.add_parser("on", help="Record the current semantic RUN_INTENT.")
@@ -1048,10 +1069,20 @@ def main(argv: list[str] | None = None) -> int:
     _configure_utf8_stdio()
     args = build_parser().parse_args(argv)
     if args.command == "hook":
+        if args.native_cwd is not None:
+            return _hook_error(
+                "--native-cwd is for local commands; native Hooks use their payload cwd"
+            )
         return hook(args)
     if args.root is None:
         args.root = PROJECT_ROOT
     try:
+        scope = None
+        if args.native_cwd is not None:
+            if not args.native_cwd.is_absolute():
+                raise RuntimeHookError("observed native cwd must be an absolute path")
+            root = _hook_root(args.root, {"cwd": str(args.native_cwd)})
+            scope = {"status": "MATCH", "worktree": str(root)}
         if args.command == "on":
             output = activate(args)
         elif args.command == "off":
@@ -1064,6 +1095,8 @@ def main(argv: list[str] | None = None) -> int:
             output = status(args)
         else:
             raise RuntimeHookError(f"unsupported command: {args.command}")
+        if scope is not None:
+            output["native_scope"] = scope
         exit_code = 0
     except (RuntimeHookError, OSError, subprocess.SubprocessError) as exc:
         output = {"ok": False, "status": "UNAVAILABLE", "error": str(exc)}

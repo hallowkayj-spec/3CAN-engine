@@ -453,6 +453,126 @@ def test_windows_plugin_ignores_repo_local_executable_shadows(
     assert "交付当前开源任务" in context
 
 
+def test_native_cwd_preflight_rejects_foreign_scope_before_state_access(
+    plain_repo: Path, tmp_path: Path,
+):
+    peer = tmp_path / "peer worktree"
+    _git(plain_repo, "worktree", "add", "-qb", "peer-scope", str(peer))
+    _activate(plain_repo, goal="Original owner intent")
+    original = (plain_repo / STATE_PATH).read_bytes()
+    exclude = Path(_git(plain_repo, "rev-parse", "--git-path", "info/exclude").stdout.strip())
+    if not exclude.is_absolute():
+        exclude = plain_repo / exclude
+    original_exclude = exclude.read_bytes()
+
+    for command in [
+        ["status"],
+        ["on", "--goal", "Wrong replacement", "--acceptance", "A=wrong",
+         "--intensity", "light", "--reason", "probe"],
+        ["off"],
+        ["checkpoint", "--kind", "stage", "--label", "wrong task"],
+        ["review", "--stage", "final", "--result", "PARTIAL", "--reference", "wrong task"],
+    ]:
+        code, output = _controller(
+            plain_repo, "--native-cwd", str(peer), *command,
+        )
+        assert code != 0
+        assert output["status"] == "UNAVAILABLE"
+        assert "CONTEXT_MISMATCH" in output["error"]
+        assert "Original owner intent" not in json.dumps(output)
+        assert (plain_repo / STATE_PATH).read_bytes() == original
+        assert not (peer / STATE_PATH).exists()
+        assert exclude.read_bytes() == original_exclude
+
+    code, output = _controller(
+        peer, "--native-cwd", str(plain_repo), "on",
+        "--goal", "Do not create orphan state", "--acceptance", "A=valid",
+        "--intensity", "light", "--reason", "probe",
+    )
+    assert code != 0 and "CONTEXT_MISMATCH" in output["error"]
+    assert not (peer / STATE_PATH).exists()
+
+
+def test_native_cwd_preflight_is_read_only_and_accepts_same_worktree_subdir(
+    plain_repo: Path,
+):
+    activated = _activate(plain_repo)
+    before = (plain_repo / STATE_PATH).read_bytes()
+    nested = plain_repo / "nested"
+    nested.mkdir()
+    code, output = _controller(
+        plain_repo, "--native-cwd", str(nested), "status",
+    )
+    assert code == 0
+    assert output["native_scope"] == {"status": "MATCH", "worktree": str(plain_repo)}
+    assert output["activation_id"] == activated["activation_id"]
+    assert (plain_repo / STATE_PATH).read_bytes() == before
+    code, output = _controller(plain_repo, "--native-cwd", ".", "status")
+    assert code != 0 and "absolute" in output["error"]
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"])
+def test_native_events_keep_linked_worktree_state_isolated(
+    plain_repo: Path, tmp_path: Path, event: str,
+):
+    peer = tmp_path / "independent peer"
+    _git(plain_repo, "worktree", "add", "-qb", "isolated-peer", str(peer))
+    activations = [_activate(plain_repo, goal="Task A"), _activate(peer, goal="Task B")]
+    for index, (root, foreign) in enumerate([(plain_repo, peer), (peer, plain_repo)]):
+        foreign_before = (foreign / STATE_PATH).read_bytes()
+        payload = {
+            "cwd": str(root), "session_id": f"task-{index}",
+            "hook_event_name": event, "source": "resume",
+            "tool_name": "update_plan",
+            "tool_input": {"plan": [{"step": "Review scoped module", "status": "completed"}]},
+        }
+        result = _plugin_hook(root, event, payload)
+        serialized = json.dumps(result, ensure_ascii=False)
+        assert activations[index]["activation_id"] in serialized
+        assert activations[1 - index]["activation_id"] not in serialized
+        message = result.get("reason") or result.get("systemMessage") or result[
+            "hookSpecificOutput"
+        ]["additionalContext"]
+        assert str(root) in message
+        assert (foreign / STATE_PATH).read_bytes() == foreign_before
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"])
+def test_explicit_hook_root_cannot_override_foreign_payload(
+    plain_repo: Path, tmp_path: Path, event: str,
+):
+    peer = tmp_path / "foreign payload"
+    _git(plain_repo, "worktree", "add", "-qb", "foreign-payload", str(peer))
+    _activate(plain_repo)
+    _activate(peer)
+    before = [(root / STATE_PATH).read_bytes() for root in (plain_repo, peer)]
+    completed = subprocess.run(
+        [sys.executable, str(PLUGIN_CLI), "--root", str(plain_repo), "hook"],
+        input=json.dumps({"cwd": str(peer), "hook_event_name": event, "source": "resume"}),
+        cwd=plain_repo, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    output = json.loads(completed.stdout)
+    assert completed.returncode == 0
+    assert "CONTEXT_MISMATCH" in output["systemMessage"]
+    assert "decision" not in output
+    assert [(root / STATE_PATH).read_bytes() for root in (plain_repo, peer)] == before
+
+
+def test_native_scope_option_cannot_substitute_hook_payload(plain_repo: Path):
+    _activate(plain_repo)
+    before = (plain_repo / STATE_PATH).read_bytes()
+    completed = subprocess.run(
+        [sys.executable, str(PLUGIN_CLI), "--root", str(plain_repo),
+         "--native-cwd", str(plain_repo), "hook"],
+        input=json.dumps({"cwd": str(plain_repo), "hook_event_name": "UserPromptSubmit"}),
+        cwd=plain_repo, capture_output=True, text=True, encoding="utf-8", timeout=30,
+    )
+    output = json.loads(completed.stdout)
+    assert "payload cwd" in output["systemMessage"]
+    assert "decision" not in output
+    assert (plain_repo / STATE_PATH).read_bytes() == before
+
+
 def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
     marketplace = json.loads(
         (

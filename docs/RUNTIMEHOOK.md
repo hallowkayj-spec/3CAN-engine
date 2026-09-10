@@ -34,6 +34,36 @@ The state is scoped to one physical Git worktree, not to one chat. At most one
 current RuntimeHook task may use that worktree; concurrent tasks require
 separate worktrees so one task cannot replace another task's Intent.
 
+### Native task directory must match
+
+An explicit command workdir or controller `--root` does not change the native
+task cwd supplied to Hooks. A legacy chat can therefore execute code in one
+repository while its native events still address another repository's state.
+The optional `--native-cwd` check accepts an independently observed host task
+directory and refuses a mismatch before reading or writing semantic state:
+
+```text
+<controller> --root <physical-worktree> --native-cwd <host-task-cwd> status
+```
+
+The same check can precede `on`, `review`, `checkpoint`, or `off`. A matching
+subdirectory resolves to its Git worktree. It is a scope diagnostic, not a
+Session registry or authentication boundary; omission does not mechanically
+certify native scope. Native Hooks also reject a conflicting explicit `--root`
+when their payload contains cwd, and active context/reminders identify the
+worktree they actually use. This does not recognize two chats incorrectly
+bound to the same native cwd: the host binding still needs correction.
+
+Use the supported host path to repair the existing task. Codex App Server
+documents cwd overrides on `turn/start`, but protocol support does not prove
+that a particular Desktop client exposes a safe in-place rebind. Do not use a
+Git-moving handoff as a metadata edit, raw-edit JSONL/SQLite, or attach a second
+runtime to an owned thread. An already-loaded resume and a cold resume need
+separate verification. Accept the repair only after actual native events and
+reopen/resume agree with the intended root, without modifying the peer state.
+Until then, report automatic supervision as `UNAVAILABLE`/unverified and keep
+safe local development moving; do not clear foreign state to silence it.
+
 ## Use
 
 The user need not choose a profile or run a controller command. Once the Plugin

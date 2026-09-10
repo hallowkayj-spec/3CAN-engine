@@ -43,6 +43,18 @@ per-chat state. Never run concurrent RuntimeHook tasks in the same worktree;
 use a separate worktree for each concurrent task instead of adding Session
 ownership or another state machine.
 
+Separate command workdirs do not change a task's native Hook cwd. Before first
+activation, after moving project work, or when another task's Intent appears,
+obtain the native task cwd from the host's task metadata (not the command's
+workdir) and run `--root <physical-root> --native-cwd <observed-cwd> status`.
+Reuse that check on the pending `on` or state-write command. A mismatch refuses
+before reading or writing semantic state; it does not rebind the native task.
+If the native cwd cannot be verified, keep automatic supervision unverified
+and continue safe local work. Do not guess it, edit Session databases, start a
+second writer, or switch off/replace foreign Intent. Use a supported host
+binding repair, then confirm the actual native event's Worktree and activation
+after resume. Manual controller success is not native Hook acceptance.
+
 Run `status`. If the active RUN_INTENT still matches the current Owner task,
 reuse it. If this is a materially new task or Intent, activate a new state with
 `on`; current semantic state is replaceable and Git/PR artifacts retain durable

@@ -164,12 +164,14 @@ def test_runtimehook_records_agent_selected_intensity_and_reinjects_utf8(
     installed, _hooks, command, native_hook = runtimehook_project
 
     activation = _activate(command, intensity=intensity)
+    native_cwd = installed / "中文项目" / "子目录"
+    native_cwd.mkdir(parents=True)
     started = native_hook(
         "SessionStart",
         {
             "hook_event_name": "SessionStart",
             "source": "clear",
-            "cwd": "C:/中文项目/子目录",
+            "cwd": str(native_cwd),
         },
     )
     stopped = native_hook("Stop", {"hook_event_name": "Stop"})
