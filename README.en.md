@@ -126,6 +126,11 @@ keep one special Codex, Claude, or ChatGPT session open. Any HTTP- or
 MCP-capable client can connect to the same explicitly managed instance, while
 separate projects may use separate ports and graph directories.
 
+`bootstrap` / `session-start` is an optional convenience inside the current
+agent execution. It combines readiness, check-in, briefing, and route; it does
+not create a chat session or start the Runtime. Direct route and properly gated
+writeback do not depend on it.
+
 ```bash
 git clone https://github.com/hallowkayj-spec/3CAN-engine.git
 cd 3CAN-engine

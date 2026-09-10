@@ -147,17 +147,25 @@ silently covered. The isolated adaptive experiment is documented in
 [`ADAPTIVE_REVIEW_HARNESS.md`](./ADAPTIVE_REVIEW_HARNESS.md); global rollout
 remains blocked.
 
+A separate ChatGPT/Codex task or dedicated 3CAN session is not required. Each
+agent execution is a scoped client and may route directly. Writeback remains
+subject to the operation's identity, project, provenance, and other applicable
+gates.
+
 `neural-memory/mcp_server.py` uses `THREECAN_URL`, then
 `THREECAN_BASE_URL`, and defaults to `http://127.0.0.1:9700`. Set the endpoint
 in each MCP client process when the project uses an isolated port such as
 `9711`; do not copy or patch a second MCP server for each sidecar.
 
-Read-only routing does not require a ticket, check-in, hook, or wrapper. Use the
-prepare/done lifecycle only when a project has a concrete guarded-write or
-evidence requirement. The wrapper never starts or terminates backend/proxy
-processes. Explicit `-StartServer`/`--start-server` is an operator setup
-action. A managed Windows installation may use one machine-owned Supervisor
-Scheduled Task; wrappers only observe Runtime readiness.
+Read-only routing does not require a ticket, check-in, hook, wrapper, or prior
+bootstrap call. The optional `bootstrap` / `session-start` commands only
+combine readiness, check-in, briefing, and route inside the current agent
+execution; they store no local session truth. Use the prepare/done lifecycle
+only when a project has a concrete guarded-write or evidence requirement. The
+wrapper never starts or terminates backend/proxy processes. Explicit
+`-StartServer`/`--start-server` is an operator setup action. A managed Windows
+installation may use one machine-owned Supervisor Scheduled Task; wrappers
+only observe Runtime readiness.
 
 Ordinary development remains `understand -> edit -> test -> Git checkpoint`.
 There is no forced 3CAN call per prompt, tool use, test, commit, or episode.
