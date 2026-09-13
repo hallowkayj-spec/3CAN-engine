@@ -15,13 +15,27 @@ not invoke it for every small edit merely because it is installed.
 Resolve the physical root with `git rev-parse --show-toplevel`. Use the absolute
 `<root>/scripts/3can_runtimehook.py` path and pass that same root through
 `--root`. If the script or native project hooks are absent, report
-`UNAVAILABLE`; do not create a daemon, parser, graph call, global state store, or
+`UNAVAILABLE`; do not create a daemon, parser, graph call, task registry service, or
 replacement Hook.
 
 RuntimeHook state is current-task state for one physical Git worktree, not
 per-chat state. Never run concurrent RuntimeHook tasks in the same worktree;
-use a separate worktree for each concurrent task instead of adding Session
-ownership or another state machine.
+use a separate worktree for each concurrent task. A disposable scope cache is
+an observation, not a writer lease or task scheduler.
+
+Observe the host's task ID and native cwd; command workdir is not native cwd.
+Pass `--native-cwd <observed-cwd> --session-id <host-task-id>` with `--root` to
+`on`, which also caches that relation. For an existing verified task or an
+Owner-authorized handoff, use `bind-scope --reference <host-and-intent-evidence>`
+with those same global arguments. Do not adopt an existing activation merely
+because its directory matches. Unknown/stale/mismatched scope emits advisory
+feedback without a Stop block or peer-state write. Continue independent safe
+work; never overwrite another task's goal to silence a reminder. Native events
+use the small `CODEX_HOME/runtimehook/scopes/` cache, not session transcripts or
+9700. Optional `--knowledge-worktree` plus `--knowledge-reference` compare a
+3CAN handoff at registration; missing knowledge is `UNVERIFIED`, not a gate.
+Subagent Hooks may carry the parent session ID; never rebind the parent's cache
+to a child worktree. A cache hit proves neither authentication nor a lease.
 
 Run `status`. If the active RUN_INTENT still matches the current Owner task,
 reuse it. If this is a materially new task or Intent, activate a new state with

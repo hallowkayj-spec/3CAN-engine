@@ -11,7 +11,7 @@ safe local work immediately, use fresh ticket context only just in time for a
 ticket-governed operation, and write durable meaning only at a real checkpoint.
 It does not activate RuntimeHook or contact 9700.
 
-It is not a second Task Oracle. RuntimeHook owns one ignored file only:
+It is not a second Task Oracle. Semantic execution state remains in one ignored file:
 
 ```text
 .codex/runtimehook/state.json
@@ -51,8 +51,54 @@ subdirectory resolves to its Git worktree. It is a scope diagnostic, not a
 Session registry or authentication boundary; omission does not mechanically
 certify native scope. Native Hooks also reject a conflicting explicit `--root`
 when their payload contains cwd, and active context/reminders identify the
-worktree they actually use. This does not recognize two chats incorrectly
-bound to the same native cwd: the host binding still needs correction.
+worktree they actually use. The lightweight scope cache below prevents an
+unregistered chat from inheriting that worktree's activation; the host binding
+itself still needs correction.
+
+### Once-observed relationship, local fast path
+
+Use the host-provided task ID and cwd, not transcript parsing or task-title
+heuristics. The controller's `bind-scope` command records an existing verified
+task/root/activation relation without changing semantic state. `on` also does
+this when passed `--native-cwd` and a native `--session-id` (the latter defaults
+to `CODEX_THREAD_ID`). A bulk initial inventory can call the same command per
+verified task; there is no second importer, daemon, polling service or database.
+
+```text
+<controller> --root <worktree> --native-cwd <host-cwd> --session-id <host-id> bind-scope --reference <host-observation-and-current-intent-evidence>
+```
+
+The cache is one bounded JSON observation per native task under
+`CODEX_HOME/runtimehook/scopes/`, keyed by a hash of the ID for a portable file
+name. It contains no goal, priority, token, ticket or execution history. Atomic
+per-task replacement avoids a shared registry lock. Deleting it loses no
+engineering evidence: the next relevant event reports `SCOPE_UNBOUND` until a
+new observation. It never automatically adopts an existing activation.
+
+A hit checks the physical root and local Git marker identity using filesystem
+operations only. Native events then reuse the existing semantic review logic;
+that logic still queries Git for boundary/freshness and safe state access. Thus
+local relationship-lookup latency and full native Hook latency are different
+measurements. No milliseconds claim includes a network request or a model review.
+
+New task IDs, moved/nested worktrees, changed Git markers or changed activation
+IDs cannot silently reuse an old binding. A same-worktree subdirectory remains
+valid. Codex subagent hooks may share the parent session ID; a child cannot
+rebind the parent's entry to its own root. This adapter is not a complete
+subagent ownership service and does not grant concurrent writer permission.
+
+3CAN is consulted by the registering Agent only when its durable project or
+handoff meaning is relevant. Pass the observed `--knowledge-worktree` and
+`--knowledge-reference` for a comparison; otherwise it stays `UNVERIFIED`.
+The saved comparison is explicitly dated evidence, not a live 9700 check or
+authentication. Do not cache a ticket or infer business priority from it.
+
+Scope problems emit a bounded advisory at SessionStart/UserPromptSubmit or a
+Stop system message, never `decision:block` or `continue:false`. PostToolUse
+does not repeat the same mismatch on every tool call. No foreign semantic state
+is applied or changed; safe independent work continues and only a genuinely
+unsafe affected operation remains deferred. Correctly scoped semantic review
+timing below is unchanged, as are independent project safety gates.
 
 Use the supported host path to repair the existing task. Codex App Server
 documents cwd overrides on `turn/start`, but protocol support does not prove

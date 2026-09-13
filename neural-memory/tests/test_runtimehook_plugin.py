@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
 import sys
+import time
+import statistics
 from pathlib import Path
 
 import pytest
@@ -24,6 +28,18 @@ PROJECT_KIT_CLI = (
     / "3can_runtimehook.py"
 )
 STATE_PATH = Path(".codex/runtimehook/state.json")
+
+
+@pytest.fixture(autouse=True)
+def isolated_scope_cache(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+
+
+def _session_id(root: Path) -> str:
+    root = root.resolve()
+    root = next((p for p in (root, *root.parents) if (p / ".git").exists()), root)
+    return "test-" + hashlib.sha256(str(root).encode()).hexdigest()[:20]
 
 
 def _git(
@@ -60,6 +76,7 @@ def _controller(root: Path, *arguments: str) -> tuple[int, dict]:
             str(PLUGIN_CLI),
             "--root",
             str(root),
+            "--session-id", _session_id(root),
             *arguments,
         ],
         cwd=root,
@@ -72,6 +89,7 @@ def _controller(root: Path, *arguments: str) -> tuple[int, dict]:
 def _activate(root: Path, *, goal: str = "交付当前开源任务。") -> dict:
     return_code, output = _controller(
         root,
+        "--native-cwd", str(root),
         "on",
         "--goal",
         goal,
@@ -111,7 +129,7 @@ def _plugin_hook(
         command,
         cwd=cwd,
         env=environment,
-        input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        input=json.dumps({"session_id": _session_id(cwd), **payload}, ensure_ascii=False).encode("utf-8"),
         capture_output=True,
         shell=os.name != "nt",
         timeout=30,
@@ -521,7 +539,7 @@ def test_native_events_keep_linked_worktree_state_isolated(
     for index, (root, foreign) in enumerate([(plain_repo, peer), (peer, plain_repo)]):
         foreign_before = (foreign / STATE_PATH).read_bytes()
         payload = {
-            "cwd": str(root), "session_id": f"task-{index}",
+            "cwd": str(root), "session_id": _session_id(root),
             "hook_event_name": event, "source": "resume",
             "tool_name": "update_plan",
             "tool_input": {"plan": [{"step": "Review scoped module", "status": "completed"}]},
@@ -649,3 +667,147 @@ def test_plugin_package_is_repo_installable_and_has_one_runtime_owner():
     assert posix_launcher.startswith("#!/bin/sh\n")
     assert "untrusted_root" in posix_launcher
     assert PLUGIN_CLI.read_bytes() == PROJECT_KIT_CLI.read_bytes()
+
+
+def _scope_module():
+    spec = importlib.util.spec_from_file_location("scope_probe", PLUGIN_CLI)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"])
+def test_scope_unknown_task_never_uses_foreign_intent_or_blocks(plain_repo: Path, event: str):
+    active = _activate(plain_repo, goal="Do not leak this task's intent")
+    before = (plain_repo / STATE_PATH).read_bytes()
+    result = _plugin_hook(plain_repo, event, {
+        "session_id": "different-native-task", "cwd": str(plain_repo),
+        "hook_event_name": event, "source": "resume",
+        "tool_name": "update_plan", "tool_input": {"plan": [{"step": "Wrong", "status": "completed"}]},
+    })
+    serialized = json.dumps(result)
+    assert "decision" not in result and "continue" not in result
+    assert active["activation_id"] not in serialized
+    assert "Do not leak this task" not in serialized
+    if event != "PostToolUse":
+        assert "SCOPE_UNBOUND" in serialized
+    assert (plain_repo / STATE_PATH).read_bytes() == before
+
+
+def test_scope_fast_lookup_uses_no_git_network_or_state_write(plain_repo: Path, monkeypatch):
+    _activate(plain_repo)
+    module = _scope_module()
+    monkeypatch.setattr(module, "_git", lambda *_a, **_k: pytest.fail("fast lookup spawned Git"))
+    monkeypatch.setattr(module, "_load_state", lambda *_a, **_k: pytest.fail("fast lookup read semantic state"))
+    cache = module._scope_path(_session_id(plain_repo))
+    before = cache.read_bytes()
+    nested = plain_repo / "中文 nested"
+    nested.mkdir()
+    root, binding = module._check_scope({"session_id": _session_id(plain_repo), "cwd": str(nested)})
+    assert root == plain_repo and binding["knowledge"]["status"] == "UNVERIFIED"
+    assert cache.read_bytes() == before
+    timings = []
+    for _ in range(1000):
+        started = time.perf_counter_ns()
+        module._check_scope({"session_id": _session_id(plain_repo), "cwd": str(nested)})
+        timings.append((time.perf_counter_ns() - started) / 1_000_000)
+    print(json.dumps({"scope_lookup_ms": {
+        "samples": len(timings), "p50": statistics.median(timings),
+        "p95": sorted(timings)[949], "max": max(timings),
+    }}))
+
+
+def test_scope_cached_task_moving_to_peer_is_advisory(plain_repo: Path, tmp_path: Path):
+    _activate(plain_repo, goal="Task A")
+    peer = tmp_path / "peer"
+    _git(plain_repo, "worktree", "add", "-qb", "scope-moved", str(peer))
+    _activate(peer, goal="Task B")
+    before = [(p / STATE_PATH).read_bytes() for p in (plain_repo, peer)]
+    result = _plugin_hook(peer, "Stop", {
+        "session_id": _session_id(plain_repo), "cwd": str(peer), "hook_event_name": "Stop",
+    })
+    assert "CONTEXT_MISMATCH" in result["systemMessage"]
+    assert "decision" not in result
+    assert [(p / STATE_PATH).read_bytes() for p in (plain_repo, peer)] == before
+
+
+def test_scope_new_activation_is_not_silently_adopted(plain_repo: Path):
+    _activate(plain_repo)
+    module = _scope_module()
+    path = module._scope_path(_session_id(plain_repo))
+    before = path.read_bytes()
+    _controller(plain_repo, "on", "--goal", "Different task", "--acceptance", "A=new",
+                "--intensity", "light", "--reason", "new task without native observation")
+    state_before = (plain_repo / STATE_PATH).read_bytes()
+    result = _plugin_hook(plain_repo, "Stop", {
+        "cwd": str(plain_repo), "hook_event_name": "Stop",
+    })
+    assert "SCOPE_STALE" in result["systemMessage"] and "decision" not in result
+    assert path.read_bytes() == before and (plain_repo / STATE_PATH).read_bytes() == state_before
+    code, adopted = _controller(plain_repo, "--native-cwd", str(plain_repo),
+                               "bind-scope", "--reference", "Owner-authorized handoff: new current Intent")
+    assert code == 0 and adopted["status"] == "MATCH"
+    assert adopted["semantic_state_changed"] is False
+
+
+def test_scope_3can_disagreement_is_nonblocking_and_does_not_override_git(plain_repo: Path, tmp_path: Path):
+    _activate(plain_repo)
+    before = (plain_repo / STATE_PATH).read_bytes()
+    code, report = _controller(plain_repo, "--native-cwd", str(plain_repo), "bind-scope",
+                              "--reference", "native snapshot",
+                              "--knowledge-worktree", str(tmp_path / "old-location"),
+                              "--knowledge-reference", "3can:fixture-contradicting-handoff")
+    assert code == 0 and report["binding"]["knowledge"]["status"] == "CONTRADICTS"
+    result = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
+    assert "recorded 3CAN worktree" in result["systemMessage"]
+    assert "decision" not in result and (plain_repo / STATE_PATH).read_bytes() == before
+
+
+def test_scope_missing_or_corrupt_cache_never_auto_adopts(plain_repo: Path):
+    _activate(plain_repo)
+    module = _scope_module()
+    path = module._scope_path(_session_id(plain_repo))
+    path.write_text("not json", encoding="utf-8")
+    before = (plain_repo / STATE_PATH).read_bytes()
+    result = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
+    assert "scope cache is unreadable" in result["systemMessage"] and "decision" not in result
+    path.unlink()
+    result = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
+    assert "SCOPE_UNBOUND" in result["systemMessage"] and not path.exists()
+    assert (plain_repo / STATE_PATH).read_bytes() == before
+
+
+def test_scope_binding_import_can_report_migration_without_peer_state_access(plain_repo: Path, tmp_path: Path, monkeypatch):
+    module = _scope_module()
+    peer = tmp_path / "peer"
+    _git(plain_repo, "worktree", "add", "-qb", "scope-import", str(peer))
+    monkeypatch.setattr(module, "_load_state", lambda *_: pytest.fail("mismatch read another state"))
+    args = module.build_parser().parse_args([
+        "--root", str(peer), "--native-cwd", str(plain_repo), "--session-id", "migrating-task",
+        "bind-scope", "--reference", "Owner and host metadata identify an incomplete native migration",
+    ])
+    result = module.bind_scope(args)
+    assert result["status"] == "CONTEXT_MISMATCH"
+    assert result["binding"]["activation_id"] is None
+    assert not (plain_repo / STATE_PATH).exists() and not (peer / STATE_PATH).exists()
+
+
+def test_scope_new_nested_git_marker_invalidates_cached_parent(plain_repo: Path, tmp_path: Path):
+    _activate(plain_repo)
+    nested = plain_repo / "nested"
+    nested.mkdir()
+    subprocess.run(["git", "init", "-q", str(nested)], check=True)
+    module = _scope_module()
+    with pytest.raises(module.RuntimeHookError, match="CONTEXT_MISMATCH"):
+        module._check_scope({"session_id": _session_id(plain_repo), "cwd": str(nested)})
+
+
+def test_scope_local_wrong_root_cannot_change_peer_state(plain_repo: Path, tmp_path: Path):
+    _activate(plain_repo)
+    peer = tmp_path / "peer"
+    _git(plain_repo, "worktree", "add", "-qb", "scope-cli", str(peer))
+    _activate(peer)
+    before = [(p / STATE_PATH).read_bytes() for p in (plain_repo, peer)]
+    code, result = _controller(peer, "--session-id", _session_id(plain_repo), "off")
+    assert code == 2 and "CONTEXT_MISMATCH" in result["error"]
+    assert [(p / STATE_PATH).read_bytes() for p in (plain_repo, peer)] == before

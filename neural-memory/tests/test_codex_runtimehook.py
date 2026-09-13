@@ -17,7 +17,9 @@ STATE_PATH = Path(".codex/runtimehook/state.json")
 
 
 @pytest.fixture
-def runtimehook_project(tmp_path: Path):
+def runtimehook_project(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
     installed = tmp_path / "runtimehook project"
     shutil.copytree(PROJECT_KIT, installed)
     shutil.rmtree(installed / "test-results", ignore_errors=True)
@@ -48,6 +50,8 @@ def runtimehook_project(tmp_path: Path):
                 str(installed / "scripts" / "3can_runtimehook.py"),
                 "--root",
                 str(installed),
+                "--session-id", "kit-test-session",
+                *(["--native-cwd", str(installed)] if arguments[0] == "on" else []),
                 *arguments,
             ],
             cwd=installed,
@@ -75,7 +79,7 @@ def runtimehook_project(tmp_path: Path):
         completed = subprocess.run(
             native_command,
             cwd=installed / "scripts",
-            input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            input=json.dumps({"session_id": "kit-test-session", "cwd": str(installed), **payload}, ensure_ascii=False).encode("utf-8"),
             capture_output=True,
             shell=os.name != "nt",
             timeout=30,

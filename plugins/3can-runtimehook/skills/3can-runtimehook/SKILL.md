@@ -30,8 +30,8 @@ controller. Resolve its absolute path from the Skill location; do not require or
 copy a controller into the target repository. Resolve the physical worktree with
 `git rev-parse --show-toplevel` and pass that exact root through `--root`.
 If Git, Python 3, or the bundled controller is unavailable, report
-`UNAVAILABLE`; do not create a daemon, parser, graph call, global state store,
-or replacement Hook.
+`UNAVAILABLE`; do not create a daemon, transcript parser, graph call, task
+registry service, or replacement Hook.
 
 The first `on` in a repository adds only `/.codex/runtimehook/` to that
 repository's local Git exclude when no existing ignore already covers it. It
@@ -39,16 +39,41 @@ does not edit tracked project files. A tracked, redirected, or unsafe state root
 remains `UNAVAILABLE`.
 
 RuntimeHook state is current-task state for one physical Git worktree, not
-per-chat state. Never run concurrent RuntimeHook tasks in the same worktree;
-use a separate worktree for each concurrent task instead of adding Session
-ownership or another state machine.
+per-chat state. Parallel writers still require separate worktrees. The small
+host-scope cache described below is an observation, not a lease or task scheduler.
 
 Separate command workdirs do not change a task's native Hook cwd. Before first
 activation, after moving project work, or when another task's Intent appears,
 obtain the native task cwd from the host's task metadata (not the command's
-workdir) and run `--root <physical-root> --native-cwd <observed-cwd> status`.
-Reuse that check on the pending `on` or state-write command. A mismatch refuses
-before reading or writing semantic state; it does not rebind the native task.
+workdir). Pass `--root <physical-root> --native-cwd <observed-cwd>` to `on`;
+`--session-id` defaults to the host's `CODEX_THREAD_ID` when available. This
+records the scope as part of activation. For an existing verified task or an
+Owner-authorized handoff, retain its state and record only the relationship:
+
+```text
+<controller> --root <physical-root> --native-cwd <observed-cwd> --session-id <host-task-id> bind-scope --reference <host-observation-and-current-intent-evidence>
+```
+
+Do not adopt an existing activation solely because its directory matches;
+verify that its current Intent belongs to this task. A new task ID must not
+automatically inherit the old task's activation. Subagent Hook payloads may
+carry the parent session ID; never replace the parent's cache with a child
+worktree. Report unsupported automatic supervision and continue scoped work.
+
+The disposable cache under `CODEX_HOME/runtimehook/scopes/` contains only the
+observed task/root/activation relation and evidence pointers, not goals,
+priorities, tickets or execution state. Already-bound native events do a local
+lookup without Git discovery, transcript scanning or 9700. New tasks, changed
+worktrees or activations require a new observation. At registration only,
+relevant 3CAN handoff evidence may be compared using `--knowledge-worktree` and
+`--knowledge-reference`; absent knowledge stays `UNVERIFIED`, not a failure.
+
+Unknown/stale/mismatched scope gives advisory feedback without a Stop block,
+without adopting or changing peer state. Do not finish the entire task merely
+because of that feedback: report it and continue independent safe work. A
+cached match is not authentication, a live 3CAN check or a writer lease. The
+existing `--native-cwd` check also protects pending local state writes; neither
+check rebinds the native task.
 If the native cwd cannot be verified, keep automatic supervision unverified
 and continue safe local work. Do not guess it, edit Session databases, start a
 second writer, or switch off/replace foreign Intent. Use a supported host

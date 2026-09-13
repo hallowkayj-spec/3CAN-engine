@@ -9,6 +9,7 @@ correctness; those remain with 3can_convergence.py and Git.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ STATE_ROOT = Path(".codex/runtimehook")
 STATE_PATH = STATE_ROOT / "state.json"
 LOCAL_EXCLUDE_RULE = "/.codex/runtimehook/"
 STATE_SCHEMA = "3can.runtimehook-state/v1"
+SCOPE_SCHEMA = "3can.runtimehook-scope/v1"
 MAX_STATE_BYTES = 64 * 1024
 MAX_CONTEXT_CHARS = 4_000
 INTENSITIES = {"light", "medium", "max"}
@@ -818,6 +821,151 @@ def _hook_error(message: str) -> int:
     return 0
 
 
+def _scope_path(session_id: str) -> Path:
+    session_id = _text(session_id, label="native session ID")
+    if not ID_PATTERN.fullmatch(session_id):
+        raise RuntimeHookError("native session ID is invalid")
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    if not home.is_absolute():
+        raise RuntimeHookError("CODEX_HOME must be absolute")
+    key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return home / "runtimehook" / "scopes" / f"{key}.json"
+
+
+def _native_worktree(cwd: Any) -> Path | None:
+    """Local marker lookup, not a Git subprocess or a Session transcript scan."""
+    candidate = Path(_text(cwd, label="native cwd"))
+    if not candidate.is_absolute():
+        raise RuntimeHookError("native cwd must be absolute")
+    candidate = candidate.resolve(strict=True)
+    return next(
+        (p for p in (candidate, *candidate.parents) if os.path.lexists(p / ".git")),
+        None,
+    )
+
+
+def _scope_marker(root: Path) -> list[int]:
+    marker = root / ".git"
+    info = marker.stat()
+    # Commits change a .git directory's mtime, but not its identity. A linked
+    # worktree's .git *file* changing invalidates its recorded Git binding.
+    return [info.st_dev, info.st_ino] + (
+        [info.st_size, info.st_mtime_ns] if marker.is_file() else []
+    )
+
+
+def _read_scope(session_id: str) -> dict[str, Any]:
+    path = _scope_path(session_id)
+    if not path.exists():
+        raise RuntimeHookError("SCOPE_UNBOUND: this native task has no observed binding")
+    if _is_redirect(path) or not path.is_file() or path.stat().st_size > 8192:
+        raise RuntimeHookError("scope cache is not a bounded direct file")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeHookError("scope cache is unreadable") from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != SCOPE_SCHEMA
+        or value.get("session_id") != session_id
+        or not isinstance(value.get("worktree"), str)
+        or not Path(value["worktree"]).is_absolute()
+        or not isinstance(value.get("knowledge"), dict)
+    ):
+        raise RuntimeHookError("scope cache identity is invalid")
+    return value
+
+
+def _check_scope(payload: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """Read-only fast path. Cache records observations, never authorization."""
+    binding = _read_scope(payload.get("session_id", ""))
+    root = _native_worktree(payload.get("cwd"))
+    expected = Path(binding["worktree"])
+    if root != expected or root is None or _scope_marker(root) != binding.get("git_marker"):
+        raise RuntimeHookError(
+            f"CONTEXT_MISMATCH: native worktree {root}; recorded worktree {expected}. "
+            "Do not use another task's state; report the mismatch and continue unrelated safe work"
+        )
+    return root, binding
+
+
+def _save_scope(binding: dict[str, Any]) -> None:
+    path = _scope_path(binding["session_id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if any(_is_redirect(p) for p in (path.parent, path.parent.parent)):
+        raise RuntimeHookError("scope cache directory must be direct")
+    if os.path.lexists(path) and (_is_redirect(path) or not path.is_file()):
+        raise RuntimeHookError("scope cache file must be direct")
+    payload = json.dumps(binding, ensure_ascii=False, separators=(",", ":")) + "\n"
+    if len(payload.encode("utf-8")) > 8192:
+        raise RuntimeHookError("scope cache exceeds its bounded size")
+    descriptor, temporary = tempfile.mkstemp(prefix=".scope-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def bind_scope(args: argparse.Namespace) -> dict[str, Any]:
+    """One explicit observation/import; never changes a worktree's task state."""
+    root = _repository_root(args.root)
+    if args.native_cwd is None:
+        raise RuntimeHookError("bind-scope requires the host-observed --native-cwd")
+    native_root = _native_worktree(str(args.native_cwd))
+    reference = _text(args.reference, label="host/Owner binding reference")
+    state = _load_state(root) if native_root == root else None
+    knowledge_root = getattr(args, "knowledge_worktree", None)
+    knowledge_reference = getattr(args, "knowledge_reference", "")
+    if knowledge_root is not None and (not knowledge_root.is_absolute() or not knowledge_reference):
+        raise RuntimeHookError("3CAN comparison requires an absolute worktree and evidence reference")
+    binding = {
+        "schema": SCOPE_SCHEMA,
+        "session_id": _text(args.session_id, label="native session ID"),
+        "native_cwd": str(args.native_cwd.resolve(strict=True)),
+        "worktree": str(root),
+        "git_marker": _scope_marker(root),
+        "activation_id": state["activation_id"] if state else None,
+        "reference": reference,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "knowledge": {
+            "status": (
+                "UNVERIFIED" if knowledge_root is None else
+                "MATCH" if knowledge_root.resolve() == root else "CONTRADICTS"
+            ),
+            "reference": knowledge_reference or None,
+            "worktree": str(knowledge_root.resolve()) if knowledge_root else None,
+        },
+    }
+    _save_scope(binding)
+    return {
+        "ok": True,
+        "status": "MATCH" if native_root == root else "CONTEXT_MISMATCH",
+        "binding": binding,
+        "semantic_state_changed": False,
+    }
+
+
+def _scope_feedback(event: str, message: str, *, orientation: bool = False) -> int:
+    text = (
+        f"RuntimeHook scope UNAVAILABLE: {message}. Semantic state was not used or changed. "
+        "Report this status without ending the task; continue safe independent work. "
+        "Do not disable peer Hooks or override independent safety gates. "
+        "For a new task or a verified handoff, observe the host cwd and use bind-scope."
+    )
+    if event in {"SessionStart", "UserPromptSubmit"}:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": (SESSION_FAST_PATH + " " if orientation else "") + text,
+        }}, ensure_ascii=False))
+    elif event == "Stop":
+        print(json.dumps({"systemMessage": text}, ensure_ascii=False))
+    # No PostToolUse spam, decision:block, continuation, network or cache writes.
+    return 0
+
+
 def _hook_root(
     requested_root: Path | None,
     payload: dict[str, Any],
@@ -860,10 +1008,30 @@ def hook(args: argparse.Namespace) -> int:
             "clear",
             "compact",
         }
-        root = _hook_root(args.root, payload)
+        # Preserve the explicit-root preflight; native events otherwise reuse
+        # the once-observed mapping rather than running Git just to locate it.
+        root = _hook_root(args.root, payload) if args.root is not None else _native_worktree(payload.get("cwd"))
         state = None
-        if root is not None and os.path.lexists(root / STATE_PATH):
+        has_state = root is not None and os.path.lexists(root / STATE_PATH)
+        session_id = payload.get("session_id", "")
+        has_binding = bool(isinstance(session_id, str) and ID_PATTERN.fullmatch(session_id) and _scope_path(session_id).exists())
+        if has_state or has_binding:
+            try:
+                scoped_root, binding = _check_scope(payload)
+                if scoped_root != root:
+                    raise RuntimeHookError("CONTEXT_MISMATCH: requested root differs from native binding")
+                knowledge = binding.get("knowledge", {})
+                if knowledge.get("status") == "CONTRADICTS":
+                    raise RuntimeHookError(
+                        "CONTEXT_MISMATCH: recorded 3CAN worktree differs from the native binding; "
+                        f"check {knowledge.get('reference')}. This is an observation, not live 3CAN authority"
+                    )
+            except (RuntimeHookError, OSError, RuntimeError) as exc:
+                return _scope_feedback(event, str(exc), orientation=is_session_start and args.session_orientation)
+        if has_state:
             state = _load_state(root)
+            if state is not None and binding.get("activation_id") != state["activation_id"]:
+                return _scope_feedback(event, "SCOPE_STALE: activation changed; verify the current task before rebinding")
         if state is None or state["status"] != "active":
             if is_session_start and args.session_orientation:
                 print(
@@ -1023,11 +1191,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Control the optional 3CAN RuntimeHook semantic supervisor."
     )
     parser.add_argument("--root", type=Path)
+    parser.add_argument("--session-id", default=os.environ.get("CODEX_THREAD_ID", ""))
     parser.add_argument(
         "--native-cwd", type=Path,
         help="Check an independently observed native task cwd before a local command; does not rebind the task.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    binding = sub.add_parser("bind-scope", help="Cache an observed host/task/worktree relation; no task-state mutation.")
+    binding.add_argument("--reference", required=True)
+    binding.add_argument("--knowledge-worktree", type=Path)
+    binding.add_argument("--knowledge-reference", default="")
 
     on = sub.add_parser("on", help="Record the current semantic RUN_INTENT.")
     on.add_argument("--goal", required=True)
@@ -1078,13 +1252,26 @@ def main(argv: list[str] | None = None) -> int:
         args.root = PROJECT_ROOT
     try:
         scope = None
-        if args.native_cwd is not None:
+        if args.command != "bind-scope" and args.session_id and _scope_path(args.session_id).exists():
+            binding = _read_scope(args.session_id)
+            if Path(binding["worktree"]) != args.root.resolve():
+                raise RuntimeHookError("CONTEXT_MISMATCH: local command root differs from this task's observed binding")
+            if args.command in {"on", "off", "review", "checkpoint"}:
+                existing = _load_state(args.root)
+                if existing and existing["activation_id"] != binding.get("activation_id"):
+                    raise RuntimeHookError("SCOPE_STALE: verify the current task before binding or changing semantic state")
+        if args.native_cwd is not None and args.command != "bind-scope":
             if not args.native_cwd.is_absolute():
                 raise RuntimeHookError("observed native cwd must be an absolute path")
             root = _hook_root(args.root, {"cwd": str(args.native_cwd)})
             scope = {"status": "MATCH", "worktree": str(root)}
-        if args.command == "on":
+        if args.command == "bind-scope":
+            output = bind_scope(args)
+        elif args.command == "on":
             output = activate(args)
+            if args.native_cwd is not None and args.session_id:
+                args.reference = "activation with independently observed host cwd"
+                output["scope_binding"] = bind_scope(args)["status"]
         elif args.command == "off":
             output = disable(args)
         elif args.command == "review":
