@@ -160,8 +160,10 @@ stage with none of those signals, the Agent uses the same generic
 `checkpoint --kind stage|episode --label ...` command. Multiple events before
 review coalesce into one current debt; no history is retained.
 
-Stop requests at most one native continuation while final semantic review is
-due or stale. This owns semantic review timing only; it does not allow, deny, or
+Stop requests at most one native continuation while a boundary review is due
+or a main-task final review is stale. A current episode review is enough for an
+interim reply or a necessary wait; a turn ending is not task completion.
+This owns semantic review timing only; it does not allow, deny, or
 replace an independent evidence, credential, deployment, or publication gate.
 On the already-continued Stop pass it reports the typed state instead of
 looping. Recording final `PASS` requires a clean Git checkpoint. It is silent
@@ -176,6 +178,35 @@ the context reaches the model rather than only the UI event stream.
 RuntimeHook reminders are silent while the stateless SessionStart orientation
 remains available. It does not delete evidence and cannot disable credentials,
 deployment, publication, security, or the independent PR15 convergence gate.
+
+## 同一任务内临时插入（0.1.7 起）
+
+四个原生 Hook 的说明、提示和错误阐述使用中文；机器字段、状态码、用户原文与历史引用保持原样。
+临时请求由 Agent 依据用户当前要求判断，不能用关键词或耗时分类，也不能把明确追加的相关工作当作漂移。
+
+```text
+<controller> --root <worktree> task --kind temporary --goal "临时目标" --acceptance "T01=可验证产出" --reference "用户请求依据" --resume-objective "返回主任务后的下一步"
+<controller> --root <worktree> review --scope temporary --stage final --result PASS --reference "实际产出复核依据"
+<controller> --root <worktree> status
+```
+
+复用同一 activation、scope cache、复核强度与原子状态文件。一个可选 `temporary_task` 字段保存临时目标、
+验收、用户请求引用和返回主任务的下一步；主 RUN_INTENT 原样保留。不创建子 Hook、任务栈、服务或执行历史。
+一次仅一个临时任务，不支持嵌套或覆盖。中断恢复继续保留；Git/计划边界或一句“完成”不会自动删掉它。
+
+实际临时产出复核通过后，`review --scope temporary --stage final --result PASS` 在一次保存中清除临时字段，
+恢复主任务下一步，并将主任务保持为阶段 `PARTIAL`（不是主任务验收成功）。重复临时完成命令会拒绝范围不匹配，
+不会把主任务变成 PASS。主任务原有最终 PASS 不恢复。临时视频/文档验收不要求提交主任务未完代码；
+它仍需自身产出证据、项目严格验证（若适用）和独立安全门禁。主任务最终 PASS 的干净 Git 检查点要求不变。
+
+`PARTIAL`、`FAIL`、`UNVERIFIABLE` 等非成功结果保留临时任务。仅用户明确取消时使用
+`task --kind cancel --reference "取消依据"`，清除临时字段并恢复主目标，不记为成功。
+`task --kind transfer|drift --reference "判断依据"` 只输出建议，不改变状态、新建任务、迁移或阻断工作。
+新任务能隔离对话，但不能单独解决同一 worktree 的并行写入；需要时两者一起隔离。
+
+状态兼容：没有临时任务仍写 v1；仅临时槽生效时写 `3can.runtimehook-state/v2`。
+新控制器读两种版本；旧控制器必须报不可用而不是忽略临时槽。回滚前先用新控制器完成或明确取消临时任务，
+不要强制降级/删除现场状态。升级不等于已运行任务热加载，不改它们的旧插件文件。
 
 ## Install and remove
 

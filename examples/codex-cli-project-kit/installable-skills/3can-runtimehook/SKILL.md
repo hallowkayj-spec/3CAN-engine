@@ -38,9 +38,36 @@ Subagent Hooks may carry the parent session ID; never rebind the parent's cache
 to a child worktree. A cache hit proves neither authentication nor a lease.
 
 Run `status`. If the active RUN_INTENT still matches the current Owner task,
-reuse it. If this is a materially new task or Intent, activate a new state with
-`on`; current semantic state is replaceable and Git/PR artifacts retain durable
-engineering history.
+reuse it. Before changing Intent, distinguish a temporary insertion from an
+Owner-authorized transfer or unrequested drift. Never overwrite a peer or
+temporary task with `on`. Git/PR artifacts retain durable engineering history.
+
+## 同一任务中的临时插入
+
+由 Agent 根据用户明确要求和交付范围判断，不按关键词/时长猜测。用户追加相关工作不是擅自漂移。
+所有反馈、目标和验收阐述使用中文，保留机器字段、路径和用户原文。
+
+临时插入并预期返回主任务时，复用本控制器：
+
+```text
+task --kind temporary --goal "临时目标" --acceptance "T01=可核验产出" --reference "用户要求依据" --resume-objective "返回主任务后的下一步"
+```
+
+临时阶段复核用 `review --scope temporary --stage episode`。实际产出达标后用
+`review --scope temporary --stage final --result PASS --reference "交付复核依据"`。
+该命令原子清除临时状态并恢复主目标；随后 `status` 确认 `temporary_task` 不存在。
+不要另行 `off` 或重建主任务。主任务保持阶段 `PARTIAL`，不能继承临时 PASS。
+临时产出验收不要求提交主任务未完成代码，但不能绕过任何独立安全/证据门禁。
+
+失败或等待输入保留临时状态并如实记录非成功结果；不得宣称完成或自动取消。
+用户明确取消才用 `task --kind cancel --reference "取消依据"`，不把取消记为成功。
+一次仅允许一个临时任务，中断/恢复不能遗失；不得嵌套或通过 `on` 覆盖。
+
+任务转移/疑似偏移用 `task --kind transfer|drift --reference "判断依据"` 只给中文建议，
+不改状态、不自动新建或迁移，也不强制结束整项任务。写入范围需要隔离时建议独立 worktree；
+仅上下文需分开时建议新任务，但并行写同一树仍不允许。语义不清楚才作必要澄清。
+主任务复核使用默认 `--scope main`。中途回复或等待输入只需当前阶段复核，
+不能把每轮回答结束等同于整体完成；临时完成必须调用对应的最终复核，不能只口头说完成。
 
 ## Activate without ceremony
 
@@ -97,7 +124,7 @@ Record an honest result (`PASS`, `PARTIAL`, `FAIL`, `UNVERIFIABLE`,
 `CONTRADICTS`, or `UNREQUESTED`) and a durable reference with `review`. For an
 episode review, include the next bounded objective. A reference may be a Git
 commit, PR review, or project evidence path; do not create a duplicate proof
-format. Before recording final `PASS`, create the task's normal Git checkpoint
+format. Before recording main-task final `PASS`, create the task's normal Git checkpoint
 and verify the worktree is clean. RuntimeHook records that HEAD only to make the
 semantic review stale after a later commit or dirty edit; it does not fingerprint
 the candidate or artifact.

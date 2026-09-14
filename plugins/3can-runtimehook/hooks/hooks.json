@@ -1,5 +1,5 @@
 {
-  "description": "Restore active RuntimeHook intent and remind on due or stale semantic review.",
+  "description": "恢复主/临时任务目标，以中文提示待完成或过期的阶段复核。",
   "hooks": {
     "SessionStart": [
       {

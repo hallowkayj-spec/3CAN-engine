@@ -81,9 +81,45 @@ binding repair, then confirm the actual native event's Worktree and activation
 after resume. Manual controller success is not native Hook acceptance.
 
 Run `status`. If the active RUN_INTENT still matches the current Owner task,
-reuse it. If this is a materially new task or Intent, activate a new state with
-`on`; current semantic state is replaceable and Git/PR artifacts retain durable
-engineering history.
+reuse it. Classify an intervening request with the rules below before replacing
+Intent. Use `on` for a verified main-task change only, never to overwrite a
+temporary or peer task. Git/PR artifacts retain durable engineering history.
+
+## 同一任务中的临时插入与目标变化
+
+对新增要求，由 Agent 根据用户原话、当前目标和产出范围判断，不按关键词、时长或领域机械分类。
+用户明确追加的相关工作不是擅自漂移；普通继续和进度询问无需创建临时任务。反馈、目标、验收与阶段说明使用中文，保留机器字段、状态码、路径和用户原文。
+
+- 临时插入，且做完应返回主目标：保留主 RUN_INTENT，使用一个临时任务槽；不新建进程、钩子、工作树或任务。
+- 用户明确转移任务：说明新目标与原目标的区别，只建议新 worktree 或新任务；不能把建议当作已执行迁移。
+- 疑似未经授权的偏移：指出与用户目标的具体差异并建议纠正；不擅自终止整项任务。语义确实不清楚时只问影响判断的一个问题。
+
+临时开始（同一控制器和 `--root`，保留既有 scope 绑定）：
+
+```text
+task --kind temporary --goal "临时交付目标" --acceptance "T01=可核验结果" --reference "用户请求或既有证据引用" --resume-objective "完成后回到主任务的哪一步"
+```
+
+阶段复核仍用 `review --scope temporary --stage episode`，按原规范传结果、引用和下一步。
+完成时必须检查实际产出并执行：
+
+```text
+review --scope temporary --stage final --result PASS --reference "实际交付与复核依据"
+```
+
+控制器在同一次原子保存中清除临时状态、恢复主目标与下一步；再用 `status` 确认
+`temporary_task` 已不存在。无需另行 `off`，不能关闭主 Hook。临时成功不代表主任务成功：
+主任务恢复为阶段 `PARTIAL`，旧最终 PASS 不复用。重复临时完成命令不得变成主任务 PASS。
+临时视频/文档验收不要求把主任务未完的代码一起提交；仍必须满足临时产出自己的真实验收和独立门禁。
+
+未完成、失败、等待必要输入时记录 `PARTIAL`/`UNVERIFIABLE` 等真实结果，保留临时状态，
+不能当作已完成清除。只有用户明确取消才执行 `task --kind cancel --reference "取消依据"`；
+取消也会清除临时状态、恢复主任务，但不记录临时成功。中断/恢复后继续同一临时状态；不按超时自动取消。
+一次仅保留一个临时任务，不嵌套覆盖；已有临时任务需先完成或明确取消。
+
+`task --kind transfer|drift --reference "判断依据"` 仅输出中文建议，不修改语义状态、不自动创建或迁移。
+源码/写入范围需要隔离时建议新 worktree；仅上下文需分开时建议新任务。
+新任务若会并行写同一工作树，仍必须使用独立 worktree；临时模式不增加写权限或绕过浏览器/凭据安全检查。
 
 ## Activate without ceremony
 
@@ -142,16 +178,21 @@ Record an honest result (`PASS`, `PARTIAL`, `FAIL`, `UNVERIFIABLE`,
 `CONTRADICTS`, or `UNREQUESTED`) and a durable reference with `review`. For an
 episode review, include the next bounded objective. A reference may be a Git
 commit, PR review, or project evidence path; do not create a duplicate proof
-format. Before recording final `PASS`, create the task's normal Git checkpoint
+format. Before recording main-task final `PASS`, create the task's normal Git checkpoint
 and verify the worktree is clean. RuntimeHook records that HEAD only to make the
 semantic review stale after a later commit or dirty edit; it does not fingerprint
 the candidate or artifact.
 
+Use `review --scope main` (the default) for the main task; use `--scope temporary`
+while the temporary task is active. A scope mismatch cannot record a review.
 `SessionStart` reasserts current Intent. `UserPromptSubmit` also creates at most
 one coalesced episode debt when the prior boundary was reviewed. If review debt
 is still due at `Stop`, the native Hook requests one continuation so the Agent
 must review or report an honest typed non-success state; it does not loop
-forever or override an independent project gate.
+forever or override an independent project gate. A current episode review is
+enough for an interim reply or necessary wait: Stop does not demand final PASS
+merely because the turn ends. Claiming completion still requires the applicable
+final review. A completed-plan signal alone never clears a temporary task.
 
 If a criterion needs mechanical proof, use the project's existing convergence
 or Task Oracle path separately and reference that result. RuntimeHook never

@@ -1,4 +1,4 @@
-param([switch]$SessionOrientation)
+﻿param([switch]$SessionOrientation)
 
 $ErrorActionPreference = "Stop"
 $env:NoDefaultCurrentDirectoryInExePath = "1"
@@ -14,8 +14,8 @@ function Write-RuntimeHookUnavailable {
 
     @{
         systemMessage = (
-            "RuntimeHook semantic context is UNAVAILABLE: $Reason. " +
-            "Safe local work may continue; independent project evidence gates remain authoritative."
+            "RuntimeHook 语义上下文不可用 UNAVAILABLE：$Reason。" +
+            "可继续安全的本地工作；独立项目证据门禁仍然有效。"
         )
     } | ConvertTo-Json -Compress
 }
@@ -64,7 +64,7 @@ try {
 
     $controller = Join-Path $env:PLUGIN_ROOT "skills\3can-runtimehook\scripts\3can_runtimehook.py"
     if (-not (Test-Path -LiteralPath $controller -PathType Leaf)) {
-        Write-RuntimeHookUnavailable "the bundled controller is missing"
+        Write-RuntimeHookUnavailable "插件自带的控制器缺失"
         exit 0
     }
 
@@ -115,7 +115,7 @@ try {
         }
     }
     if ($null -eq $python) {
-        Write-RuntimeHookUnavailable "Python 3 is not available on PATH"
+        Write-RuntimeHookUnavailable "PATH 中没有可用的 Python 3"
         exit 0
     }
 
@@ -126,7 +126,7 @@ try {
     $controllerOutput = $hookInput | & $python @controllerArguments
     $controllerExit = $LASTEXITCODE
     if ($controllerExit -ne 0) {
-        Write-RuntimeHookUnavailable "Python 3 could not execute the bundled controller"
+        Write-RuntimeHookUnavailable "Python 3 未能执行插件控制器"
     }
     else {
         $controllerOutput
@@ -134,6 +134,6 @@ try {
     exit 0
 }
 catch {
-    Write-RuntimeHookUnavailable "the Windows launcher failed"
+    Write-RuntimeHookUnavailable "Windows 启动器执行失败"
     exit 0
 }

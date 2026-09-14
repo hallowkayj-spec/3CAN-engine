@@ -160,7 +160,7 @@ def test_windows_native_argv_and_spaced_plugin_path(tmp_path: Path, event: str):
     )
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
     if event == "SessionStart":
-        assert "3CAN fast path" in json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "3CAN 快速指引" in json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
     else:
         assert not completed.stdout.strip()
 
@@ -190,7 +190,7 @@ def test_windows_plugin_uses_py_launcher_when_python_names_are_absent(
     )
 
     assert "hookSpecificOutput" in started, started
-    assert "3CAN fast path" in started["hookSpecificOutput"]["additionalContext"]
+    assert "3CAN 快速指引" in started["hookSpecificOutput"]["additionalContext"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows launcher contract")
@@ -211,7 +211,7 @@ def test_windows_plugin_reports_unavailable_without_python(tmp_path: Path):
         search_path=str(empty_bin),
     )
 
-    assert "RuntimeHook semantic context is UNAVAILABLE" in started["systemMessage"]
+    assert "RuntimeHook 语义上下文不可用 UNAVAILABLE" in started["systemMessage"]
 
 
 def test_inactive_non_session_events_skip_interpreter_discovery(tmp_path: Path):
@@ -262,7 +262,7 @@ def test_windows_plugin_skips_broken_python_before_py3(tmp_path: Path):
     )
 
     assert "hookSpecificOutput" in started, started
-    assert "3CAN fast path" in started["hookSpecificOutput"]["additionalContext"]
+    assert "3CAN 快速指引" in started["hookSpecificOutput"]["additionalContext"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX launcher contract")
@@ -299,7 +299,7 @@ def test_posix_plugin_ignores_repo_local_python_shadow(plain_repo: Path):
     )
 
     assert "hookSpecificOutput" in started, started
-    assert "3CAN fast path" in started["hookSpecificOutput"]["additionalContext"]
+    assert "3CAN 快速指引" in started["hookSpecificOutput"]["additionalContext"]
     assert not sentinel.exists()
 
 
@@ -370,7 +370,7 @@ def test_plugin_rejects_tracked_state_before_local_git_mutation(
 
     assert return_code == 2
     assert output["status"] == "UNAVAILABLE"
-    assert "untracked and Git ignored" in output["error"]
+    assert "未被跟踪且已被 Git 忽略" in output["error"]
     assert exclude_path.read_bytes() == before
     assert marker.read_text(encoding="utf-8") == "project truth\n"
     assert not (plain_repo / STATE_PATH).exists()
@@ -389,8 +389,8 @@ def test_plugin_orients_before_activation_and_resolves_nested_cwd(
 
     inactive = _plugin_hook(nested, "SessionStart", start_payload)
     inactive_context = inactive["hookSpecificOutput"]["additionalContext"]
-    assert "start safe local work immediately" in inactive_context
-    assert "fresh ticket just in time" in inactive_context
+    assert "立即开展安全的本地工作" in inactive_context
+    assert "执行前即时获取新票据" in inactive_context
     assert "AUTO_CLOSEOUT" in inactive_context
     assert "RUN_INTENT" not in inactive_context
     assert not (plain_repo / STATE_PATH).exists()
@@ -408,11 +408,11 @@ def test_plugin_orients_before_activation_and_resolves_nested_cwd(
     )
 
     context = started["hookSpecificOutput"]["additionalContext"]
-    assert "start safe local work immediately" in context
+    assert "立即开展安全的本地工作" in context
     assert "交付当前开源任务" in context
-    assert "Semantic review: PENDING" in context
+    assert "语义复核状态：PENDING" in context
     assert stopped["decision"] == "block"
-    assert "final semantic review is due" in stopped["reason"]
+    assert "阶段复核待完成" in stopped["reason"]
 
 
 def test_plugin_orients_outside_git_without_creating_state(tmp_path: Path):
@@ -427,9 +427,9 @@ def test_plugin_orients_outside_git_without_creating_state(tmp_path: Path):
     )
 
     context = started["hookSpecificOutput"]["additionalContext"]
-    assert "start safe local work immediately" in context
-    assert "current AgentId" in context
-    assert "does not activate RuntimeHook" in context
+    assert "立即开展安全的本地工作" in context
+    assert "当前 AgentId" in context
+    assert "不激活 RuntimeHook" in context
     assert not (tmp_path / STATE_PATH).exists()
     assert _plugin_hook(
         tmp_path,
@@ -490,6 +490,9 @@ def test_native_cwd_preflight_rejects_foreign_scope_before_state_access(
         ["off"],
         ["checkpoint", "--kind", "stage", "--label", "wrong task"],
         ["review", "--stage", "final", "--result", "PARTIAL", "--reference", "wrong task"],
+        ["task", "--kind", "temporary", "--goal", "wrong task", "--acceptance", "T=wrong",
+         "--reference", "wrong task", "--resume-objective", "wrong task"],
+        ["task", "--kind", "cancel", "--reference", "wrong task"],
     ]:
         code, output = _controller(
             plain_repo, "--native-cwd", str(peer), *command,
@@ -526,7 +529,7 @@ def test_native_cwd_preflight_is_read_only_and_accepts_same_worktree_subdir(
     assert output["activation_id"] == activated["activation_id"]
     assert (plain_repo / STATE_PATH).read_bytes() == before
     code, output = _controller(plain_repo, "--native-cwd", ".", "status")
-    assert code != 0 and "absolute" in output["error"]
+    assert code != 0 and "绝对路径" in output["error"]
 
 
 @pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"])
@@ -586,7 +589,7 @@ def test_native_scope_option_cannot_substitute_hook_payload(plain_repo: Path):
         cwd=plain_repo, capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     output = json.loads(completed.stdout)
-    assert "payload cwd" in output["systemMessage"]
+    assert "输入中的 cwd" in output["systemMessage"]
     assert "decision" not in output
     assert (plain_repo / STATE_PATH).read_bytes() == before
 
@@ -759,7 +762,7 @@ def test_scope_3can_disagreement_is_nonblocking_and_does_not_override_git(plain_
                               "--knowledge-reference", "3can:fixture-contradicting-handoff")
     assert code == 0 and report["binding"]["knowledge"]["status"] == "CONTRADICTS"
     result = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
-    assert "recorded 3CAN worktree" in result["systemMessage"]
+    assert "3CAN 记录的工作树" in result["systemMessage"]
     assert "decision" not in result and (plain_repo / STATE_PATH).read_bytes() == before
 
 
@@ -770,7 +773,7 @@ def test_scope_missing_or_corrupt_cache_never_auto_adopts(plain_repo: Path):
     path.write_text("not json", encoding="utf-8")
     before = (plain_repo / STATE_PATH).read_bytes()
     result = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
-    assert "scope cache is unreadable" in result["systemMessage"] and "decision" not in result
+    assert "范围缓存不可读" in result["systemMessage"] and "decision" not in result
     path.unlink()
     result = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
     assert "SCOPE_UNBOUND" in result["systemMessage"] and not path.exists()
@@ -811,3 +814,154 @@ def test_scope_local_wrong_root_cannot_change_peer_state(plain_repo: Path, tmp_p
     code, result = _controller(peer, "--session-id", _session_id(plain_repo), "off")
     assert code == 2 and "CONTEXT_MISMATCH" in result["error"]
     assert [(p / STATE_PATH).read_bytes() for p in (plain_repo, peer)] == before
+
+
+def _temporary(root: Path) -> dict:
+    code, output = _controller(
+        root, "task", "--kind", "temporary", "--goal", "先交付相关演示片段，再返回主任务。",
+        "--acceptance", "T01=实际内容满足用户确认的演示目标。",
+        "--reference", "owner:先做片段然后继续开发",
+        "--resume-objective", "继续主任务剩余模块的验证。",
+    )
+    assert code == 0, output
+    return output
+
+
+def test_temporary_completion_clears_atomically_and_does_not_certify_main(plain_repo: Path):
+    activation = _activate(plain_repo)
+    _controller(plain_repo, "review", "--stage", "final", "--result", "PASS", "--reference", "git:main-before")
+    state_path = plain_repo / STATE_PATH
+    original = json.loads(state_path.read_text(encoding="utf-8"))
+    (plain_repo / "tracked.txt").write_text("unfinished main work\n", encoding="utf-8")
+    _temporary(plain_repo)
+    during = json.loads(state_path.read_text(encoding="utf-8"))
+    assert during["schema"] == "3can.runtimehook-state/v2"
+    assert during["run_intent"] == original["run_intent"]
+    assert during["activation_id"] == activation["activation_id"]
+    resumed = _plugin_hook(plain_repo, "SessionStart", {
+        "cwd": str(plain_repo), "hook_event_name": "SessionStart", "source": "compact",
+    })["hookSpecificOutput"]["additionalContext"]
+    assert during["temporary_task"]["goal"] in resumed and original["run_intent"]["goal"] in resumed
+    assert "临时任务进行中" in resumed and "语义复核状态：PASS" not in resumed
+
+    args = ["review", "--scope", "temporary", "--stage", "final", "--result", "PASS",
+            "--reference", "artifact:actual-output-reviewed"]
+    code, result = _controller(plain_repo, *args)
+    assert code == 0 and result["temporary_cleared"] is True
+    restored = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "temporary_task" not in restored and restored["schema"].endswith("/v1")
+    assert restored["run_intent"] == original["run_intent"]
+    assert restored["activation_id"] == original["activation_id"]
+    assert restored["current_episode"] == during["temporary_task"]["resume_objective"]
+    assert restored["semantic_review"] == {
+        "stage": "episode", "result": "PARTIAL", "reference": "artifact:actual-output-reviewed",
+        "reviewed_git_head": None,
+    }
+    assert (plain_repo / "tracked.txt").read_text(encoding="utf-8") == "unfinished main work\n"
+    assert sorted(p.name for p in state_path.parent.iterdir()) == ["state.json"]
+    stopped = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
+    assert "decision" not in stopped and "主任务阶段记录" in stopped["systemMessage"]
+    before = state_path.read_bytes()
+    code, repeated = _controller(plain_repo, *args)
+    assert code == 2 and "REVIEW_SCOPE_MISMATCH" in repeated["error"]
+    assert state_path.read_bytes() == before
+    main_code, main = _controller(plain_repo, "review", "--stage", "final", "--result", "PASS",
+                                  "--reference", "cannot-promote-dirty-main")
+    assert main_code == 2 and "干净 Git 检查点" in main["error"]
+
+
+@pytest.mark.parametrize("result", ["PARTIAL", "UNVERIFIABLE", "FAIL"])
+def test_temporary_unfinished_review_and_plan_completion_never_clear(plain_repo: Path, result: str):
+    _activate(plain_repo)
+    _temporary(plain_repo)
+    code, output = _controller(plain_repo, "review", "--scope", "temporary", "--stage", "final",
+                               "--result", result, "--reference", "evidence:waiting-or-incomplete")
+    assert code == 0, output
+    before = json.loads((plain_repo / STATE_PATH).read_text(encoding="utf-8"))
+    stopped = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
+    assert "decision" not in stopped and result in stopped["systemMessage"]
+    _plugin_hook(plain_repo, "PostToolUse", {
+        "cwd": str(plain_repo), "hook_event_name": "PostToolUse", "tool_name": "update_plan",
+        "tool_input": {"plan": [{"step": "完成了计划步骤但没有验收", "status": "completed"}]},
+    })
+    after = json.loads((plain_repo / STATE_PATH).read_text(encoding="utf-8"))
+    assert after["temporary_task"] == before["temporary_task"]
+    assert after["run_intent"] == before["run_intent"]
+    assert after["semantic_review"]["result"] == "PENDING"
+
+
+def test_temporary_cannot_nest_or_overwrite_main_and_owner_cancel_is_not_success(plain_repo: Path):
+    _activate(plain_repo)
+    _temporary(plain_repo)
+    path = plain_repo / STATE_PATH
+    before = path.read_bytes()
+    for args in (
+        ["task", "--kind", "temporary", "--goal", "第二个临时任务", "--reference", "owner:new"],
+        ["on", "--goal", "覆盖主目标", "--acceptance", "A=wrong", "--intensity", "light", "--reason", "wrong"],
+        ["review", "--stage", "final", "--result", "PASS", "--reference", "wrong-main-pass"],
+    ):
+        code, result = _controller(plain_repo, *args)
+        assert code == 2 and result["status"] == "UNAVAILABLE"
+        assert path.read_bytes() == before
+    code, result = _controller(plain_repo, "task", "--kind", "cancel", "--reference", "owner:不做临时片段")
+    assert code == 0 and result["status"] == "CANCELLED" and result["temporary_cleared"]
+    state = json.loads(path.read_text(encoding="utf-8"))
+    assert "temporary_task" not in state and state["semantic_review"]["result"] == "PARTIAL"
+    before = path.read_bytes()
+    code, result = _controller(plain_repo, "task", "--kind", "cancel", "--reference", "owner:不做临时片段")
+    assert code == 0 and result["changed"] is False and path.read_bytes() == before
+
+
+def test_temporary_failed_atomic_completion_preserves_recoverable_state(plain_repo: Path, monkeypatch):
+    _activate(plain_repo)
+    _temporary(plain_repo)
+    module = _scope_module()
+    path = plain_repo / STATE_PATH
+    before = path.read_bytes()
+    args = module.build_parser().parse_args([
+        "--root", str(plain_repo), "review", "--scope", "temporary", "--stage", "final",
+        "--result", "PASS", "--reference", "evidence:validated-output",
+    ])
+    def fail_replace(*_args):
+        raise OSError("injected save failure")
+    monkeypatch.setattr(module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected save failure"):
+        module.record_review(args)
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in path.parent.iterdir()) == ["state.json"]
+
+
+def test_temporary_cannot_be_silently_encoded_as_legacy_state(plain_repo: Path):
+    _activate(plain_repo)
+    _temporary(plain_repo)
+    module = _scope_module()
+    state = json.loads((plain_repo / STATE_PATH).read_text(encoding="utf-8"))
+    state["schema"] = module.STATE_SCHEMA
+    with pytest.raises(module.RuntimeHookError, match="v2"):
+        module._validate_state(state)
+
+
+@pytest.mark.parametrize("kind", ["transfer", "drift"])
+def test_task_transfer_advice_does_not_mutate_or_choose_a_workspace(plain_repo: Path, kind: str):
+    _activate(plain_repo)
+    path = plain_repo / STATE_PATH
+    before = path.read_bytes()
+    files_before = set(plain_repo.rglob("*"))
+    code, result = _controller(plain_repo, "task", "--kind", kind, "--reference", "owner:明确的新要求")
+    assert code == 0 and result["status"] == "ADVISORY"
+    assert result["semantic_state_changed"] is False
+    assert "decision" not in result and "continue" not in result
+    assert "建议" in result["message"] and "worktree" in result["message"]
+    assert path.read_bytes() == before and set(plain_repo.rglob("*")) == files_before
+
+
+def test_current_episode_wait_is_not_forced_into_final_completion(plain_repo: Path):
+    _activate(plain_repo)
+    _controller(plain_repo, "review", "--stage", "episode", "--result", "PARTIAL",
+                "--reference", "evidence:browser-security-refusal", "--next-objective", "等待必要输入后继续采集。")
+    stopped = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
+    assert "decision" not in stopped and "这不表示整个任务完成" in stopped["systemMessage"]
+    assert "等待必要输入后继续采集" in stopped["systemMessage"]
+    _plugin_hook(plain_repo, "UserPromptSubmit", {"cwd": str(plain_repo), "hook_event_name": "UserPromptSubmit"})
+    due = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
+    assert due["decision"] == "block" and "阶段复核待完成" in due["reason"]

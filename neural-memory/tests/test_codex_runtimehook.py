@@ -188,16 +188,16 @@ def test_runtimehook_records_agent_selected_intensity_and_reinjects_utf8(
     assert session_context["hookEventName"] == "SessionStart"
     assert "交付当前任务" in session_context["additionalContext"]
     assert "不得修改独立的生产门禁" in session_context["additionalContext"]
-    assert "hardcoded" in session_context["additionalContext"]
-    assert "current Owner prompt is authoritative" in session_context[
+    assert "硬编码" in session_context["additionalContext"]
+    assert "当前用户要求优先" in session_context[
         "additionalContext"
     ]
     assert stopped["decision"] == "block"
-    assert "final semantic review is due" in stopped["reason"]
+    assert "阶段复核待完成" in stopped["reason"]
     repeated = native_hook(
         "Stop", {"hook_event_name": "Stop", "stop_hook_active": True}
     )
-    assert "final semantic review is due" in repeated["systemMessage"]
+    assert "阶段复核待完成" in repeated["systemMessage"]
     assert "decision" not in repeated
     assert not (installed / ".codex" / "convergence.json").exists()
     assert not (
@@ -265,7 +265,7 @@ def test_runtimehook_final_pass_requires_clean_git_checkpoint(runtimehook_projec
 
     assert completed.returncode == 2
     assert output["status"] == "UNAVAILABLE"
-    assert "clean Git checkpoint" in output["error"]
+    assert "干净 Git 检查点" in output["error"]
     assert state["semantic_review"]["result"] == "PENDING"
 
 
@@ -305,11 +305,11 @@ def test_runtimehook_marks_post_review_git_change_stale(
     stopped = native_hook("Stop", {"hook_event_name": "Stop"})
 
     context = started["hookSpecificOutput"]["additionalContext"]
-    assert "Semantic review: STALE" in context
-    assert "Semantic review: PASS" not in context
+    assert "语义复核状态：STALE" in context
+    assert "语义复核状态：PASS" not in context
     assert stopped["decision"] == "block"
     assert "STALE" in stopped["reason"]
-    expected_reason = "worktree is dirty" if change == "dirty" else "Git HEAD"
+    expected_reason = "工作树存在未提交变化" if change == "dirty" else "Git HEAD"
     assert expected_reason in stopped["reason"]
 
 
@@ -336,7 +336,7 @@ def test_runtimehook_git_checkpoint_becomes_one_review_debt(runtimehook_project)
     assert set(observed) == {"hookSpecificOutput"}
     observed_context = observed["hookSpecificOutput"]["additionalContext"]
     assert "Git HEAD" in observed_context
-    assert "Boundary review: DUE" in observed_context
+    assert "边界复核：待完成 DUE" in observed_context
     assert repeated == {}
     assert state["boundary"]["sequence"] == 2
     assert state["boundary"]["reviewed_sequence"] == 0
@@ -371,8 +371,8 @@ def test_runtimehook_new_owner_prompt_invalidates_one_reviewed_conversation(
 
     assert reviewed.returncode == 0, review_output
     context = prompted["hookSpecificOutput"]["additionalContext"]
-    assert "episode=Owner prompt opened a new conversation episode" in context
-    assert "Boundary review: DUE" in context
+    assert "episode）：用户新要求开启了新对话阶段" in context
+    assert "边界复核：待完成 DUE" in context
     assert "RUN_INTENT" in repeated["hookSpecificOutput"]["additionalContext"]
     assert state["boundary"]["sequence"] == 2
     assert state["boundary"]["reviewed_sequence"] == 1
@@ -431,8 +431,8 @@ def test_runtimehook_plan_and_explicit_episode_boundaries_recall_intent(
     assert checkpoint_output["status"] == "review_due"
     context = prompted["hookSpecificOutput"]["additionalContext"]
     assert "交付当前任务" in context
-    assert "episode=Audit episode completed" in context
-    assert "Boundary review: DUE" in context
+    assert "episode）：Audit episode completed" in context
+    assert "边界复核：待完成 DUE" in context
     assert state["boundary"]["sequence"] == 3
     assert state["boundary"]["reviewed_sequence"] == 2
     assert state["current_episode"] == "Prepare final delivery."
@@ -548,7 +548,7 @@ def test_runtimehook_ignores_unchanged_plan_after_git_boundary(runtimehook_proje
     assert state["boundary"]["reviewed_sequence"] == 3
     assert state["boundary"]["last_kind"] == "git"
     assert state["boundary"]["last_completed_plan_label"] == (
-        "Plan checkpoint: Implement the module"
+        "计划检查点：Implement the module"
     )
 
 
@@ -653,7 +653,7 @@ def test_runtimehook_adopts_existing_v1_state_without_parallel_migration(
 
     assert completed.returncode == 0
     assert state["boundary"]["sequence"] == 1
-    assert state["boundary"]["last_label"] == "Existing RuntimeHook state adopted"
+    assert state["boundary"]["last_label"] == "已读取原有 RuntimeHook 状态"
     assert checkpointed.returncode == 0, output
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted["boundary"]["sequence"] == 2
@@ -708,7 +708,7 @@ def test_runtimehook_rejects_tracked_state_root_before_writing(runtimehook_proje
 
     assert completed.returncode == 2
     assert output["status"] == "UNAVAILABLE"
-    assert "untracked and Git ignored" in output["error"]
+    assert "未被跟踪且已被 Git 忽略" in output["error"]
     assert _sha256(marker) == before
     assert not (installed / STATE_PATH).exists()
 
@@ -737,7 +737,7 @@ def test_runtimehook_rejects_redirected_state_root(runtimehook_project, tmp_path
 
     assert completed.returncode == 2
     assert output["status"] == "UNAVAILABLE"
-    assert "direct directory" in output["error"]
+    assert "直接目录" in output["error"]
     assert list(outside.iterdir()) == []
 
 
@@ -751,7 +751,7 @@ def test_runtimehook_malformed_state_is_non_owning_unavailable(runtimehook_proje
     stopped = native_hook("Stop", {"hook_event_name": "Stop"})
 
     assert "UNAVAILABLE" in stopped["systemMessage"]
-    assert "independent project and PR15 evidence gates" in stopped["systemMessage"]
+    assert "独立项目与 PR15 证据门禁" in stopped["systemMessage"]
     assert "decision" not in stopped
     assert _sha256(state_path) == before
 
@@ -773,7 +773,7 @@ def test_runtimehook_oversized_intent_fails_before_state_write(runtimehook_proje
 
     assert completed.returncode == 2
     assert output["status"] == "UNAVAILABLE"
-    assert "too large" in output["error"]
+    assert "过大" in output["error"]
     assert not (installed / STATE_PATH).exists()
 
 

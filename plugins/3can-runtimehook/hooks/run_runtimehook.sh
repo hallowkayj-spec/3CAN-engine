@@ -58,13 +58,13 @@ done
 IFS=$old_ifs
 
 if [ -z "$python" ]; then
-    printf '%s\n' '{"systemMessage":"RuntimeHook semantic context is UNAVAILABLE: Python 3 is not available on trusted PATH entries. Safe local work may continue; independent project evidence gates remain authoritative."}'
+    printf '%s\n' '{"systemMessage":"RuntimeHook 语义上下文不可用 UNAVAILABLE：可信 PATH 中没有可用的 Python 3。可继续安全的本地工作；独立项目证据门禁仍然有效。"}'
     exit 0
 fi
 
 controller=$PLUGIN_ROOT/skills/3can-runtimehook/scripts/3can_runtimehook.py
 if [ ! -f "$controller" ]; then
-    printf '%s\n' '{"systemMessage":"RuntimeHook semantic context is UNAVAILABLE: the bundled controller is missing. Safe local work may continue; independent project evidence gates remain authoritative."}'
+    printf '%s\n' '{"systemMessage":"RuntimeHook 语义上下文不可用 UNAVAILABLE：插件自带的控制器缺失。可继续安全的本地工作；独立项目证据门禁仍然有效。"}'
     exit 0
 fi
 
@@ -75,6 +75,6 @@ else
 fi
 exit_code=$?
 if [ "$exit_code" -ne 0 ]; then
-    printf '%s\n' '{"systemMessage":"RuntimeHook semantic context is UNAVAILABLE: Python 3 could not execute the bundled controller. Safe local work may continue; independent project evidence gates remain authoritative."}'
+    printf '%s\n' '{"systemMessage":"RuntimeHook 语义上下文不可用 UNAVAILABLE：Python 3 未能执行插件控制器。可继续安全的本地工作；独立项目证据门禁仍然有效。"}'
 fi
 exit 0
