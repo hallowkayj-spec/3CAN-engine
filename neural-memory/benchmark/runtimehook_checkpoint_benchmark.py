@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -14,14 +15,24 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "plugins/3can-runtimehook/skills/3can-runtimehook/scripts"
-sys.path.insert(0, str(SCRIPTS))
-import runtimehook_jev as jev  # noqa: E402
-import runtimehook_checkpoints as cp  # noqa: E402
+sys.dont_write_bytecode = True
 
-loader = importlib.util.spec_from_file_location("checkpoint_benchmark_controller", SCRIPTS / "3can_runtimehook.py")
-rh = importlib.util.module_from_spec(loader)
-loader.loader.exec_module(rh)
+
+def load_plugin(plugin_root):
+    """Load exactly one source or installed bundle per probe process."""
+    scripts = plugin_root / "skills/3can-runtimehook/scripts"
+    if any(name in sys.modules for name in ("runtimehook_jev", "runtimehook_checkpoints")):
+        raise RuntimeError("Run each plugin probe in a fresh process")
+    sys.path.insert(0, str(scripts))
+    loader = importlib.util.spec_from_file_location("checkpoint_benchmark_controller", scripts / "3can_runtimehook.py")
+    controller = importlib.util.module_from_spec(loader)
+    loader.loader.exec_module(controller)
+    files = [".codex-plugin/plugin.json", "hooks/hooks.json", *[
+        "skills/3can-runtimehook/scripts/" + name
+        for name in ("3can_runtimehook.py", "runtimehook_jev.py", "runtimehook_checkpoints.py")]]
+    identity = {"version": json.loads((plugin_root / files[0]).read_text(encoding="utf-8"))["version"],
+                "sha256": {name: hashlib.sha256((plugin_root / name).read_bytes()).hexdigest() for name in files}}
+    return controller, identity
 
 # Predeclared narrow labels. They are not included in the request sent to Jev.
 # Deliberately synthetic excerpts, not claims that the named production services ran.
@@ -71,9 +82,10 @@ def save_report(output, report):
             os.unlink(temporary)
 
 
-def run(output):
+def run(output, rh, plugin_identity):
     if output.exists():
         raise RuntimeError("Refusing to overwrite a benchmark receipt")
+    jev, cp = importlib.import_module("runtimehook_jev"), rh.checkpoints
     key = jev.gateway_key()
     if not key:
         raise RuntimeError("MISSING_API_KEY")
@@ -82,6 +94,7 @@ def run(output):
     rows = []
     report = {"schema": "3can.checkpoint-benchmark/v1", "scope": "SIMULATED_TASK_REAL_PROVIDER",
               "native_app_event": "NOT_VERIFIED", "dataset_sha256": dataset_hash,
+              "tested_plugin": plugin_identity,
               "predeclared_cases": len(CASES), "rows": rows}
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -166,8 +179,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--plugin-root", type=Path, default=ROOT / "plugins/3can-runtimehook",
+                        help="Probe this exact installed or source plugin bundle; does not install or rebind tasks")
     options = parser.parse_args()
+    controller, plugin_identity = load_plugin(options.plugin_root.resolve())
     if options.run:
-        run(options.output.resolve())
+        run(options.output.resolve(), controller, plugin_identity)
     else:
-        print(json.dumps({"status": "PLAN_ONLY", "cases": len(CASES), "dataset_sha256": cp.digest(CASES), "max_requests": len(CASES)}))
+        print(json.dumps({"status": "PLAN_ONLY", "cases": len(CASES),
+                          "dataset_sha256": controller.checkpoints.digest(CASES),
+                          "tested_plugin": plugin_identity, "max_requests": len(CASES)}))

@@ -83,6 +83,52 @@ Ponytail full 影响：使用标准 JSON 而不是加 YAML 依赖；只复用一
 它能取代单元测试、源码 review、人工视觉比较、UAT/E2E。阈值仍是筛查策略，未做生产校准。
 完整操作尚未达到几毫秒；阶段级调用目前是秒级，不能用一个小 JSON 的写盘时延替代总体开销。
 
+## Owner 要求提交前的再次测试（2026-09-25）
+
+本轮不修改运行机制或降低阈值。完整复跑四个 RuntimeHook 模块：
+**139 passed、2 skipped，378.53 秒**。这次是修复字节码副作用后的一次完整全绿运行；
+范围是 RuntimeHook 四模块，不冒称整个 3CAN 仓库已经全部本地测试通过。
+两个跳过项保留平台条件。发布必需文件清单补齐 Jev/检查点模块、文档和测试；清单测试 **17 passed**。
+全仓 Ruff（含插件脚本）和 `git diff --check` 通过。
+
+给既有模拟程序增加 `--plugin-root`，可指定实际安装包，每个进程只载入一份；
+回执记录版本及五个关键文件的 SHA-256。默认 PLAN_ONLY，不会因为指定路径就安装、调用或重绑任务。
+测试助手首次执行曾因读取控制器不存在的 `jev` 属性失败，发生在取 Key/网络请求之前；
+改为从同一包导入适配器后执行，未重跑已经获得的负面意见。
+
+从安装包 `0.1.9-rc.1+codex.20260925133943` 执行同一预声明的 24 例：
+
+| 指标 | 安装版再次测试 |
+| --- | --- |
+| 真实请求 / 有效返回 | 24 / 24 |
+| 限定声明标签完全匹配 | 23 / 24 |
+| 不应通过的反例被签 PASS | 0 / 14 |
+| 支持案例未签 PASS | 3 / 10 |
+| 本机捕获中位数 | 832.020 ms |
+| 自动 review 中位数 | 2,596.056 ms |
+| 本轮 Provider 费用 | $0.001556562 |
+
+支持但未通过的案例仍是准备态 RPA、显式零值保留和中文往返；缺验收证据的分类差异仍保留。
+这不是新的独立生产数据集，不把重复同组模拟当泛化准确率验证。
+13 个安装文件与源码逐一 SHA-256 匹配。
+用实际安装包的 `commandWindows`、隔离 Git/配置和合成身份执行 SessionStart、UserPromptSubmit、
+PostToolUse、Stop，以及已续接 Stop：五次输出均有效中文；未复核 Stop 续接一次，第二次不循环；
+回调在无 Key 的隔离环境完成，工作树保持干净，临时夹具已清除。
+这是 **INSTALLED_LAUNCHER_SIMULATION**，不是宿主自动发事件或真实业务 E2E。
+
+本地回执：
+
+- `output/runtimehook-checkpoints-retest-20260925.xml`
+- `output/runtimehook-checkpoints-package-retest-20260925.xml`
+- `output/runtimehook-checkpoints-installed-retest-20260925.json`，
+  SHA-256 `fa52c99767a71e153dea3a7edd6ea0993c84847780dec6d7c1f1bc9c6769c597`。
+- `output/runtimehook-installed-launcher-retest-20260925.json`，
+  SHA-256 `35db4a76f149b4d3d4fe2a4ab78c381ed71cff72762ed12d5651bdd5badf3e48`。
+
+工作目录直接 strict 扫描曾发现 ignored `output/` 中三个本机安装助手的用户路径，未将其当发布 PASS。
+这些运维回执/助手保留在本地，不加入 Git。发布前从精确 commit 用现有 builder 导出并 strict 扫描归档；
+归档和 CI 的最终结果以 PR 当前 HEAD 的实际回执为准，不删除本地证据或放松扫描规则。
+
 ## 本机安装与生效范围
 
 - 已安装 `0.1.9-rc.1+codex.20260925133943`；13 个源码文件逐一 SHA-256 匹配。
@@ -91,7 +137,12 @@ Ponytail full 影响：使用标准 JSON 而不是加 YAML 依赖；只复用一
 - 本任务 native binding 仍不匹配，自动监督 `UNAVAILABLE`，这是保留的部署/真实业务验收缺口。
   测试中传入的合成 native identity 仅是隔离模拟，不拿来宣称原生宿主 E2E。
 - 9700 与 9711 不需要为了此插件更新而重启。生产运行时和插件是不同部署面。
-- 本机安装不是公共 main 更新；本轮没有 push、merge 或发布新版本。
+- 首次安装时尚未 push；Owner 随后要求 commit/PR，本次更新沿用
+  [Draft PR #17](https://github.com/hallowkayj-spec/3CAN-engine/pull/17)。以远端 HEAD/CI 为准；
+  不 merge，不创建正式 release，本机安装不等于公共 main 更新。
+- 本地插件更新后应在安全边界重启桌面 App，然后检查当前 Hook 信任和真实事件，见
+  [官方本地安装指南](https://developers.openai.com/plugins/build/plugins#install-a-local-plugin-manually)。
+  App 重启不能修正任务保存的 cwd；当前任务 `CONTEXT_MISMATCH` 仍须单独处理，不能借他人状态。
 
 ## 证据与回滚
 

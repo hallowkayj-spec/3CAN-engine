@@ -283,11 +283,16 @@ disable or uninstall it through the Plugins browser. Uninstalling deliberately
 does not delete retained project-local state or rewrite a repository's Git
 exclude file.
 
-After an update, use a new task or safely reopen a paused task to load the new
-definition. An already-running task is not proven to hot-reload it. Check the
-native event result, not only the enabled/trusted entry in Settings. An active
-task's existing worktree state remains in place; do not activate over another
-task's Intent merely to check installation.
+After a local plugin update, pause at a safe boundary and restart the ChatGPT
+desktop app so the local install picks up the new files, as specified in the
+[official local plugin guide](https://developers.openai.com/plugins/build/plugins#install-a-local-plugin-manually).
+Then safely resume the intended task and inspect the actual native event and
+current Hook trust, not only the enabled entry in Settings. An already-running
+task is not proven to hot-reload it. A restart does not change a task's saved cwd
+or resolve `CONTEXT_MISMATCH`: verify the actual task/worktree binding separately.
+Do not activate over another task's Intent merely to check installation.
+Neither this restart nor a successful component/Provider simulation is proof of
+real business acceptance. No 9700/9711 restart is needed for this plugin update.
 
 The legacy project-kit copy remains a compatibility and clean-clone test fixture;
 new users do not need to copy it into each repository. Distribution is governed
