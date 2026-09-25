@@ -12,9 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
+import test_runtimehook_plugin as shared
 from test_runtimehook_plugin import _activate, _git, _session_id
 
-pytest_plugins = ["test_runtimehook_plugin"]
+# Register locally as well when both test modules are collected in one run.
+isolated_scope_cache = shared.isolated_scope_cache
+plain_repo = shared.plain_repo
 
 SCRIPTS = (
     Path(__file__).resolve().parents[2]
@@ -59,9 +62,9 @@ def response(request, claim="SUPPORTED", step="DIRECTLY_RELEVANT"):
             "probabilities": {c: float(c == choice) for c in question["criteria"]},
         }
     return {
-        "model": jev.MODEL,
+        "model": jev.MODEL + "-20260917",
         "answers": answers,
-        "usage": {"inputTokens": 123, "outputTokens": 12},
+        "usage": {"input_tokens": 123, "output_tokens": 12, "cost": 0.000005166},
     }
 
 
@@ -210,7 +213,7 @@ def test_off_no_state_packet_or_network(monkeypatch):
 
 def test_missing_key_is_unavailable_not_pass(plain_repo, packet, monkeypatch):
     args = arguments(plain_repo, packet)
-    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(
         jev.urllib.request, "build_opener", lambda *a: pytest.fail("network")
     )
@@ -227,6 +230,10 @@ def test_missing_key_is_unavailable_not_pass(plain_repo, packet, monkeypatch):
         (
             urllib.error.HTTPError(jev.ENDPOINT, 401, "secret-provider-body", {}, None),
             "HTTP_401",
+        ),
+        (
+            urllib.error.HTTPError(jev.ENDPOINT, 402, "secret-provider-body", {}, None),
+            "HTTP_402",
         ),
         (
             urllib.error.HTTPError(jev.ENDPOINT, 429, "secret-provider-body", {}, None),
@@ -249,7 +256,7 @@ def test_single_network_attempt_sanitizes_failure(monkeypatch, failure, code):
             assert req.full_url == jev.ENDPOINT and timeout == 10
             raise failure
 
-    monkeypatch.setenv("AI_GATEWAY_API_KEY", "synthetic-test-value")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-test-value")
     monkeypatch.setattr(jev.urllib.request, "build_opener", lambda *a: FakeOpener())
     with pytest.raises(jev.JevError, match=code) as caught:
         jev.request_gateway({}, 10)
@@ -283,7 +290,7 @@ def test_malformed_response_cannot_be_an_opinion(packet, fault):
     if fault == "type":
         value["answers"]["claim_1"]["type"] = "boolean"
     if fault == "usage":
-        value["usage"]["inputTokens"] = -1
+        value["usage"]["input_tokens"] = -1
     with pytest.raises(jev.JevError):
         jev.parse_response(value, req["questions"], mapping)
 
@@ -299,6 +306,83 @@ def test_model_cannot_invent_explanation_or_evidence(packet):
         result
     )
     assert result["answers"]["claim_1"]["evidence_ids"] == ["E1"]
+
+
+@pytest.mark.parametrize("model", ["typesafe/jev-1.13", "typesafe/jev-1.13-20260917"])
+def test_openrouter_snapshot_and_usage_survive_receipt_roundtrip(packet, model):
+    request, mapping = jev.build_request(packet, {"acceptance": [{"id": "A01"}]})
+    value = response(request)
+    value["model"] = model
+    parsed = jev.parse_response(value, request["questions"], mapping)
+    assert parsed["model"] == model
+    assert parsed["usage"] == value["usage"]
+    assert jev.parse_response(parsed, request["questions"], mapping) == parsed
+
+
+@pytest.mark.parametrize(
+    "model", ["typesafe/jev-1.14", "typesafe/jev-1.130", "typesafe/jev-1.13-unrelated", "typesafe-ai/jev"]
+)
+def test_other_model_versions_and_old_gateway_alias_are_not_accepted(packet, model):
+    request, mapping = jev.build_request(packet, {"acceptance": [{"id": "A01"}]})
+    value = response(request)
+    value["model"] = model
+    with pytest.raises(jev.JevError, match="UNEXPECTED_RESPONSE_MODEL"):
+        jev.parse_response(value, request["questions"], mapping)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {},
+        {"inputTokens": 123, "outputTokens": 12},
+        {"input_tokens": True, "output_tokens": 12, "cost": 0},
+        {"input_tokens": 123, "output_tokens": 12},
+        *({"input_tokens": 123, "output_tokens": 12, "cost": cost}
+          for cost in [True, -1, float("nan"), float("inf")]),
+    ],
+    ids=["missing", "old-format", "bool-tokens", "missing-cost", "bool-cost", "negative", "nan", "inf"],
+)
+def test_incomplete_or_invalid_openrouter_usage_is_not_silently_zero(packet, usage):
+    request, mapping = jev.build_request(packet, {"acceptance": [{"id": "A01"}]})
+    value = response(request)
+    value["usage"] = usage
+    with pytest.raises(jev.JevError, match="INVALID_RESPONSE_USAGE"):
+        jev.parse_response(value, request["questions"], mapping)
+
+
+def test_openrouter_wire_contract_has_no_hidden_provider_fallback(packet, monkeypatch):
+    request, mapping = jev.build_request(packet, {"acceptance": [{"id": "A01"}]})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-fixture-not-a-key")
+    calls = []
+
+    class Opener:
+        def open(self, req, timeout):
+            calls.append(req)
+            assert req.full_url == "https://openrouter.ai/api/alpha/decisions"
+            assert req.method == "POST"
+            payload = json.loads(req.data)
+            assert payload["model"] == "typesafe/jev-1.13"
+            assert payload["provider"] == {"allow_fallbacks": False}
+            assert set(payload) == {"model", "state", "questions", "provider"}
+            assert b"synthetic-fixture-not-a-key" not in req.data
+            return io.BytesIO(json.dumps(response(payload)).encode())
+
+    monkeypatch.setattr(jev.urllib.request, "build_opener", lambda *a: Opener())
+    result = jev.parse_response(jev.request_gateway(request, 10), request["questions"], mapping)
+    assert len(calls) == 1 and result["usage"]["cost"] > 0
+
+
+def test_vercel_credentials_never_sent_to_openrouter(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "synthetic-legacy-value")
+    credential = tmp_path / "credentials/runtimehook-vercel.clixml"
+    credential.parent.mkdir()
+    credential.write_text("legacy-fixture-not-a-key")
+    monkeypatch.setattr(jev.subprocess, "run", lambda *a, **k: pytest.fail("legacy credential read"))
+    monkeypatch.setattr(jev.urllib.request, "build_opener", lambda *a: pytest.fail("network"))
+    with pytest.raises(jev.JevError, match="MISSING_API_KEY"):
+        jev.request_gateway({}, 10)
 
 
 def test_no_evidence_is_not_fabricated_and_injection_remains_quoted(packet):
@@ -335,7 +419,7 @@ def test_project_kit_adapter_matches_plugin():
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI credential path")
 def test_native_encrypted_key_roundtrip_without_real_credentials(tmp_path, monkeypatch):
-    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     home = tmp_path / "private-home"
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setenv("JEV_SETUP_SCRIPT", str(SCRIPTS / "configure_jev_key.ps1"))
@@ -353,11 +437,11 @@ def test_native_encrypted_key_roundtrip_without_real_credentials(tmp_path, monke
         timeout=10,
     )
     assert run.returncode == 0, run.stderr.decode(errors="replace")
-    encrypted = home / "credentials/runtimehook-vercel.clixml"
+    encrypted = home / "credentials/runtimehook-openrouter.clixml"
     assert b"synthetic-fixture-not-a-key" not in encrypted.read_bytes()
     assert jev.gateway_key() == "synthetic-fixture-not-a-key"
     assert b"synthetic-fixture-not-a-key" not in run.stdout
-    monkeypatch.setenv("AI_GATEWAY_API_KEY", "explicit-env-value")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "explicit-env-value")
     assert jev.gateway_key() == "explicit-env-value"
 
 
@@ -389,7 +473,7 @@ def test_native_events_do_not_call_jev(plain_repo, packet, monkeypatch, capsys):
     ids=["bad-json", "oversized"],
 )
 def test_bounded_response(monkeypatch, raw, code):
-    monkeypatch.setenv("AI_GATEWAY_API_KEY", "synthetic-fixture-not-a-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-fixture-not-a-key")
 
     class Opener:
         def open(self, req, timeout):

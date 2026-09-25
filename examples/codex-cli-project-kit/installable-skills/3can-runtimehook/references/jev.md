@@ -1,8 +1,8 @@
 # Jev：可选局部判别，不是另一个任务系统
 
-维护者：3CAN RuntimeHook。协议 `3can.jev-opinion/v1`；首次采用 observe。
+维护者：3CAN RuntimeHook。协议 `3can.jev-opinion/v2`；首次采用 observe。
 用户启用后在重要复核边界调用；不在 SessionStart / PostToolUse / Stop 中联网。
-不需要 TypeSafe 账户、Vercel 项目或 9700/9711 服务。模型不是视觉模型。
+当前唯一接入为 OpenRouter；不需要 TypeSafe/Vercel 账户或 9700/9711 服务。模型不是视觉模型。
 
 ## 最小使用
 
@@ -59,11 +59,10 @@ python <Skill>/scripts/3can_runtimehook.py --root <物理工作树> --native-cwd
 
 ## 账号、费用与安全配置
 
-1. 登录 [Vercel 控制台](https://vercel.com/dashboard)，选自己的 Team → AI Gateway。
-   本机调用无需新建网站项目。Google 登录可以；是否需要额度以账户页面为准，不为此自动购买 Pro。
-2. 在 AI Gateway → API Keys 创建专用 Key，并设置小额预算上限（若该账户提供）；
-   AI Gateway 额度不足时才购买少量 credits。默认不启用 auto top-up，不把试用促销当永久价格。
-3. 通用方式：由自己的 Secret Manager 注入进程环境变量 `AI_GATEWAY_API_KEY`。
+1. 登录自己的 OpenRouter 账户，不需要新建网站或注册 TypeSafe。
+2. 在 [API Keys](https://openrouter.ai/settings/keys) 创建 RuntimeHook 专用 Key，先设置小额限额（如 1 美元）。
+   已有账户额度可用；不要为接入重复充值或开启 auto top-up。Key 限额是上限，不是自动消费目标。
+3. 通用方式：由自己的 Secret Manager 注入进程环境变量 `OPENROUTER_API_KEY`。
    不在聊天、脚本参数、Git、`.env` 或明文配置中保存 Key。
 4. Windows 可在自己可见的 PowerShell 中执行本 Skill 的脚本：
 
@@ -72,25 +71,32 @@ python <Skill>/scripts/3can_runtimehook.py --root <物理工作树> --native-cwd
    ```
 
    在隐藏输入提示里粘贴 Key。它用 Windows DPAPI 保存加密 SecureString 到
-   `CODEX_HOME/credentials/runtimehook-vercel.clixml`（CODEX_HOME 未设置则 `~/.codex`）。
+   `CODEX_HOME/credentials/runtimehook-openrouter.clixml`（CODEX_HOME 未设置则 `~/.codex`）。
    同一 Windows 用户可解密；这不是抵御该用户权限下恶意程序的边界。
    新 Key 文件无需重启 Codex；新插件版本/Skill 是否已被当前任务加载仍需另外验证。
    环境变量优先；过期环境 Key 不会偷偷改用其他 Key。轮换先撤销旧 Key，再仅删除此文件后重录。
 5. 用一个无隐私的合成例子验证，再用于已获授权、完成脱敏的真实任务。
 
-官方路径：`POST https://ai-gateway.vercel.sh/v1/evaluate`，model `typesafe-ai/jev`。
-这是 Gateway 官方 Evaluation HTTP API，不是 chat/completions，也不需要绕过 TypeSafe 注册。
+官方路径：`POST https://openrouter.ai/api/alpha/decisions`，model `typesafe/jev-1.13`。
+这是 OpenRouter 官方 Decisions API，仍为 alpha；不是 chat/completions，也不绕过 TypeSafe 注册。
+用版本名而非 latest；响应可为该版本或带日期的快照（例如 `typesafe/jev-1.13-20260917`），
+记录实际返回名称，拒绝其他版本。版本名不能证明内部权重永远不变。
+保留官方 `usage.input_tokens`、`output_tokens` 和 `cost`（美元），缺失/非法用量不记为零。
+相同输入的缓存复用不发请求；其中 usage 是原请求的账单，不是此次新增消费。
+官方模型页当前列输入 $0.042/百万 tokens、输出 $0；以实际回执和账户账单为准，不承诺永久价格。
+本版替换 Vercel 路径，不回退、不读取或发送旧的 `AI_GATEWAY_API_KEY`/Vercel 加密文件。
+旧观察协议不会被新请求复用；不需要迁移 RuntimeHook 主状态。
 仅 Python 标准库，无新的 SDK、服务、浏览器自动化、后台轮询或模型自动回退。
-网络单次尝试；socket timeout 默认 10 秒（1–30 可选），响应最多 64 KiB，并检查读取截止。
+网络单次尝试，`provider.allow_fallbacks=false`；socket timeout 默认 10 秒（1–30 可选），响应最多 64 KiB，并检查读取截止。
 socket/DNS/系统调度不等于严格整进程墙钟 SLA；记录真实耗时，不宣传毫秒级模型调用。
-模型别名由 Gateway 管理，未证明能固定具体 Jev 内部权重版本；记录返回 model，异常模型拒收。
+HTTP 401/402/429 等只返回脱敏错误码；检查凭据/余额/限流后再决定下次请求，不循环重试或自动购买。
 
 权威参考（2026-09-25 已打开）：
 
-- [Evaluation HTTP/choice 契约](https://vercel.com/docs/ai-gateway/modalities/evaluation)
-- [API Key 与预算](https://vercel.com/docs/ai-gateway/authentication-and-byok/api-keys)
-- [Gateway 额度与充值](https://vercel.com/docs/ai-gateway/pricing)
-- [Jev 模型页：以账户实时价格为准](https://vercel.com/ai-gateway/models/jev)
+- [Decisions HTTP/choice 契约及用量](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request)
+- [官方 Jev 使用示例](https://openrouter.ai/blog/tutorials/how-to-use-jev/)
+- [专用 API Key](https://openrouter.ai/settings/keys)
+- [Jev 模型页：以账户实时价格为准](https://openrouter.ai/typesafe/jev-1.13)
 - [TypeSafe 已知局限](https://docs.typesafe.ai/model-jaggedness/jev-1.13)
 
 ## 验收与回滚
@@ -102,4 +108,5 @@ socket/DNS/系统调度不等于严格整进程墙钟 SLA；记录真实耗时�
 
 关闭在线层只需停止 `assess` 或选择 off，现有 Hook、状态和独立门禁不变。
 卸载适配器可回到 0.1.7；无状态迁移。观察缓存可保留审计或仅删除该文件。
-Key 撤销在 Vercel 完成；删除本地文件不等于撤销远端 Key。
+本次更换接入的回滚可保留旧插件用于已有任务，或停止 `assess`；不要隐式恢复 Vercel 调用。
+Key 撤销在 OpenRouter 完成；删除本地文件不等于撤销远端 Key。

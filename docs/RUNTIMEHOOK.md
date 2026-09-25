@@ -212,7 +212,7 @@ deployment, publication, security, or the independent PR15 convergence gate.
 
 ### 可选 Jev 复核（0.1.8 起）
 
-经用户启用，Agent 在重要阶段/最终复核中调用 `assess`，只检查当前片段的
+经用户启用，Agent 在重要阶段/最终复核中通过 OpenRouter Decisions API 调用 `assess`，只检查当前片段的
 “声明—证据”和“下一步—最新要求”。四个原生生命周期 Hook 保持离线，
 没有新增 Stop gate，也不将模型意见写入语义状态或替代项目验收。
 部署初期采用 observe；结构合法的 `OBSERVED` 不等于任务 PASS。

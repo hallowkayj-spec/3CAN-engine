@@ -147,7 +147,7 @@ run `off`. This retains the current local semantic state and makes subsequent
 RuntimeHook hooks silent. It does not disable independent credentials,
 deployment, publication, security, or PR15 convergence gates.
 
-## 可选 Jev 局部复核（Vercel AI Gateway）
+## 可选 Jev 局部复核（OpenRouter）
 
 当用户启用 Jev 后，在已有的重要阶段/最终复核中，先准备脱敏的实际证据片段，
 再用同一控制器的 `assess` 检查“声明是否有证据”和“下一步是否服务最新要求”。

@@ -11,9 +11,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ENDPOINT = "https://ai-gateway.vercel.sh/v1/evaluate"
-MODEL = "typesafe-ai/jev"
-CONTRACT = "3can.jev-opinion/v1"
+ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
+MODEL = "typesafe/jev-1.13"
+CONTRACT = "3can.jev-opinion/v2"
 MAX_PACKET_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 CLAIM_CHOICES = {
@@ -101,7 +101,7 @@ def build_request(packet, intent):
         raise JevError("EMPTY_ASSESSMENT")
     # Physical paths, task IDs and credentials are deliberately absent.
     state = {"current_intent": intent, **packet}
-    return {"model": MODEL, "state": state, "questions": questions}, mapping
+    return {"model": MODEL, "state": state, "questions": questions, "provider": {"allow_fallbacks": False}}, mapping
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -110,12 +110,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def gateway_key():
-    key = os.environ.get("AI_GATEWAY_API_KEY", "").strip()
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if key or os.name != "nt":
         return key
     # Optional native DPAPI storage; only this Windows user can decrypt it.
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    credential = home / "credentials" / "runtimehook-vercel.clixml"
+    credential = home / "credentials" / "runtimehook-openrouter.clixml"
     if not home.is_absolute() or not credential.is_file():
         return ""
     powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -174,7 +174,10 @@ def request_gateway(request, timeout):
 
 
 def parse_response(value, questions, mapping):
-    if not isinstance(value, dict) or value.get("model") != MODEL:
+    model = value.get("model") if isinstance(value, dict) else None
+    # OpenRouter returns either the requested pin or its dated snapshot.
+    # Do not accept another version/provider or silently label it as this pin.
+    if not isinstance(model, str) or not re.fullmatch(re.escape(MODEL) + r"(?:-[0-9]{8})?", model):
         raise JevError("UNEXPECTED_RESPONSE_MODEL")
     answers = value.get("answers")
     if not isinstance(answers, dict) or set(answers) != set(questions):
@@ -191,7 +194,10 @@ def parse_response(value, questions, mapping):
             raise JevError("INVALID_RESPONSE_PROBABILITIES")
         # Never surface model-supplied explanations, paths, commands or references.
         result[key] = {**mapping[key], "type": "choice", "choice": answer["choice"], "label_zh": LABELS[answer["choice"]], "probabilities": probabilities}
-    usage = value.get("usage", {})
-    if not isinstance(usage, dict) or any(type(v) is not int or v < 0 for k, v in usage.items() if k in {"inputTokens", "outputTokens"}):
+    usage = value.get("usage")
+    if not isinstance(usage, dict) or any(type(usage.get(k)) is not int or usage[k] < 0 for k in ("input_tokens", "output_tokens")):
         raise JevError("INVALID_RESPONSE_USAGE")
-    return {"model": MODEL, "answers": result, "usage": {k: usage[k] for k in ("inputTokens", "outputTokens") if k in usage}}
+    cost = usage.get("cost")
+    if type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0:
+        raise JevError("INVALID_RESPONSE_USAGE")
+    return {"model": model, "answers": result, "usage": {k: usage[k] for k in ("input_tokens", "output_tokens", "cost")}}

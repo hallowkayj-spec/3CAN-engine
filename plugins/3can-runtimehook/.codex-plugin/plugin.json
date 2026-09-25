@@ -1,6 +1,6 @@
 {
   "name": "3can-runtimehook",
-  "version": "0.1.8-rc.1",
+  "version": "0.1.8-rc.1+codex.20260925123828",
   "description": "中文任务监督、临时任务收尾与可选 Jev 片段级意见；不替代独立安全和证据门禁。",
   "author": {
     "name": "hallowkayj-spec",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "3CAN RuntimeHook",
     "shortDescription": "中文阶段复核、临时任务与可选 Jev 意见",
-    "longDescription": "原生生命周期保持离线：恢复目标、提示阶段复核、临时任务收尾。经用户启用可在复核边界通过 Vercel AI Gateway 调用 Jev 检查声明与证据、下一步与目标；模型不授权、不清除债务、不阻塞任务。",
+    "longDescription": "原生生命周期保持离线：恢复目标、提示阶段复核、临时任务收尾。经用户启用可在复核边界通过 OpenRouter 调用 Jev 检查声明与证据、下一步与目标；模型不授权、不清除债务、不阻塞任务。",
     "developerName": "hallowkayj-spec",
     "category": "Productivity",
     "capabilities": [
