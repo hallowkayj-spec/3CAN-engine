@@ -112,6 +112,20 @@ safe local development moving; do not clear foreign state to silence it.
 
 ## Use
 
+### Required development checkpoints (0.1.9)
+
+An Owner-authorized machine policy can require Jev at engineering checkpoints. The existing
+`checkpoint` records project-configured parameters and actual evidence locally; `review`
+automatically obtains Jev scores, confidence and probabilities before accepting PASS.
+Missing/stale evidence, omitted configured checkpoints, low scores/confidence or negative
+opinions cannot be signed PASS. PARTIAL remains possible without claiming acceptance.
+See the complete [checkpoint contract](../plugins/3can-runtimehook/skills/3can-runtimehook/references/checkpoints.md).
+This supersedes the optional-only description below **only when that policy is enabled**.
+One current checkpoint reference uses state v3; bounded per-checkpoint output records share
+the existing ignored state root. No scheduler, graph execution-state mirror or network daemon is added.
+Native callbacks remain offline and use one bounded Stop continuation, not an infinite blocking loop.
+Public installs still require explicit permission for paid third-party uploads.
+
 The user need not choose a profile or run a controller command. Once the Plugin
 is installed and its exact Hook definition is trusted, Codex may invoke
 `$3can-runtimehook` implicitly for a long, multi-stage, drift-prone, or
@@ -204,8 +218,8 @@ deployment, publication, security, or the independent PR15 convergence gate.
 `task --kind transfer|drift --reference "判断依据"` 只输出建议，不改变状态、新建任务、迁移或阻断工作。
 新任务能隔离对话，但不能单独解决同一 worktree 的并行写入；需要时两者一起隔离。
 
-状态兼容：没有临时任务仍写 v1；仅临时槽生效时写 `3can.runtimehook-state/v2`。
-新控制器读两种版本；旧控制器必须报不可用而不是忽略临时槽。回滚前先用新控制器完成或明确取消临时任务，
+状态兼容：没有临时任务或检查点引用时写 v1；仅临时槽生效时写 v2；0.1.9 的检查点引用使用 v3。
+新控制器读取这些版本；旧控制器必须报不可用而不是忽略新约束。回滚前先用新控制器完成或明确取消临时任务，
 不要强制降级/删除现场状态。升级不等于已运行任务热加载，不改它们的旧插件文件。
 
 ## Install and remove
@@ -235,8 +249,9 @@ when no RuntimeHook state exists. Windows commands run directly in the native
 PowerShell hook host; there is no nested shell or batch wrapper. A custom cmd
 or Git Bash hook shell on Windows is not a validated configuration. Launcher failures report typed
 `UNAVAILABLE` instead of silently disabling Hooks. Native Hooks need no 3CAN Runtime,
-graph, credentials, network service, or 9700 restart. Only the optional, explicitly
-invoked Jev assessment uses a Gateway credential and network.
+graph, credentials, network service, or 9700 restart. Jev assessment uses a
+Gateway credential and network: explicitly via `assess` in optional mode, or
+automatically via `review` under the Owner-enabled required policy.
 
 Add the public repository as a Codex marketplace and install the Plugin:
 
@@ -279,7 +294,10 @@ new users do not need to copy it into each repository. Distribution is governed
 by the repository's PolyForm Noncommercial license. It is public
 source-available software, not an OSI-approved open-source license.
 
-## Short smoke
+## Legacy optional-mode smoke
+
+For a public install without a required policy only. On a required machine use
+the checkpoint contract above; do not disable its policy to run this example.
 
 From a disposable Git worktree in a source checkout, the internal command path
 is:

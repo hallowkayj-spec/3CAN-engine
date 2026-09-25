@@ -1,6 +1,7 @@
-# Jev：可选局部判别，不是另一个任务系统
+# Jev：局部判别与检查点评分，不是另一个任务系统
 
-维护者：3CAN RuntimeHook。协议 `3can.jev-opinion/v2`；首次采用 observe。
+维护者：3CAN RuntimeHook。协议 `3can.jev-opinion/v3`。必经开发模式先读 [检查点说明](checkpoints.md)。
+`review` 在该模式下自动调用 Jev，缺评判/有异议不能登记 PASS；下面的 observe/advisory 是显式诊断入口，不能代替必经模式。
 用户启用后在重要复核边界调用；不在 SessionStart / PostToolUse / Stop 中联网。
 当前唯一接入为 OpenRouter；不需要 TypeSafe/Vercel 账户或 9700/9711 服务。模型不是视觉模型。
 
@@ -54,7 +55,7 @@ python <Skill>/scripts/3can_runtimehook.py --root <物理工作树> --native-cwd
 片段被恶意改写、选择性遗漏或伪造，也不能由这个模型自动证明真实。
 
 本地绑定/路径不上传；只上传当前目标、验收（及主任务 non-goals）、最新要求、声明、片段和下一步。
-模型只返回预定义 choice/probabilities。中文解释和 claim/criterion/evidence 映射由本地生成，
+模型返回预定义 choice，或项目量表的 score，以及原生 confidence/probabilities。中文说明和 claim/criterion/evidence 映射由本地生成，
 不采纳模型给出的任意命令、路径、引用或自然语言指令。
 
 ## 账号、费用与安全配置
@@ -104,7 +105,7 @@ HTTP 401/402/429 等只返回脱敏错误码；检查凭据/余额/限流后再�
 离线测试只证明输入、传输、隔离、失败和结果处理，不能证明 Jev 真能识别幻觉或提高质量。
 首次真实样本分别观察：中文过度宣称、证据缺失、明确反证、用户临时插入、真正无关扩展、注入式伪证。
 先由人/主审独立标注，再比较模型输出、误报、漏报、延时、tokens/账单，不由 Jev 给自己评分。
-不要因为几个合成测试通过就默认提升到硬门禁。重复失败/RPA/视频等第二批场景留待真实数据决定。
+必须调用来自 Owner 的工程策略，不代表模型判断已经成为真理。低置信和异议不得伪装成功；真实准确率及业务收益仍须持续验证。
 
 关闭在线层只需停止 `assess` 或选择 off，现有 Hook、状态和独立门禁不变。
 卸载适配器可回到 0.1.7；无状态迁移。观察缓存可保留审计或仅删除该文件。

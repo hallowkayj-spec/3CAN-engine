@@ -1,6 +1,6 @@
 ---
 name: 3can-runtimehook
-description: Keep Owner Intent and semantic review timing stable across long, multi-stage, cross-module, drift-prone Codex work. Use implicitly when this lightweight supervision materially helps, or when the user says RuntimeHook, 开启 RuntimeHook, 按 RuntimeHook 执行, 这个任务用 RuntimeHook, /3CAN, or asks to turn it off. Uses the plugin-bundled controller without requiring a project kit, and reviews goal drift, unjustified hardcoding, hidden fallback or stale state, and unrequested behavior without replacing Git or project evidence gates.
+description: Keep Owner Intent and semantic review timing stable across long, multi-stage, cross-module, drift-prone Codex work. Use when machine policy requires engineering checkpoints, this supervision materially helps, or the user says RuntimeHook, 开启 RuntimeHook, 按 RuntimeHook 执行, 这个任务用 RuntimeHook, /3CAN, or asks to turn it off. Uses the plugin-bundled controller without a project kit; reviews drift, hardcoding, fallback and unrequested behavior without replacing Git or project evidence gates.
 ---
 
 # 3CAN RuntimeHook
@@ -8,7 +8,9 @@ description: Keep Owner Intent and semantic review timing stable across long, mu
 RuntimeHook is a semantic supervisor, not an evidence kernel. Apply it without
 asking the user to choose a mode when the task is long, multi-stage,
 cross-module, historically drift-prone, or explicitly requests RuntimeHook. Do
-not invoke it for every small edit merely because it is installed.
+not invoke it for every small edit merely because it is installed. An
+Owner-enabled `jev_required` machine policy instead requires this Skill for
+development, including small tasks with a proportionately small checkpoint.
 
 ## Apply the 3CAN fast path
 
@@ -148,7 +150,8 @@ Every observed Git, completed-plan, or new Owner-prompt boundary creates one
 coalesced semantic review debt and immediately reinjects RUN_INTENT. A new
 prompt closes the previously reviewed conversation episode automatically. When
 a meaningful internal stage completes without one of those signals, run one
-generic boundary:
+generic boundary (under required policy, capture the configured evidence packet
+instead, as described in the mandatory checkpoint section):
 
 ```text
 checkpoint --kind stage|episode --label "what completed" --next-objective "what is next"
@@ -206,9 +209,18 @@ run `off`. This retains the current local semantic state and makes subsequent
 RuntimeHook hooks silent. It does not disable independent credentials,
 deployment, publication, security, or PR15 convergence gates.
 
-## 可选 Jev 局部复核（OpenRouter）
+## 开发检查点与 Jev 必经复核（OpenRouter）
 
-当用户启用 Jev 后，在已有的重要阶段/最终复核中，先准备脱敏的实际证据片段，
+当本机 `CODEX_HOME/runtimehook/policy.json` 已由 Owner 配置 `jev_required: true`，开发任务必须启用本 Skill，
+完整读取 [检查点说明](references/checkpoints.md) 和 [Jev 指引](references/jev.md)。在项目已有文档目录配置关键点、
+验收关联、要记录的参数和评分量表。架构/技术栈/开源组件选型、关键实现与集成、失败改路、交付都要覆盖。
+用 `checkpoint --spec ... --id ... --packet ...` 记录实际证据，再用现有 `review`：它自动调用 Jev，
+缺记录、漏掉配置点、旧意见、低分/低置信或未解决异议不能登记 PASS。不得靠 observe、off 或自写 PASS 绕开。
+按异议补证据、调研或修复，不无依据重写，也不重复调用刷分；原有 review 引用须说明具体处理。
+阶段 PARTIAL 和 API UNAVAILABLE 不是成功，不阻塞独立安全工作。临时任务沿用独立临时目标与检查点，完成后仍必须清除。
+本机未启用策略时，下面的显式 assess 保留为兼容/观察入口；安装本身不授权付费或上传私密数据。
+
+未启用 required 策略而单独试用 Jev 时，在已有的重要阶段/最终复核中，先准备脱敏的实际证据片段，
 再用同一控制器的 `assess` 检查“声明是否有证据”和“下一步是否服务最新要求”。
 调用、输入格式与安全配置见 [Jev 接入说明](references/jev.md)，使用前完整读取。
 只在这些判断确有价值时调用，不按每次工具调用或每次小改动收费评判；无关任务不调用。
@@ -222,7 +234,7 @@ advisory 也只能建议人工/Agent 复核，不能代替审查者作出验收�
 缺 Key、限流、不可用或上下文不足时标记真实状态，继续原有人工/Agent 复核和安全工作，
 不能伪造 Jev 通过、自动反复重试或把整项工作卡住。
 
-Jev 输出只是片段级意见，不是新的 PASS、Stop 门禁或证据真实性保证。
+Jev 输出只是片段级意见，不是证据真实性保证或独立操作授权；required 策略让它成为成功复核的必要条件而非充分条件。
 Agent 必须自行核对其指出的具体 claim/evidence，再用原有 `review` 记录真实结果；
 不可机械把 SUPPORTED 映射成 PASS。Ponytail 负责实现简洁但不削减验收，
 Codex 代码 review 负责代码问题，3CAN 负责有意义的历史与协调；均不由 Jev 替代。
@@ -234,7 +246,8 @@ language may invoke it implicitly. `/3CAN` is product shorthand only; Codex does
 not currently expose a reliable custom slash-command registration path, so do
 not implement a slash parser.
 
-Only the stateless 3CAN fast path is emitted before activation; all semantic
-RuntimeHook events remain silent. Installing or enabling the Plugin does not
-authorize a task activation; activate only when semantic supervision materially
-helps or the Owner asks for it.
+Before activation the stateless 3CAN fast path also reports an enabled Jev
+requirement; no online call or task state is created by that event. Installing
+the Plugin alone does not authorize paid uploads. Activate when supervision
+materially helps, the Owner asks, or an Owner-enabled machine policy requires
+development checkpoints. Preserve scope isolation in every case.

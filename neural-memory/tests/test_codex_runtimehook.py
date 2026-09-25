@@ -211,6 +211,12 @@ def test_runtimehook_episode_and_final_review_record_narrow_git_anchor(
     installed, _hooks, command, native_hook = runtimehook_project
     activation = _activate(command)
 
+    # Importing the checkpoint/adapter helpers must not create untracked .pyc
+    # files and make this otherwise clean candidate impossible to review.
+    assert subprocess.check_output(
+        ["git", "-C", str(installed), "status", "--porcelain"], text=True
+    ).strip() == ""
+
     episode, episode_output = command(
         "review",
         "--stage",

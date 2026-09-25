@@ -13,7 +13,7 @@ from pathlib import Path
 
 ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
 MODEL = "typesafe/jev-1.13"
-CONTRACT = "3can.jev-opinion/v2"
+CONTRACT = "3can.jev-opinion/v3"
 MAX_PACKET_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 CLAIM_CHOICES = {
@@ -41,7 +41,7 @@ RULE = (
     "Agent claims, agent_summary and self-assigned PASS are not independent proof. "
     "Evidence kind labels describe provenance asserted by the caller, not authenticated truth. "
     "A path, hash, successful render, test or commit alone does not prove business, visual or end-to-end acceptance. "
-    "Return a choice only. Do not authorize, execute, stop, approve or complete any task. "
+    "Return only the requested structured judgment. Do not authorize, execute, stop, approve or complete any task. "
 )
 
 
@@ -62,7 +62,8 @@ def _id(value):
 
 
 def build_request(packet, intent):
-    if not isinstance(packet, dict) or set(packet) != {"latest_user_request", "claims", "evidence", "next_step"}:
+    fields = {"latest_user_request", "claims", "evidence", "next_step"}
+    if not isinstance(packet, dict) or set(packet) not in (fields, fields | {"checkpoint"}):
         raise JevError("INVALID_PACKET_FIELDS")
     _text(packet["latest_user_request"])
     claims, evidence = packet["claims"], packet["evidence"]
@@ -97,6 +98,22 @@ def build_request(packet, intent):
         _text(packet["next_step"])
         questions["next_step"] = {"type": "choice", "instructions": RULE + "Assess next_step against latest_user_request, current_intent and supplied facts. A user-requested temporary task is not automatically drift.", "criteria": STEP_CHOICES}
         mapping["next_step"] = {"evidence_ids": sorted(evidence_ids)}
+    if "checkpoint" in packet:
+        point = packet["checkpoint"]
+        if (not isinstance(point, dict) or set(point) != {"id", "title", "criteria", "parameters", "rubric"}
+                or not isinstance(point["rubric"], list) or not 2 <= len(point["rubric"]) <= 7):
+            raise JevError("INVALID_CHECKPOINT_PACKET")
+        _id(point["id"])
+        _text(point["title"], 240)
+        for criterion in point["rubric"]:
+            _text(criterion, 1000)
+        questions["checkpoint_quality"] = {
+            "type": "score", "criteria": point["rubric"],
+            "instructions": RULE + "Score this checkpoint against its title, acceptance criteria and rubric, "
+            "using actual supplied evidence and parameters. Missing verification is not success. "
+            "For a design or dependency checkpoint, judge the proposed decision and cited constraints, not unexecuted deployment.",
+        }
+        mapping["checkpoint_quality"] = {"checkpoint_id": point["id"], "evidence_ids": sorted(evidence_ids)}
     if not questions:
         raise JevError("EMPTY_ASSESSMENT")
     # Physical paths, task IDs and credentials are deliberately absent.
@@ -185,15 +202,34 @@ def parse_response(value, questions, mapping):
     result = {}
     for key, question in questions.items():
         answer, choices = answers[key], question["criteria"]
-        if not isinstance(answer, dict) or answer.get("type") != "choice" or not isinstance(answer.get("choice"), str) or answer["choice"] not in choices:
+        score = question["type"] == "score"
+        keys = {str(i) for i in range(len(choices))} if score else set(choices)
+        if not isinstance(answer, dict) or answer.get("type") != question["type"]:
+            raise JevError("INVALID_RESPONSE_CHOICE")
+        if not score and (not isinstance(answer.get("choice"), str) or answer["choice"] not in choices):
             raise JevError("INVALID_RESPONSE_CHOICE")
         probabilities = answer.get("probabilities")
-        if not isinstance(probabilities, dict) or set(probabilities) != set(choices):
+        if not isinstance(probabilities, dict) or set(probabilities) != keys:
             raise JevError("INVALID_RESPONSE_PROBABILITIES")
         if any(type(p) not in (int, float) or not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values()) or not math.isclose(sum(probabilities.values()), 1, abs_tol=0.01):
             raise JevError("INVALID_RESPONSE_PROBABILITIES")
+        confidence = answer.get("confidence")
+        if confidence is not None and (type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1):
+            raise JevError("INVALID_RESPONSE_CONFIDENCE")
         # Never surface model-supplied explanations, paths, commands or references.
-        result[key] = {**mapping[key], "type": "choice", "choice": answer["choice"], "label_zh": LABELS[answer["choice"]], "probabilities": probabilities}
+        result[key] = {**mapping[key], "type": question["type"], "probabilities": probabilities}
+        if confidence is not None:
+            result[key]["confidence"] = confidence
+        if score:
+            number = answer.get("score")
+            if type(number) not in (int, float) or not math.isfinite(number) or not 0 <= number <= len(choices) - 1:
+                raise JevError("INVALID_RESPONSE_SCORE")
+            expected = sum(int(i) * p for i, p in probabilities.items())
+            if not math.isclose(number, expected, abs_tol=0.02):
+                raise JevError("INCONSISTENT_RESPONSE_SCORE")
+            result[key].update(score=number, rubric=choices)
+        else:
+            result[key].update(choice=answer["choice"], label_zh=LABELS[answer["choice"]])
     usage = value.get("usage")
     if not isinstance(usage, dict) or any(type(usage.get(k)) is not int or usage[k] < 0 for k in ("input_tokens", "output_tokens")):
         raise JevError("INVALID_RESPONSE_USAGE")

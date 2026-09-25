@@ -23,6 +23,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# A project-local Hook must not dirty its caller by compiling sibling modules.
+sys.dont_write_bytecode = True
+import runtimehook_checkpoints as checkpoints  # noqa: E402
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATE_ROOT = Path(".codex/runtimehook")
@@ -30,6 +34,7 @@ STATE_PATH = STATE_ROOT / "state.json"
 LOCAL_EXCLUDE_RULE = "/.codex/runtimehook/"
 STATE_SCHEMA = "3can.runtimehook-state/v1"
 TEMPORARY_STATE_SCHEMA = "3can.runtimehook-state/v2"
+CHECKPOINT_STATE_SCHEMA = "3can.runtimehook-state/v3"
 SCOPE_SCHEMA = "3can.runtimehook-scope/v1"
 MAX_STATE_BYTES = 64 * 1024
 MAX_CONTEXT_CHARS = 4_000
@@ -54,6 +59,15 @@ SESSION_FAST_PATH = (
     "仅在 AUTO_CLOSEOUT 或用户明确要求时回写持久含义。本指引不激活 RuntimeHook，也不替代独立安全与证据门禁。"
     "外部契约不确定或反复发生不明失败时，用 3can-deep-research 将已读证据连接到判断和可执行验证；"
     "来源数量和研究记录不等于业务验收。"
+)
+
+
+JEV_REQUIRED_TEXT = (
+    "本机已启用开发检查点必经 Jev：开发时使用 RuntimeHook 并按 Skill 建立项目检查点说明，"
+    "在架构/依赖选型、关键实现/集成、失败改路及交付边界记录实际参数和证据。"
+    "checkpoint 本地记录后，review 会自动调用 Jev；未调用、低分、低置信或有异议不能登记 PASS。"
+    "不要用 observe/off、自写 PASS 或省略检查点替代；按具体异议补证据、调研或修复再验证，"
+    "不得反复调用刷分。接口不可用只报告受影响验收未完成，继续独立安全工作。"
 )
 
 
@@ -338,7 +352,7 @@ def _validate_intent(intent: Any) -> None:
 
 
 def _validate_state(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("schema") not in {STATE_SCHEMA, TEMPORARY_STATE_SCHEMA}:
+    if not isinstance(value, dict) or value.get("schema") not in {STATE_SCHEMA, TEMPORARY_STATE_SCHEMA, CHECKPOINT_STATE_SCHEMA}:
         raise RuntimeHookError("RuntimeHook 状态版本不受支持")
     status = value.get("status")
     if status not in {"active", "disabled_by_owner"}:
@@ -349,11 +363,19 @@ def _validate_state(value: Any) -> dict[str, Any]:
     _validate_intent(value.get("run_intent"))
     temporary = value.get("temporary_task")
     if temporary is not None:
-        if value["schema"] != TEMPORARY_STATE_SCHEMA:
+        if value["schema"] not in {TEMPORARY_STATE_SCHEMA, CHECKPOINT_STATE_SCHEMA}:
             raise RuntimeHookError("临时任务需要 v2 状态，防止旧控制器误用主目标")
         _validate_intent(temporary)
         for key in ("reference", "resume_objective"):
             _text(temporary.get(key), label=f"临时任务 {key}")
+
+    checkpoint = value.get("checkpoint")
+    if checkpoint is not None:
+        if value["schema"] != CHECKPOINT_STATE_SCHEMA or not isinstance(checkpoint, dict):
+            raise RuntimeHookError("检查点需要 v3 状态，旧控制器不得忽略 Jev 要求")
+        checkpoints.jev._id(checkpoint.get("id"))
+        if not isinstance(checkpoint.get("spec"), str) or not Path(checkpoint["spec"]).is_absolute():
+            raise RuntimeHookError("检查点说明路径无效")
 
     intensity = value.get("internal_intensity")
     if not isinstance(intensity, dict) or intensity.get("level") not in INTENSITIES:
@@ -484,6 +506,9 @@ def _context(
     review = state["semantic_review"]
     boundary = state["boundary"]
     effective_review = review_result or review["result"]
+    jev_required = checkpoints.required()
+    if jev_required and effective_review == "PASS" and not review.get("jev_request_sha256"):
+        effective_review = "JEV_REQUIRED"
     if (
         effective_review == "PENDING"
         and boundary["last_kind"] == "git"
@@ -519,6 +544,7 @@ def _context(
         "当前用户要求优先。由 Agent 判断是继续、临时插入、任务转移还是疑似偏移，不按关键词猜测。"
         "临时插入用 task --kind temporary 保留主目标；转移/偏移仅建议新工作树或新任务，不自动迁移或停止整项工作。"
         "中途回复/等待不是任务完成，记录阶段复核即可；宣称完成才做对应目标的最终复核。"
+        + (JEV_REQUIRED_TEXT if jev_required else "")
     )
     if len(message) > MAX_CONTEXT_CHARS:
         raise RuntimeHookError("RUN_INTENT 过大，无法在原生 Hook 中完整注入")
@@ -531,6 +557,8 @@ def _stale_review_reasons(root: Path, state: dict[str, Any]) -> list[str]:
         return []
     current_head, dirty = _git_checkpoint(root)
     reasons = []
+    if checkpoints.required() and not review.get("jev_request_sha256"):
+        reasons.append("尚无当前检查点的 Jev 必经复核")
     if current_head != review["reviewed_git_head"]:
         reasons.append("Git HEAD 已变化")
     if dirty:
@@ -588,7 +616,9 @@ def _sync_git_boundary(
 
 def _write_state(root: Path, value: dict[str, Any]) -> None:
     # Old controllers must not silently ignore a live temporary task.
-    value = {**value, "schema": TEMPORARY_STATE_SCHEMA if value.get("temporary_task") else STATE_SCHEMA}
+    schema = CHECKPOINT_STATE_SCHEMA if value.get("checkpoint") else (
+        TEMPORARY_STATE_SCHEMA if value.get("temporary_task") else STATE_SCHEMA)
+    value = {**value, "schema": schema}
     value = _validate_state(value)
     _context(value)
     payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
@@ -710,6 +740,7 @@ def disable(args: argparse.Namespace) -> dict[str, Any]:
 def _resume_main(state: dict[str, Any], reference: str, label: str) -> dict[str, Any]:
     state = dict(state)
     temporary = state.pop("temporary_task")
+    state.pop("checkpoint", None)
     state = _mark_boundary(state, kind="episode", label=label,
                            observed_git_head=state["boundary"]["observed_git_head"])
     state["current_episode"] = temporary["resume_objective"]
@@ -757,6 +788,7 @@ def task_relation(args: argparse.Namespace) -> dict[str, Any]:
     state = _mark_boundary(state, kind="episode", label="开始用户要求的临时任务；主目标保留",
                            observed_git_head=_git_head(root))
     state["temporary_task"] = temporary
+    state.pop("checkpoint", None)
     state["current_episode"] = temporary["goal"]
     _write_state(root, state)
     return {"ok": True, "status": "TEMPORARY_ACTIVE", "activation_id": state["activation_id"],
@@ -775,6 +807,12 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
     if args.stage == "episode" and not next_objective:
         raise RuntimeHookError("阶段复核必须指定 --next-objective")
     reference = _text(args.reference, label="semantic review reference")
+    if args.stage == "final" and args.result == "PASS" and not state.get("temporary_task"):
+        if _git_checkpoint(root)[1]:
+            raise RuntimeHookError("主任务最终 PASS 需要干净 Git 检查点")
+    jev_review = _review_checkpoint(args, root, state, reference)
+    if jev_review and not jev_review["ok"]:
+        return jev_review
     if state.get("temporary_task") and args.stage == "final" and args.result == "PASS":
         state = _resume_main(state, reference, "临时任务已复核完成并清除；恢复主任务")
         _write_state(root, state)
@@ -795,6 +833,8 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
             "result": args.result,
             "reference": reference,
             "reviewed_git_head": reviewed_git_head,
+            **({"jev_request_sha256": jev_review["request_sha256"]}
+               if jev_review and jev_review.get("request_sha256") else {}),
         },
         "boundary": {
             **state["boundary"],
@@ -814,20 +854,41 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
         "reference": state["semantic_review"]["reference"],
         "reviewed_git_head": reviewed_git_head,
         "reviewed_boundary_sequence": state["boundary"]["reviewed_sequence"],
+        "jev": jev_review,
     }
 
 
 def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
+    started = time.monotonic()
     root = _repository_root(args.root)
     state = _load_state(root)
     if state is None or state["status"] != "active":
         raise RuntimeHookError("没有启用中的 RuntimeHook 语义任务")
     state, _git_changed = _sync_git_boundary(root, state)
+    spec_path = getattr(args, "spec", None)
+    checkpoint_id = getattr(args, "checkpoint_id", None)
+    supplied = getattr(args, "packet", None)
+    packet = spec = None
+    intent = state.get("temporary_task") or state["run_intent"]
+    if checkpoints.required() or any((spec_path, checkpoint_id, supplied)):
+        if not args.native_cwd or not args.session_id:
+            raise RuntimeHookError("检查点需要宿主实际 --native-cwd 和 --session-id")
+        scoped, binding = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
+        if (scoped != root or binding.get("activation_id") != state["activation_id"]
+                or binding.get("knowledge", {}).get("status") == "CONTRADICTS"):
+            raise RuntimeHookError("CONTEXT_MISMATCH：不记录其他任务检查点")
+        if not all((spec_path, checkpoint_id, supplied)):
+            raise RuntimeHookError("CHECKPOINT_SPEC_REQUIRED：提供 --spec、--id、--packet；说明和证据不能省略")
+        spec_path = spec_path.resolve(strict=True)
+        if not spec_path.is_relative_to(root):
+            raise RuntimeHookError("检查点说明必须位于当前物理工作树内")
+        spec = checkpoints.spec_from(spec_path, intent)
+        packet = checkpoints.make_packet(spec, checkpoint_id, checkpoints.read_json(supplied), intent)
     current_head = _git_head(root)
     state = _mark_boundary(
         state,
         kind=args.kind,
-        label=args.label,
+        label=args.label or (packet["checkpoint"]["title"] if packet else ""),
         observed_git_head=current_head,
     )
     next_objective = args.next_objective.strip()
@@ -838,13 +899,104 @@ def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
                 next_objective, label="next episode objective"
             ),
         }
+    if packet:
+        state["checkpoint"] = {"id": checkpoint_id, "spec": str(spec_path)}
+        state["schema"] = CHECKPOINT_STATE_SCHEMA
+        record = {
+            "schema": checkpoints.RECORD_SCHEMA, "activation_id": state["activation_id"],
+            "scope": "temporary" if state.get("temporary_task") else "main",
+            "boundary_sequence": state["boundary"]["sequence"], "git_head": current_head,
+            "intent_sha256": checkpoints.digest(intent), "spec_sha256": checkpoints.digest(spec),
+            "observed_at": datetime.now(timezone.utc).isoformat(), "packet": packet,
+            "packet_sha256": checkpoints.digest(packet),
+            "review": None,
+        }
+        _state_root(root, create=False)
+        checkpoints.save(checkpoints.record_path(root, checkpoint_id, record["scope"]), record)
     _write_state(root, state)
     return {
         "ok": True,
         "status": "review_due",
         "activation_id": state["activation_id"],
         "boundary": state["boundary"],
+        "checkpoint_id": checkpoint_id,
+        "local_elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+        "online_calls": 0,
     }
+
+
+def _review_checkpoint(args, root, state, reference):
+    """The existing review path owns mandatory invocation, never a second Hook."""
+    if not checkpoints.required():
+        if state.get("checkpoint"):
+            raise RuntimeHookError("JEV_POLICY_NOT_ENABLED：先确认本机在线调用授权；不自动消费")
+        return None
+    descriptor = state.get("checkpoint")
+    if not descriptor:
+        if args.result != "PASS":
+            return {"ok": True, "status": "NOT_CAPTURED", "request_sha256": None}
+        raise RuntimeHookError("CHECKPOINT_REQUIRED：成功复核前必须记录项目检查点并调用 Jev")
+    intent = state.get("temporary_task") or state["run_intent"]
+    if not Path(descriptor["spec"]).resolve(strict=True).is_relative_to(root):
+        raise RuntimeHookError("检查点说明不属于当前工作树")
+    spec = checkpoints.spec_from(descriptor["spec"], intent)
+    key = descriptor["id"]
+    scope = "temporary" if state.get("temporary_task") else "main"
+    path = checkpoints.record_path(root, key, scope)
+    record = checkpoints.read_json(path)
+    record_before = checkpoints.digest(record)
+    binding = {"activation_id": state["activation_id"],
+               "scope": "temporary" if state.get("temporary_task") else "main",
+               "intent_sha256": checkpoints.digest(intent), "spec_sha256": checkpoints.digest(spec)}
+    if (not isinstance(record, dict) or record.get("schema") != checkpoints.RECORD_SCHEMA
+            or any(record.get(k) != v for k, v in binding.items())
+            or record.get("boundary_sequence") != state["boundary"]["sequence"]
+            or checkpoints.digest(record.get("packet")) != record.get("packet_sha256")
+            or record.get("git_head") != _git_head(root)):
+        raise RuntimeHookError("CHECKPOINT_STALE：重新取得当前检查点证据，不复用旧目标或旧代码意见")
+    if not args.native_cwd or not args.session_id:
+        raise RuntimeHookError("Jev 必经复核需要宿主实际 --native-cwd 和 --session-id")
+    scoped, current_binding = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
+    if (scoped != root or current_binding.get("activation_id") != state["activation_id"]
+            or current_binding.get("knowledge", {}).get("status") == "CONTRADICTS"):
+        raise RuntimeHookError("CONTEXT_MISMATCH：不代签其他任务检查点")
+    if args.stage == "final" and args.result == "PASS":
+        if key != spec["final_checkpoint"]:
+            raise RuntimeHookError("FINAL_CHECKPOINT_REQUIRED：先完成说明中的最终检查点")
+        for point in spec["checkpoints"]:
+            if point["id"] == key:
+                continue
+            try:
+                previous = checkpoints.read_json(checkpoints.record_path(root, point["id"], scope))
+            except FileNotFoundError:
+                previous = {}
+            if (not isinstance(previous, dict) or any(previous.get(k) != v for k, v in binding.items())
+                    or (previous.get("review") or {}).get("result") != "PASS"):
+                raise RuntimeHookError(f"CHECKPOINT_COVERAGE_MISSING：{point['id']} 尚无同目标、同说明的成功复核")
+    point = next(p for p in spec["checkpoints"] if p["id"] == key)
+    opinion = record.get("opinion")
+    if opinion is None:
+        judge_args = argparse.Namespace(root=root, native_cwd=args.native_cwd,
+            session_id=args.session_id, packet=path, mode="advisory", timeout=args.timeout)
+        opinion = assess(judge_args)
+        record["opinion"] = opinion
+    elif opinion.get("status") == "OBSERVED":
+        request, mapping = checkpoints.jev.build_request(record["packet"], intent)
+        opinion = {**opinion, **checkpoints.jev.parse_response(opinion, request["questions"], mapping), "reused": True}
+    issues = checkpoints.concerns(opinion, point)
+    if _load_state(root) != state or _git_head(root) != record["git_head"]:
+        return {"ok": False, "status": "STALE", "message": "复核期间任务或 Git 变化；不写回旧状态"}
+    if checkpoints.digest(checkpoints.read_json(path)) != record_before:
+        return {"ok": False, "status": "STALE", "message": "复核期间检查点变化；不覆盖新记录"}
+    allowed = args.result != "PASS" or not issues
+    record["review"] = {"result": args.result if allowed else "PARTIAL", "reference": reference,
+                        "issues": issues, "jev_request_sha256": opinion.get("request_sha256")}
+    _state_root(root, create=False)
+    checkpoints.save(path, record)
+    return {"ok": allowed, "status": "REVIEWED" if allowed else "REVIEW_REQUIRED",
+            "request_sha256": opinion.get("request_sha256"), "checkpoint_id": key,
+            "issues": issues, "opinion": opinion,
+            "message": "按具体异议补证据、调研或修复；低置信不等于已证明代码错误。不刷分、不自动改目标。"}
 
 
 def status(args: argparse.Namespace) -> dict[str, Any]:
@@ -856,7 +1008,7 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def assess(args: argparse.Namespace) -> dict[str, Any]:
-    # Lazy import: lifecycle callbacks never import or call the online adapter.
+    # Lifecycle callbacks never call the online adapter.
     import runtimehook_jev as jev
     if args.mode == "off":
         return {"ok": True, "status": "OFF", "semantic_state_changed": False}
@@ -877,8 +1029,8 @@ def assess(args: argparse.Namespace) -> dict[str, Any]:
 
     def packet_bytes() -> bytes:
         with args.packet.open("rb") as handle:
-            raw = handle.read(jev.MAX_PACKET_BYTES + 1)
-        if len(raw) > jev.MAX_PACKET_BYTES:
+            raw = handle.read(MAX_STATE_BYTES + 1)
+        if len(raw) > MAX_STATE_BYTES:
             raise jev.JevError("PACKET_TOO_LARGE")
         return raw
 
@@ -888,6 +1040,10 @@ def assess(args: argparse.Namespace) -> dict[str, Any]:
         state, binding = snapshot()
         raw = packet_bytes()
         packet = json.loads(raw.decode("utf-8-sig"))
+        if isinstance(packet, dict) and packet.get("schema") == checkpoints.RECORD_SCHEMA:
+            packet = packet["packet"]
+        if len(json.dumps(packet, ensure_ascii=False).encode()) > jev.MAX_PACKET_BYTES:
+            raise jev.JevError("PACKET_TOO_LARGE")
         intent = state.get("temporary_task") or state["run_intent"]
         # Do not send the temporary task's local reference or resume pointers.
         public_intent = {k: intent[k] for k in ("goal", "acceptance", "non_goals") if k in intent}
@@ -1184,7 +1340,7 @@ def hook(args: argparse.Namespace) -> int:
                         {
                             "hookSpecificOutput": {
                                 "hookEventName": "SessionStart",
-                                "additionalContext": SESSION_FAST_PATH,
+                                "additionalContext": SESSION_FAST_PATH + (JEV_REQUIRED_TEXT if checkpoints.required() else ""),
                             }
                         },
                         ensure_ascii=False,
@@ -1316,6 +1472,8 @@ def hook(args: argparse.Namespace) -> int:
                 )
                 continue_for_review = True
             message = f"RuntimeHook 工作树：{root}。{message} 独立项目安全与证据门禁不变。"
+            if checkpoints.required():
+                message += JEV_REQUIRED_TEXT
             if continue_for_review and not bool(payload.get("stop_hook_active")):
                 print(
                     json.dumps(
@@ -1326,7 +1484,7 @@ def hook(args: argparse.Namespace) -> int:
             else:
                 print(json.dumps({"systemMessage": message}, ensure_ascii=False))
         return 0
-    except (RuntimeHookError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeHookError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         return _hook_error(str(exc))
 
 
@@ -1370,14 +1528,18 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--result", choices=sorted(REVIEW_RESULTS), required=True)
     review.add_argument("--reference", required=True)
     review.add_argument("--next-objective", default="")
+    review.add_argument("--timeout", type=float, default=10, help="Jev 单次调用超时秒数。")
 
     checkpoint = sub.add_parser(
         "checkpoint",
         help="声明一个已完成的阶段或 episode 边界。",
     )
-    checkpoint.add_argument("--kind", choices=["stage", "episode"], required=True)
-    checkpoint.add_argument("--label", required=True)
+    checkpoint.add_argument("--kind", choices=["stage", "episode"], default="stage")
+    checkpoint.add_argument("--label", default="")
     checkpoint.add_argument("--next-objective", default="")
+    checkpoint.add_argument("--spec", type=Path, help="当前项目的 JSON 检查点说明。")
+    checkpoint.add_argument("--id", dest="checkpoint_id")
+    checkpoint.add_argument("--packet", type=Path, help="实际参数、声明和脱敏证据片段。")
 
     sub.add_parser("status", help="查看当前本地 RuntimeHook 状态。")
     judge = sub.add_parser("assess", help="可选 Jev 片段复核；不改语义状态，不是 Stop 门禁。")
@@ -1444,8 +1606,8 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeHookError(f"不支持的命令： {args.command}")
         if scope is not None:
             output["native_scope"] = scope
-        exit_code = 0
-    except (RuntimeHookError, OSError, subprocess.SubprocessError) as exc:
+        exit_code = 0 if output.get("ok", True) else 2
+    except (RuntimeHookError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         output = {"ok": False, "status": "UNAVAILABLE", "error": str(exc)}
         exit_code = 2
     print(json.dumps(output, ensure_ascii=False, indent=2))

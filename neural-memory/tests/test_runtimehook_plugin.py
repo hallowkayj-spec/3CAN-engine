@@ -18,6 +18,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = PACKAGE_ROOT / "plugins" / "3can-runtimehook"
 SKILL_ROOT = PLUGIN_ROOT / "skills" / "3can-runtimehook"
 PLUGIN_CLI = SKILL_ROOT / "scripts" / "3can_runtimehook.py"
+sys.path.insert(0, str(SKILL_ROOT / "scripts"))
 WINDOWS_LAUNCHER = PLUGIN_ROOT / "hooks" / "run_runtimehook.ps1"
 POSIX_LAUNCHER = PLUGIN_ROOT / "hooks" / "run_runtimehook.sh"
 PROJECT_KIT_CLI = (
