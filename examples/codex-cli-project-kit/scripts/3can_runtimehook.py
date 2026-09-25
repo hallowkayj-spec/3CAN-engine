@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -854,6 +855,81 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, **state}
 
 
+def assess(args: argparse.Namespace) -> dict[str, Any]:
+    # Lazy import: lifecycle callbacks never import or call the online adapter.
+    import runtimehook_jev as jev
+    if args.mode == "off":
+        return {"ok": True, "status": "OFF", "semantic_state_changed": False}
+    if args.packet is None or args.native_cwd is None or not args.session_id:
+        raise RuntimeHookError("Jev 需要 --packet、宿主实际 --native-cwd 和 --session-id；不猜测任务归属")
+    if not 1 <= args.timeout <= 30:
+        raise RuntimeHookError("Jev timeout 必须在 1 到 30 秒之间")
+    started = time.monotonic()
+    root = _repository_root(args.root)
+
+    def snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
+        scoped, binding = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
+        state = _load_state(root)
+        if scoped != root or not state or state["status"] != "active" or binding.get("activation_id") != state["activation_id"] or binding.get("knowledge", {}).get("status") == "CONTRADICTS":
+            raise RuntimeHookError("Jev CONTEXT_MISMATCH：不读取其他任务意图")
+        # Narrow call-currentness only, not a candidate or artifact fingerprint.
+        return state, {"session_id": args.session_id, "worktree": str(root), "state": state, "git_head": _git_head(root)}
+
+    def packet_bytes() -> bytes:
+        with args.packet.open("rb") as handle:
+            raw = handle.read(jev.MAX_PACKET_BYTES + 1)
+        if len(raw) > jev.MAX_PACKET_BYTES:
+            raise jev.JevError("PACKET_TOO_LARGE")
+        return raw
+
+    base = {"schema": jev.CONTRACT, "mode": args.mode, "semantic_state_changed": False,
+            "message": "Jev 仅复核所给片段，不证明文件真实性或任务完成；不授权、不清除复核债务、不停止任务。"}
+    try:
+        state, binding = snapshot()
+        raw = packet_bytes()
+        packet = json.loads(raw.decode("utf-8-sig"))
+        intent = state.get("temporary_task") or state["run_intent"]
+        # Do not send the temporary task's local reference or resume pointers.
+        public_intent = {k: intent[k] for k in ("goal", "acceptance", "non_goals") if k in intent}
+        request, mapping = jev.build_request(packet, public_intent)
+        digest = hashlib.sha256(json.dumps({"contract": jev.CONTRACT, "binding": binding, "request": request}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        receipt = root / STATE_ROOT / "jev-observation.json"
+        _state_root(root, create=False)
+        if os.path.lexists(receipt):
+            if _is_redirect(receipt) or not receipt.is_file() or receipt.stat().st_size > MAX_STATE_BYTES:
+                raise RuntimeHookError("Jev 观察记录不是大小受限的直接文件")
+            cached = json.loads(receipt.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and cached.get("request_sha256") == digest and cached.get("status") == "OBSERVED":
+                # Revalidate typed fields; a local cached opinion is not authenticated evidence.
+                observed = jev.parse_response(cached, request["questions"], mapping)
+                if snapshot()[1] != binding or packet_bytes() != raw:
+                    return {**base, "ok": False, "status": "STALE", "error_code": "CONTEXT_CHANGED_DURING_CALL", "answers": {}}
+                return {**base, **observed, "ok": True, "status": "OBSERVED", "request_sha256": digest,
+                        "reused": True, "elapsed_ms": round((time.monotonic() - started) * 1000)}
+        observed = jev.parse_response(jev.request_gateway(request, args.timeout), request["questions"], mapping)
+        if snapshot()[1] != binding or packet_bytes() != raw:
+            return {**base, "ok": False, "status": "STALE", "error_code": "CONTEXT_CHANGED_DURING_CALL", "answers": {}}
+        result = {**base, "ok": True, "status": "OBSERVED", "request_sha256": digest,
+                  "reused": False, "observed_at": datetime.now(timezone.utc).isoformat(),
+                  "elapsed_ms": round((time.monotonic() - started) * 1000), **observed}
+        # One replaceable result artifact, not execution state or a review ledger.
+        descriptor, temporary = tempfile.mkstemp(prefix=".jev-", suffix=".tmp", dir=receipt.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(result, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            _state_root(root, create=False)
+            os.replace(temporary, receipt)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return result
+    except jev.JevError as exc:
+        return {**base, "ok": False, "status": "UNAVAILABLE", "error_code": str(exc)}
+    except (json.JSONDecodeError, UnicodeError):
+        return {**base, "ok": False, "status": "UNAVAILABLE", "error_code": "INVALID_PACKET_OR_RECEIPT_JSON"}
+
+
 def _completed_plan_label(payload: dict[str, Any]) -> str | None:
     if payload.get("tool_name") != "update_plan":
         return None
@@ -1304,6 +1380,10 @@ def build_parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--next-objective", default="")
 
     sub.add_parser("status", help="查看当前本地 RuntimeHook 状态。")
+    judge = sub.add_parser("assess", help="可选 Jev 片段复核；不改语义状态，不是 Stop 门禁。")
+    judge.add_argument("--packet", type=Path)
+    judge.add_argument("--mode", choices=["off", "observe", "advisory"], default="observe")
+    judge.add_argument("--timeout", type=float, default=10)
     hook_parser = sub.add_parser(
         "hook", help="作为不持有业务控制权的 Codex 生命周期提醒运行。"
     )
@@ -1358,6 +1438,8 @@ def main(argv: list[str] | None = None) -> int:
             output = record_checkpoint(args)
         elif args.command == "status":
             output = status(args)
+        elif args.command == "assess":
+            output = assess(args)
         else:
             raise RuntimeHookError(f"不支持的命令： {args.command}")
         if scope is not None:

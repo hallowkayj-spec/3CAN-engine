@@ -210,6 +210,21 @@ deployment, publication, security, or the independent PR15 convergence gate.
 
 ## Install and remove
 
+### 可选 Jev 复核（0.1.8 起）
+
+经用户启用，Agent 在重要阶段/最终复核中调用 `assess`，只检查当前片段的
+“声明—证据”和“下一步—最新要求”。四个原生生命周期 Hook 保持离线，
+没有新增 Stop gate，也不将模型意见写入语义状态或替代项目验收。
+部署初期采用 observe；结构合法的 `OBSERVED` 不等于任务 PASS。
+
+接口、证据 JSON、Windows 加密 Key 配置、费用与回滚详见
+[随插件交付的 Jev 指引](../plugins/3can-runtimehook/skills/3can-runtimehook/references/jev.md)。
+唯一额外本地产物是 ignored state root 中可替换的 `jev-observation.json`；
+它是最近一次片段意见缓存，不是第二套执行状态。相同输入复用，变化/过期不得套用。
+缺少有效 Key 时在线功能是 `UNAVAILABLE`；不能宣称实际 Jev 调用或准确率已经验收。
+
+### Plugin 安装
+
 RuntimeHook is distributed as the repository Plugin at
 `plugins/3can-runtimehook` and is exposed by
 `.agents/plugins/marketplace.json`. It requires Git and Python 3; the Windows
@@ -219,8 +234,9 @@ current worktree. Non-SessionStart events exit before Python and Git discovery
 when no RuntimeHook state exists. Windows commands run directly in the native
 PowerShell hook host; there is no nested shell or batch wrapper. A custom cmd
 or Git Bash hook shell on Windows is not a validated configuration. Launcher failures report typed
-`UNAVAILABLE` instead of silently disabling Hooks. It needs no 3CAN Runtime, graph,
-credentials, network service, or 9700 restart.
+`UNAVAILABLE` instead of silently disabling Hooks. Native Hooks need no 3CAN Runtime,
+graph, credentials, network service, or 9700 restart. Only the optional, explicitly
+invoked Jev assessment uses a Gateway credential and network.
 
 Add the public repository as a Codex marketplace and install the Plugin:
 

@@ -206,6 +206,27 @@ run `off`. This retains the current local semantic state and makes subsequent
 RuntimeHook hooks silent. It does not disable independent credentials,
 deployment, publication, security, or PR15 convergence gates.
 
+## 可选 Jev 局部复核（Vercel AI Gateway）
+
+当用户启用 Jev 后，在已有的重要阶段/最终复核中，先准备脱敏的实际证据片段，
+再用同一控制器的 `assess` 检查“声明是否有证据”和“下一步是否服务最新要求”。
+调用、输入格式与安全配置见 [Jev 接入说明](references/jev.md)，使用前完整读取。
+只在这些判断确有价值时调用，不按每次工具调用或每次小改动收费评判；无关任务不调用。
+不要等用户每次提醒；已启用任务由 Agent 在这些边界执行。首次只用 observe，
+advisory 也只能建议人工/Agent 复核，不能代替审查者作出验收或操作授权。
+
+输入必须包括最新用户原话、适用 criterion、实际工具/代码片段和来源类别；
+只给路径、哈希或自己写的 PASS 不够。不要上传整个会话/仓库、密钥或租户私密数据。
+评判当前临时任务时沿用临时目标；明确的用户插入不应被误判为擅自漂移。
+同一输入复用现有观察记录，不为了得到好结果反复调用。响应若已过期则弃用。
+缺 Key、限流、不可用或上下文不足时标记真实状态，继续原有人工/Agent 复核和安全工作，
+不能伪造 Jev 通过、自动反复重试或把整项工作卡住。
+
+Jev 输出只是片段级意见，不是新的 PASS、Stop 门禁或证据真实性保证。
+Agent 必须自行核对其指出的具体 claim/evidence，再用原有 `review` 记录真实结果；
+不可机械把 SUPPORTED 映射成 PASS。Ponytail 负责实现简洁但不削减验收，
+Codex 代码 review 负责代码问题，3CAN 负责有意义的历史与协调；均不由 Jev 替代。
+
 ## Real invocation boundary
 
 The explicit Codex route is `$3can-runtimehook` (or `/skills`), and natural
