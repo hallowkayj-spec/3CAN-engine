@@ -44,6 +44,21 @@
 
 完整条款见 [LICENSE](./LICENSE)、[中文授权说明](./LICENSING.md) 和 [English licensing note](./LICENSING.en.md)。
 
+## 📦 下载与分享
+
+- 项目主页：[github.com/hallowkayj-spec/3CAN-engine](https://github.com/hallowkayj-spec/3CAN-engine)
+- 已发布体验版：[3CAN Engine v0.2.0-rc.1](https://github.com/hallowkayj-spec/3CAN-engine/releases/tag/v0.2.0-rc.1)
+- 直接下载：[3CAN-engine-v0.2.0-rc.1.zip](https://github.com/hallowkayj-spec/3CAN-engine/releases/download/v0.2.0-rc.1/3CAN-engine-v0.2.0-rc.1.zip)
+- 完整性校验：[SHA-256 文件](https://github.com/hallowkayj-spec/3CAN-engine/releases/download/v0.2.0-rc.1/3CAN-engine-v0.2.0-rc.1.zip.sha256)
+- 构建与隐私扫描证据：[发布回执](https://github.com/hallowkayj-spec/3CAN-engine/releases/download/v0.2.0-rc.1/3CAN-engine-v0.2.0-rc.1.receipt.json)
+
+可以直接把下面这段话发给朋友或粉丝：
+
+> 3CAN 是在真实产品交付中逐步生长出来的 Agent 项目现实与协作引擎。它帮助非技术 Owner 让 Codex、Claude 等 Coding Agents 更准确地理解项目、共享耐久知识、保存证据、复用错误经验并安全并行协作。项目介绍与下载：https://github.com/hallowkayj-spec/3CAN-engine 。当前为 RC 体验版，欢迎提交真实反馈。
+
+该下载包是 2026-08-20 的发布快照，不会随 `main` 自动更新；新版 RuntimeHook/Jev 和自动回写请按 [当前安装指引](docs/RUNTIMEHOOK.md) 使用已审查的源码版本。
+RC 代表候选体验版本，不等同于稳定版。分享、学习或二次修改前请同时阅读许可证；本项目采用 PolyForm Noncommercial License 1.0.0，商业使用需要另行取得许可。
+
 ## 🧠 3CAN 能做什么
 
 ### 🧭 项目现实与语义路由
@@ -57,6 +72,8 @@ Agent 可以读取精确节点、查看项目 briefing，并把完成的里程�
 ### 🧯 ErrorKnowledge
 
 错误先以 occurrence 记录；只有兼容、确定性的重复错误才提升为 ErrorCase。修复完成后可以关联解决方案、验证证据、适用项目和 superseded lineage，避免把每次普通拒绝都变成永久噪声。
+
+历史 ErrorCase 的归类使用经过人工决策的 ErrorFamily 侧车：完整身份可以形成候选，但语义相似度不会自动合并节点或继承解决方案。审定别名只参与稀疏检索和唯一命中路由，不触发整图 embedding 重建；身份不完整的旧记录继续保持 `review_required`。
 
 ### 🧑‍🤝‍🧑 多 Agent / 多 Worktree 协作
 
@@ -77,6 +94,12 @@ Agent 可以读取精确节点、查看项目 briefing，并把完成的里程�
 - 不是 Git、CI、Issue Tracker、数据库或凭据系统的替代品；
 - 不是把所有日志永久收集起来的监控平台；
 - 不是面向公网裸露的多租户 SaaS。本版本没有内建公网认证层。
+
+## 默认开发路径
+
+普通开发按“理解问题 → 编辑 → 测试 → Git 检查点 → 交付”推进，不要求每次编辑前 route、领 ticket 或写回 3CAN。读取发生在项目语义确实能改善判断时；耐久写回默认只发生于完成一个有意义模块后的 `AUTO_CLOSEOUT`，或用户随时明确提出的 `OWNER_REQUESTED`。
+
+3CAN 离线、写回冲突或边端点暂缺时，结果保持 `UNAVAILABLE`、`PARTIAL` 或 `CONFLICT`，安全的本地开发继续。Git、测试、CI、运行时和供应商回执仍是各自事实的权威；3CAN 只收敛项目意义，不复制这些系统。
 
 ## 非技术用户：10 分钟本地体验
 
@@ -128,6 +151,10 @@ python scripts/verify_project.py --base-url http://127.0.0.1:9711 --min-nodes 10
 6. 通过环境变量设置 `THREECAN_BASE_URL`，再运行项目 Kit 的 `doctor` 与只读 `route`；
 7. 只有需要治理写入时才使用 ticket/prepare/done，不要把每次普通读操作都变成仪式。
 
+`bootstrap` / `session-start` 只是当前 Agent 任务内的可选便捷流程，用来组合
+readiness、check-in、briefing 和 route；它不会新建 ChatGPT/Codex Session，也不会
+启动 3CAN Runtime。直接 route 和满足身份、来源门禁的 writeback 不依赖它。
+
 `doctor` 必须报告 `project_identity.status=pass`，才能申请 mutation ticket。
 
 详见 [docs/PROJECT_KIT.md](./docs/PROJECT_KIT.md)。Claude Code 示例见 [CLAUDE_CODE_INTEGRATION.md](./docs/specs/3CAN_ENGINE/recipes/CLAUDE_CODE_INTEGRATION.md)。任何 HTTP 客户端也可以直接使用：
@@ -139,6 +166,22 @@ GET  /api/nodes/{node_id}
 POST /api/activity/log
 GET  /api/token-usage/overview
 ```
+
+### 可选：一次安装 RuntimeHook
+
+RuntimeHook 已作为仓库级 Codex Plugin 打包；它不依赖图谱服务，也不需要启动
+或重启 9700。安装 Git 与 Python 3 后执行：
+
+```text
+codex plugin marketplace add hallowkayj-spec/3CAN-engine --ref main
+```
+
+重启 ChatGPT 桌面版，在 Plugins Directory 选择 `3CAN Engine` 来源并安装
+`3CAN RuntimeHook`；Codex CLI 用户则打开 `/plugins`，从该 marketplace
+安装后新建 Session。通过原生 Hook 审阅界面核对并信任当前 Hook 定义后，即可
+直接说“这个任务按 RuntimeHook 执行”。未激活时，仅 `SessionStart` 提供无状态
+3CAN 快速指引；其他语义 Hook 保持静默，也不要求向每个项目复制 Project Kit。详见
+[docs/RUNTIMEHOOK.md](./docs/RUNTIMEHOOK.md)。
 
 ## 新项目会得到什么
 
@@ -181,6 +224,7 @@ python scripts/prerelease_scan.py --strict
 
 ```text
 neural-memory/backend/       FastAPI 服务、图引擎、路由、票据与 ErrorKnowledge
+neural-memory/maintenance/   可审计、可回滚的图谱维护与 ErrorFamily 侧车工具
 neural-memory/frontend/      本地图谱与 Token 面板
 neural-memory/expansions/    中文与领域词扩展
 neural-memory/tests/         回归、并发、隔离、发布与安全测试
@@ -197,7 +241,7 @@ docs/                        用户指南、项目 Kit、协议、边界与证�
 | --- | ---: | --- |
 | Route benchmark | 46 queries；MRR `0.9783`；Recall@1 `0.8261`；Recall@3 / Hit@3 `1.0` | 在 16 节点公开合成 seed graph 上，任务路由能稳定找到预设相关节点 |
 | Substrate benchmark | 10 cases；Top-1 `1.0`；Top-3 mean recall `0.8167`；ERR proactive@3 `1.0` | 公开 fixture 中的项目结构、接口和错误提示能按预设答案出现 |
-| 本地发布验收 | `450 passed`；Ruff、严格隐私扫描、ZIP 解包扫描通过 | 当前候选的合同、并发、隔离、发布与安全回归在该测试环境通过 |
+| 本地发布验收 | `494 passed`；Ruff、严格隐私扫描通过 | 当前候选的合同、并发、隔离、发布与安全回归在该测试环境通过 |
 | GitHub clean clone | Ubuntu + Windows 独立 `9701` 冷启动、route/writeback、停止回收通过 | 一个不依赖维护者图谱的全新 checkout 能安装并运行 |
 
 完整内容寻址回执见 [SEED_GRAPH_BENCHMARK_20260809.json](./docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json)。这些数字是**官方自建 fixture 的能力证明，不是第三方排名**：它们不证明私有生产图质量、真实 OPC 长期收益、跨机器延迟，也不能直接与 Mem0、Graphiti、Letta 等不同赛道产品比较。仓库保留的历史 LongMemEval 试跑受 judge、runner 与 fixture 版本影响，不作为本候选的发布分数。

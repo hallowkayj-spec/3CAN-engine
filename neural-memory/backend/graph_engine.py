@@ -33,6 +33,7 @@ from typing import Any
 import numpy as np
 
 from error_knowledge import deterministic_fingerprint, is_error_intent
+from error_family import load_active_manifest
 from graph_runtime_lock import GraphRuntimeLease, acquire_graph_runtime_lock
 from models import (
     ActivityEntry, AgentInfo, AgentStatus,
@@ -50,6 +51,9 @@ EMBEDDINGS_FILE = GRAPH_DIR / "embeddings.npz"
 EMBEDDINGS_META_FILE = GRAPH_DIR / "embeddings.meta.json"
 AGENTS_FILE = GRAPH_DIR / "agents.json"
 ACTIVITY_FILE = GRAPH_DIR / "activity_log.json"
+ERROR_FAMILY_ACTIVE_FILE = (
+    GRAPH_DIR / "maintenance" / "error_families" / "active.json"
+)
 
 MAX_ACTIVITY_LOG = 500  # 只保留最近500条活动
 _ROUTE_BUFFER_TTL_SECONDS = 120.0
@@ -763,7 +767,7 @@ class GraphEngine:
         r"|\b(?:can(?:not|'t)|unable\s+to)\s+"
         r"(?:start|connect|load|run|route|retrieve|recall|import|build|install|"
         r"resolve|reach|access|execute|open|read|write|save|deploy|push|pull|"
-        r"authenticate)\b|\bunreachable\b|\bunavailable\b"
+        r"authenticate|produce)\b|\bunreachable\b|\bunavailable\b"
         r"|\brecall\s+(?:miss|failure)\b"
         r"|\b(?:dependency|module|package)\s+(?:is\s+)?missing\b"
         r"|\bmissing\s+(?:dependency|module|package)\b"
@@ -857,8 +861,14 @@ class GraphEngine:
         self._embedding_cache_state = "uninitialized"
         self._embedding_cache_backend_id = ""
         self._embedding_cache_source_manifest = ""
+        self._error_family_assignments: dict[str, dict[str, Any]] = {}
+        self._error_family_diagnostics: dict[str, Any] = {
+            "status": "not_configured",
+            "reason": "active_manifest_absent",
+        }
         self._ensure_dirs()
         self._load()
+        self._load_error_family_manifest()
         self._load_or_build_embeddings()
         self._build_code_index()
         self._build_kw_df()
@@ -975,6 +985,33 @@ class GraphEngine:
                 self.activity_log = [ActivityEntry(**e) for e in raw[-MAX_ACTIVITY_LOG:]]
             except Exception as e:
                 print(f"[WARN] 加载活动日志失败: {e}")
+
+    def _load_error_family_manifest(self) -> None:
+        assignments, diagnostics = load_active_manifest(
+            ERROR_FAMILY_ACTIVE_FILE,
+            self.nodes,
+        )
+        self._error_family_assignments = assignments
+        self._error_family_diagnostics = diagnostics
+
+    def _node_route_keywords(self, node_id: str, node: Node) -> list[str]:
+        assignments = getattr(self, "_error_family_assignments", {})
+        assignment = assignments.get(node_id, {})
+        aliases = assignment.get("aliases", [])
+        if not isinstance(aliases, list):
+            aliases = []
+        return list(
+            dict.fromkeys(
+                [
+                    *node.activation_keywords,
+                    *(
+                        alias
+                        for alias in aliases
+                        if isinstance(alias, str) and alias.strip()
+                    ),
+                ]
+            )
+        )
 
     def _load_or_build_embeddings(self) -> None:
         """加载或构建节点embedding。"""
@@ -1369,6 +1406,9 @@ class GraphEngine:
             node.name,
             node.content.description,
             node.content.current_state,
+            # ErrorFamily aliases are a lightweight sparse/route sidecar.
+            # Keeping them out of dense source text avoids a full embedding
+            # rebuild for every reviewed governance revision.
             " ".join(node.activation_keywords),
             " ".join(node.content.key_files[:5]),
             " ".join(node.content.api_refs[:5]),
@@ -1993,12 +2033,12 @@ class GraphEngine:
         """
         self._kw_df.clear()
         active_n = 0
-        for node in self.nodes.values():
+        for node_id, node in self.nodes.items():
             if node.status in {NodeStatus.dormant, NodeStatus.archived}:
                 continue
             active_n += 1
             seen: set[str] = set()
-            for kw in node.activation_keywords:
+            for kw in self._node_route_keywords(node_id, node):
                 if not isinstance(kw, str):
                     continue
                 k = kw.lower().strip()
@@ -2510,7 +2550,8 @@ class GraphEngine:
         稀有 kw (df<10) 保持 3.0, 让 query 的精确标签命中真正有区分度.
         """
         kw_score = 0.0
-        for kw in node.activation_keywords:
+        route_keywords = self._node_route_keywords(nid, node)
+        for kw in route_keywords:
             if kw.lower() in task_lower:
                 kw_score += self._kw_idf(kw)
         if node.name.lower() in task_lower or task_lower in node.name.lower():
@@ -2525,7 +2566,7 @@ class GraphEngine:
 
         # Tier boost (keyword/desc/notes token match)
         exact_matches = 0
-        for kw in node.activation_keywords:
+        for kw in route_keywords:
             if kw.lower() in query_tokens:
                 exact_matches += 1
         id_lower = nid.lower()
@@ -3664,6 +3705,72 @@ class GraphEngine:
             "match_kinds": {
                 node_id: match_kind for node_id, match_kind in matches
             },
+        }
+
+    def _apply_reviewed_error_family_route_boost(
+        self,
+        task: str,
+        rrf_scores: dict[str, float],
+        *,
+        explicit_error: bool,
+    ) -> dict[str, Any]:
+        """Promote one case only for a unique, reviewer-supplied exact alias."""
+
+        if not explicit_error:
+            return {
+                "enabled": False,
+                "reason": "ordinary_route",
+                "boosted_case_ids": [],
+            }
+        normalized_task = re.sub(r"\s+", " ", task.strip().casefold())
+        alias_owners: dict[str, set[str]] = {}
+        assignments = getattr(self, "_error_family_assignments", {})
+        for node_id, assignment in assignments.items():
+            if (
+                node_id not in rrf_scores
+                or not self._is_error_case_node(node_id, self.nodes.get(node_id))
+                or not isinstance(assignment, dict)
+            ):
+                continue
+            reviewed_aliases = assignment.get("reviewed_aliases", [])
+            if not isinstance(reviewed_aliases, list):
+                continue
+            for alias in reviewed_aliases:
+                if not isinstance(alias, str):
+                    continue
+                normalized_alias = re.sub(r"\s+", " ", alias.strip().casefold())
+                if len(normalized_alias) < 8:
+                    continue
+                alias_owners.setdefault(normalized_alias, set()).add(node_id)
+
+        matches: dict[str, list[str]] = {}
+        for alias, owners in alias_owners.items():
+            if alias not in normalized_task or len(owners) != 1:
+                continue
+            node_id = next(iter(owners))
+            matches.setdefault(node_id, []).append(alias)
+        if not matches:
+            return {
+                "enabled": True,
+                "reason": "no_unique_reviewed_alias",
+                "boosted_case_ids": [],
+            }
+        if len(matches) != 1:
+            return {
+                "enabled": True,
+                "reason": "ambiguous_reviewed_aliases",
+                "boosted_case_ids": [],
+            }
+
+        node_id, matched_aliases = next(iter(matches.items()))
+        current_max = max(rrf_scores.values(), default=0.0)
+        rrf_scores[node_id] = round(current_max + 0.5, 6)
+        return {
+            "enabled": True,
+            "reason": "unique_reviewed_alias",
+            "boosted_case_ids": [node_id],
+            "match_kinds": {node_id: "reviewed_unique_alias"},
+            "matched_alias_count": len(matched_aliases),
         }
 
     def _attach_verified_solution_nodes(
@@ -4816,6 +4923,11 @@ class GraphEngine:
             rrf_scores,
             explicit_error=explicit_error_route,
         )
+        error_family_alias_policy = self._apply_reviewed_error_family_route_boost(
+            req.task,
+            rrf_scores,
+            explicit_error=explicit_error_route,
+        )
         # Exact identity is the final and strongest ErrorCase signal. A directly
         # named unresolved case must not be evicted by three verified canonical
         # siblings before the strict ErrorCase cap is applied.
@@ -4851,6 +4963,22 @@ class GraphEngine:
             error_solution_policy["match_kinds"] = {
                 node_id: kind
                 for node_id, kind in error_solution_policy.get(
+                    "match_kinds",
+                    {},
+                ).items()
+                if node_id in allowed_error_ids
+            }
+            error_family_alias_policy["boosted_case_ids"] = [
+                node_id
+                for node_id in error_family_alias_policy.get(
+                    "boosted_case_ids",
+                    [],
+                )
+                if node_id in allowed_error_ids
+            ]
+            error_family_alias_policy["match_kinds"] = {
+                node_id: kind
+                for node_id, kind in error_family_alias_policy.get(
                     "match_kinds",
                     {},
                 ).items()
@@ -5005,6 +5133,7 @@ class GraphEngine:
                     node_id
                     for node_id in (
                         exact_error_case_policy.get("boosted_case_ids", [])
+                        + error_family_alias_policy.get("boosted_case_ids", [])
                         + error_solution_policy.get("boosted_case_ids", [])
                     )
                     if node_id in reranked
@@ -5206,6 +5335,7 @@ class GraphEngine:
                 "relevant_edge_cap": self._ROUTE_RELEVANT_EDGE_MAX,
                 "resolved_cases_are_non_blocking": True,
                 "exact_error_case_ranking": exact_error_case_policy,
+                "reviewed_family_alias_ranking": error_family_alias_policy,
                 "verified_solution_ranking": error_solution_policy,
                 "attached_solution_node_ids": attached_solution_ids,
                 "attached_evidence_node_ids": attached_evidence_ids,
@@ -5654,6 +5784,16 @@ class GraphEngine:
                 "status": "validating",
                 "criteria_source": "real-query benchmark required",
             },
+            "error_family_index": copy.deepcopy(
+                getattr(
+                    self,
+                    "_error_family_diagnostics",
+                    {
+                        "status": "not_configured",
+                        "reason": "active_manifest_absent",
+                    },
+                )
+            ),
         }
 
     # ═══════════════════════════════════════════════

@@ -1,0 +1,20 @@
+{
+  "name": "3can-engine",
+  "interface": {
+    "displayName": "3CAN Engine"
+  },
+  "plugins": [
+    {
+      "name": "3can-runtimehook",
+      "source": {
+        "source": "local",
+        "path": "./plugins/3can-runtimehook"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

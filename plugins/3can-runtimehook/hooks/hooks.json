@@ -1,0 +1,58 @@
+{
+  "description": "恢复主/临时任务目标，以中文提示待完成或过期的阶段复核。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|clear|compact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\" --session-orientation",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1') -SessionOrientation",
+            "timeout": 10,
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
+            "timeout": 10,
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|update_plan)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
+            "timeout": 10,
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

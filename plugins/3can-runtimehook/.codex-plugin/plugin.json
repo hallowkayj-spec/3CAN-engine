@@ -1,0 +1,38 @@
+{
+  "name": "3can-runtimehook",
+  "version": "0.1.12-rc.1+codex.20260926",
+  "description": "中文任务监督、项目检查点与经授权的 Jev 必经复核；不替代独立安全和业务验收。",
+  "author": {
+    "name": "hallowkayj-spec",
+    "url": "https://github.com/hallowkayj-spec"
+  },
+  "homepage": "https://github.com/hallowkayj-spec/3CAN-engine/blob/main/docs/RUNTIMEHOOK.md",
+  "repository": "https://github.com/hallowkayj-spec/3CAN-engine",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": [
+    "codex",
+    "hooks",
+    "semantic-review",
+    "task-convergence",
+    "ticket-fast-path"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "3CAN RuntimeHook",
+    "shortDescription": "项目检查点、Jev 必经评分与中文阶段复核",
+    "longDescription": "原生生命周期保持离线。经 Owner 启用必经策略后，检查点记录关键参数和实际证据，review 自动调用 OpenRouter Jev；缺记录、低分或异议不得登记成功。模型不授权，不替代 UAT/E2E。",
+    "developerName": "hallowkayj-spec",
+    "category": "Productivity",
+    "capabilities": [
+      "semantic-supervision",
+      "lifecycle-context",
+      "session-orientation"
+    ],
+    "websiteURL": "https://github.com/hallowkayj-spec/3CAN-engine",
+    "defaultPrompt": [
+      "这个任务使用 3CAN RuntimeHook，以最轻且有效的强度进行复核。",
+      "先完成这个临时任务，再返回主任务；临时完成后清除临时状态。",
+      "关闭当前工作树的 3CAN RuntimeHook，不影响独立安全门禁。"
+    ]
+  }
+}
