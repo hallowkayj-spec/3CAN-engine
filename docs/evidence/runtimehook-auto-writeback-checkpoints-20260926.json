@@ -1,0 +1,22 @@
+{
+  "schema": "3can.checkpoints/v1",
+  "final_checkpoint": "delivery",
+  "checkpoints": [
+    {
+      "id": "integration",
+      "title": "接入、关键阶段、错误进展复用现有客户端的最小集成及隔离反例",
+      "criteria": ["AUTO", "SAFE"],
+      "parameters": ["focused_passed", "new_daemons", "native_callbacks_online"],
+      "rubric": ["缺少实际证据或破坏隔离", "有实现但重要反例未验证", "所声明组件行为有实际代码与反例支持，剩余端到端验收明确"],
+      "minimum_score": 1.5, "minimum_confidence": 0.65, "minimum_probability": 0.7
+    },
+    {
+      "id": "delivery",
+      "title": "自动回写实际读回、错误状态边界、全局安装与交付声明",
+      "criteria": ["AUTO", "SAFE", "SHIP"],
+      "parameters": ["focused_passed", "full_suite_passed", "live_writeback_verified", "installed_verified"],
+      "rubric": ["实际反例失败或虚称全局成功", "组件已验证但交付验证尚有缺口", "组件、实际读回和安装有证据，未覆盖的 Agent/宿主明确标记而非宣称通过"],
+      "minimum_score": 1.5, "minimum_confidence": 0.65, "minimum_probability": 0.7
+    }
+  ]
+}

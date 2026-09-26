@@ -22,8 +22,14 @@ whose current project contract requires one, with exact Agent, project,
 workspace/worktree, Workorder, target, and scope bindings. Honor the returned
 TTL and completion deadline. Never blind-retry a typed refusal: refresh expired
 state once only for the still-pending operation, reread a version conflict, and
-stop on an identity or digest mismatch. Durable writeback defaults to a
-meaningful `AUTO_CLOSEOUT` or explicit `OWNER_REQUESTED` checkpoint.
+stop that operation on an identity or digest mismatch. Durable writeback defaults
+to a meaningful `AUTO_CLOSEOUT` or explicit `OWNER_REQUESTED` checkpoint. When the
+Owner-enabled `CODEX_HOME/runtimehook/writeback.json` exists, read
+[自动回写说明](references/writeback.md): at first 3CAN access `connect` the current
+Agent/Workorder to an existing verified project node. Core development `review`
+then writes its `--summary`, result and reference automatically; real errors and
+progress use `error` with the same fault ID. Inspect the returned writeback status;
+local success is not proof of remote persistence. Do not wait for another user reminder.
 
 ## Locate and inspect
 

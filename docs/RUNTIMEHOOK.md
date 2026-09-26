@@ -34,6 +34,29 @@ The state is scoped to one physical Git worktree, not to one chat. At most one
 current RuntimeHook task may use that worktree; concurrent tasks require
 separate worktrees so one task cannot replace another task's Intent.
 
+### Automatic semantic writeback (0.1.11)
+
+The Owner-enabled local adapter now connects an Agent/Workorder to an existing
+project knowledge node. `connect` registers and records that relationship;
+`review --summary ...` automatically writes the actual milestone/result,
+including PARTIAL or Jev objections. `error` records a stable fault's occurrence,
+investigation, mitigation and claimed resolution. These are bounded semantic
+commands, not per-tool network callbacks or automatic ErrorCase promotion.
+
+The adapter reuses the canonical Project Kit client's project/workspace/runtime
+identity and `/api/writeback`. An opaque CAS timestamp, stable delta marker and
+exact readback distinguish committed meaning from a successful HTTP response.
+No graph nodes or background queue are created. A failed write is retained as a
+sanitized local receipt and never stops independent safe work. Formal ErrorCase
+resolution still requires canonical `done` and server-verified evidence.
+
+Read the [configuration and Agent contract](../plugins/3can-runtimehook/skills/3can-runtimehook/references/writeback.md).
+Machine configuration is global; the verified target association is task-local.
+Unintegrated external Agents, parent-ID-only subagents, missing project capsules
+and unknown node ownership remain explicitly unverified, not silently adopted.
+Neither this adapter nor Jev requires a 3CAN restart; only enabling the adapter's
+actual remote write depends on a ready canonical 3CAN service.
+
 ### Global installation, separate host and development directories (0.1.10)
 
 An explicit command workdir or controller `--root` does not change the native

@@ -26,6 +26,7 @@ from typing import Any
 # A project-local Hook must not dirty its caller by compiling sibling modules.
 sys.dont_write_bytecode = True
 import runtimehook_checkpoints as checkpoints  # noqa: E402
+import runtimehook_writeback as knowledge  # noqa: E402
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -56,7 +57,8 @@ SESSION_FAST_PATH = (
     "仅在有助于当前判断时检索或 route。仅对契约要求票据的操作，在执行前即时获取新票据，"
     "绑定当前 AgentId、项目/命名空间、物理工作区及必要的 Workorder、目标和范围，并遵守 TTL 与完成期限。"
     "遇到拒绝不得盲重试：未执行操作的过期状态仅刷新一次；版本冲突先重读；身份或摘要不匹配时暂停该操作。"
-    "仅在 AUTO_CLOSEOUT 或用户明确要求时回写持久含义。本指引不激活 RuntimeHook，也不替代独立安全与证据门禁。"
+    "持久含义按 AUTO_CLOSEOUT 或用户要求回写；本机若启用自动回写，在接入、关键阶段与错误进展通过 Skill 的 connect/review/error 自动落盘并核验回读。"
+    "失败标记 UNAVAILABLE，不阻塞安全本地工作。本指引不激活 RuntimeHook，也不替代独立安全与证据门禁。"
     "外部契约不确定或反复发生不明失败时，用 3can-deep-research 将已读证据连接到判断和可执行验证；"
     "来源数量和研究记录不等于业务验收。"
 )
@@ -924,6 +926,75 @@ def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def connect_knowledge(args):
+    """Bind durable project meaning, never another task's execution state."""
+    settings = knowledge.config()
+    if not settings:
+        raise RuntimeHookError("WRITEBACK_POLICY_NOT_ENABLED：先配置 Owner 授权的全局 3CAN 客户端")
+    root = _repository_root(args.root)
+    state = _load_state(root)
+    if not state or state["status"] != "active":
+        raise RuntimeHookError("请先为当前任务启用 RuntimeHook")
+    if not args.session_id or not args.native_cwd:
+        raise RuntimeHookError("connect 需要当前任务 ID 和宿主实际目录")
+    target, observed = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
+    if target != root or observed.get("activation_id") != state["activation_id"]:
+        raise RuntimeHookError("CONTEXT_MISMATCH：不得关联其他任务")
+    binding = knowledge.connection(settings, root, agent_id=args.agent_id,
+                                   workorder_id=args.workorder_id, node_id=args.node_id)
+    binding["session_id"] = args.session_id
+    state["knowledge"] = binding
+    _write_state(root, state)
+    return {"ok": True, "status": "CONNECTED_LOCALLY", "knowledge": binding}
+
+
+def _auto_writeback(args, output):
+    """Called only by semantic commands, never by native lifecycle callbacks."""
+    settings = knowledge.config()
+    if not settings:
+        return {"status": "NOT_ENABLED", "local_work_blocked": False}
+    root = _repository_root(args.root)
+    state = _load_state(root)
+    if not state or not state.get("knowledge"):
+        return {"status": "UNAVAILABLE", "error_code": "KNOWLEDGE_BINDING_REQUIRED",
+                "message": "当前任务先 connect 到已核实的项目/模块节点；不猜测或借用其他任务节点。", "local_work_blocked": False}
+    if state["status"] != "active":
+        raise RuntimeHookError("RuntimeHook 未启用，不为旧任务自动回写")
+    if args.command == "review" and not args.summary.strip():
+        return {"status": "UNAVAILABLE", "error_code": "SEMANTIC_SUMMARY_REQUIRED",
+                "message": "review --summary 需简述实际阶段变化与未完成项；不把目标原文冒充开发结果。", "local_work_blocked": False}
+    if not args.session_id or not args.native_cwd:
+        raise RuntimeHookError("自动回写必须核对当前任务和宿主目录")
+    target, scope = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
+    if target != root or scope.get("activation_id") != state["activation_id"]:
+        raise RuntimeHookError("CONTEXT_MISMATCH：不得为其他任务回写")
+    if state["knowledge"].get("session_id") != args.session_id:
+        raise RuntimeHookError("CONTEXT_MISMATCH：回写绑定属于另一个任务")
+    if args.command == "error" and ((args.scope == "temporary") != bool(state.get("temporary_task"))):
+        raise RuntimeHookError("REVIEW_SCOPE_MISMATCH：错误记录必须关联当前目标")
+    intent = state.get("temporary_task") or state["run_intent"]
+    event = {"event": "onboarding" if args.command == "connect" else "error" if args.command == "error" else "milestone",
+             "session_id": args.session_id, "activation_id": state["activation_id"],
+             "scope": getattr(args, "scope", "main"), "checkpoint": (state.get("checkpoint") or {}).get("id"),
+             "summary": getattr(args, "summary", "") or intent["goal"],
+             "reference": getattr(args, "reference", "") or "runtimehook:" + state["activation_id"],
+             "result": output.get("result") if output.get("ok") else output.get("status", "UNAVAILABLE"),
+             "next_objective": getattr(args, "next_objective", "")}
+    if args.command == "connect":
+        event["result"] = "observed"
+    if args.command == "error":
+        event["error"] = {"id": args.error_id, "state": args.error_state}
+        event["result"] = args.error_state
+    # For temporary completion the review already cleared the slot. Use the
+    # caller's explicit scope and summary, never relabel it as main completion.
+    receipt = knowledge.deliver(settings, root, state["knowledge"], event)
+    _state_root(root, create=False)
+    event_id = receipt.get("event_id")
+    if event_id:
+        checkpoints.save(root / STATE_ROOT / (event_id.lower() + ".json"), receipt)
+    return receipt
+
+
 def _review_checkpoint(args, root, state, reference):
     """The existing review path owns mandatory invocation, never a second Hook."""
     if not checkpoints.required():
@@ -1516,7 +1587,7 @@ def hook(args: argparse.Namespace) -> int:
             else:
                 print(json.dumps({"systemMessage": message}, ensure_ascii=False))
         return 0
-    except (RuntimeHookError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeHookError, knowledge.WritebackError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         return _hook_error(str(exc))
 
 
@@ -1545,6 +1616,20 @@ def build_parser() -> argparse.ArgumentParser:
     on.add_argument("--reason", required=True)
     on.add_argument("--episode", default="")
 
+    connect = sub.add_parser("connect", help="一次绑定当前任务的 Agent/Workorder/已有知识节点并自动登记；不建新节点。")
+    connect.add_argument("--agent-id", required=True)
+    connect.add_argument("--workorder-id", required=True)
+    connect.add_argument("--node-id", required=True)
+    connect.add_argument("--reference", required=True)
+
+    error = sub.add_parser("error", help="自动记录错误发生、调查、缓解或待验证修复；不擅改 ErrorCase。")
+    error.add_argument("--id", dest="error_id", required=True)
+    error.add_argument("--scope", choices=["main", "temporary"], default="main")
+    error.add_argument("--state", dest="error_state", choices=["observed", "investigating", "mitigated", "resolution_claimed"], required=True)
+    error.add_argument("--summary", required=True)
+    error.add_argument("--reference", required=True)
+    error.add_argument("--next-objective", default="")
+
     sub.add_parser("off", help="仅关闭 RuntimeHook 语义提醒。")
 
     relation = sub.add_parser("task", help="记录临时任务，或仅建议任务转移/纠偏；不迁移目录或新建任务。")
@@ -1559,6 +1644,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--stage", choices=["episode", "final"], required=True)
     review.add_argument("--result", choices=sorted(REVIEW_RESULTS), required=True)
     review.add_argument("--reference", required=True)
+    review.add_argument("--summary", default="", help="脱敏的本阶段实际变化；不上传原始证据包。")
     review.add_argument("--next-objective", default="")
     review.add_argument("--timeout", type=float, default=10, help="Jev 单次调用超时秒数。")
 
@@ -1606,7 +1692,7 @@ def main(argv: list[str] | None = None) -> int:
             binding = _read_scope(args.session_id)
             if Path(binding["worktree"]) != args.root.resolve():
                 raise RuntimeHookError("CONTEXT_MISMATCH：本地命令目录与当前任务的已登记绑定不一致")
-            if args.command in {"on", "off", "review", "checkpoint", "task"}:
+            if args.command in {"on", "off", "review", "checkpoint", "task", "connect", "error"}:
                 existing = _load_state(args.root)
                 if existing and existing["activation_id"] != binding.get("activation_id"):
                     raise RuntimeHookError("SCOPE_STALE：绑定或修改语义状态前请先核实当前任务")
@@ -1631,6 +1717,10 @@ def main(argv: list[str] | None = None) -> int:
             output = disable(args)
         elif args.command == "review":
             output = record_review(args)
+        elif args.command == "connect":
+            output = connect_knowledge(args)
+        elif args.command == "error":
+            output = {"ok": True, "status": "ERROR_OBSERVATION", "result": args.error_state}
         elif args.command == "task":
             output = task_relation(args)
         elif args.command == "checkpoint":
@@ -1643,6 +1733,11 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeHookError(f"不支持的命令： {args.command}")
         if scope is not None:
             output["native_scope"] = scope
+        if args.command in {"connect", "review", "error"}:
+            try:
+                output["writeback"] = _auto_writeback(args, output)
+            except (ValueError, OSError, subprocess.SubprocessError):
+                output["writeback"] = {"status": "UNAVAILABLE", "error_code": "WRITEBACK_CONTEXT_UNAVAILABLE", "local_work_blocked": False}
         exit_code = 0 if output.get("ok", True) else 2
     except (RuntimeHookError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         output = {"ok": False, "status": "UNAVAILABLE", "error": str(exc)}

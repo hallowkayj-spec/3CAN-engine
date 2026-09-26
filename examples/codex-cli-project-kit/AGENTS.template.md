@@ -52,6 +52,15 @@ meaningful closeout (`AUTO_CLOSEOUT`) or an explicit Owner request
 (`OWNER_REQUESTED`). A typed 3CAN failure never fabricates completion and does
 not block safe local work.
 
+When the Owner enables the installed RuntimeHook's machine-wide automatic
+writeback configuration, first read its Skill and writeback reference. Connect
+the current Agent/Workorder to a verified existing module node, then use
+`review --summary` for automatic milestone writeback and `error` for actual
+fault/progress updates. This explicit Owner policy extends the defaults above;
+it does not require per-tool traffic, new nodes, or raw transcript uploads.
+Check the returned writeback receipt. Error resolution claims do not bypass
+canonical ErrorKnowledge evidence verification.
+
 Ordinary safe work has no mandatory ceremony. Convergence is opt-in only when
 the project declares an evidence-bearing long task.
 
