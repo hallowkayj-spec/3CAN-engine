@@ -1,9 +1,14 @@
 # Intent-Preserving Adaptive Review Harness
 
-Status: `ISOLATED_SEMANTIC_SUPERVISOR / DOGFOOD_PENDING / GLOBAL_ROLLOUT_BLOCKED`
+Historical design baseline (2026-08-24), not current installation status.
+Its original status was `ISOLATED_SEMANTIC_SUPERVISOR / DOGFOOD_PENDING / GLOBAL_ROLLOUT_BLOCKED`.
+Current usage, scope binding, optional/required Jev checkpoints and automatic
+writeback are documented in [RuntimeHook](RUNTIMEHOOK.md). The one-state-file
+description below predates bounded checkpoint/opinion/writeback receipts.
 
-Strict evidence reference: Draft PR #15; Git is authoritative for its current
-review head.
+Original strict evidence reference: PR #15, incorporated into the consolidated
+PR #17. Git is authoritative for exact source state; historical dogfood evidence
+does not certify current business tasks.
 
 ## First-principles split
 
