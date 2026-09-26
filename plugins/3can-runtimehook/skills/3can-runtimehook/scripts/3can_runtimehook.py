@@ -26,7 +26,7 @@ from typing import Any
 # A project-local Hook must not dirty its caller by compiling sibling modules.
 sys.dont_write_bytecode = True
 import runtimehook_checkpoints as checkpoints  # noqa: E402
-import runtimehook_writeback as knowledge  # noqa: E402
+import runtimehook_writeback as writeback_adapter  # noqa: E402
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -928,7 +928,7 @@ def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
 
 def connect_knowledge(args):
     """Bind durable project meaning, never another task's execution state."""
-    settings = knowledge.config()
+    settings = writeback_adapter.config()
     if not settings:
         raise RuntimeHookError("WRITEBACK_POLICY_NOT_ENABLED：先配置 Owner 授权的全局 3CAN 客户端")
     root = _repository_root(args.root)
@@ -940,7 +940,7 @@ def connect_knowledge(args):
     target, observed = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
     if target != root or observed.get("activation_id") != state["activation_id"]:
         raise RuntimeHookError("CONTEXT_MISMATCH：不得关联其他任务")
-    binding = knowledge.connection(settings, root, agent_id=args.agent_id,
+    binding = writeback_adapter.connection(settings, root, agent_id=args.agent_id,
                                    workorder_id=args.workorder_id, node_id=args.node_id)
     binding["session_id"] = args.session_id
     state["knowledge"] = binding
@@ -950,7 +950,7 @@ def connect_knowledge(args):
 
 def _auto_writeback(args, output):
     """Called only by semantic commands, never by native lifecycle callbacks."""
-    settings = knowledge.config()
+    settings = writeback_adapter.config()
     if not settings:
         return {"status": "NOT_ENABLED", "local_work_blocked": False}
     root = _repository_root(args.root)
@@ -987,7 +987,7 @@ def _auto_writeback(args, output):
         event["result"] = args.error_state
     # For temporary completion the review already cleared the slot. Use the
     # caller's explicit scope and summary, never relabel it as main completion.
-    receipt = knowledge.deliver(settings, root, state["knowledge"], event)
+    receipt = writeback_adapter.deliver(settings, root, state["knowledge"], event)
     _state_root(root, create=False)
     event_id = receipt.get("event_id")
     if event_id:
@@ -1587,7 +1587,7 @@ def hook(args: argparse.Namespace) -> int:
             else:
                 print(json.dumps({"systemMessage": message}, ensure_ascii=False))
         return 0
-    except (RuntimeHookError, knowledge.WritebackError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeHookError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         return _hook_error(str(exc))
 
 
@@ -1739,7 +1739,7 @@ def main(argv: list[str] | None = None) -> int:
             except (ValueError, OSError, subprocess.SubprocessError):
                 output["writeback"] = {"status": "UNAVAILABLE", "error_code": "WRITEBACK_CONTEXT_UNAVAILABLE", "local_work_blocked": False}
         exit_code = 0 if output.get("ok", True) else 2
-    except (RuntimeHookError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeHookError, writeback_adapter.WritebackError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         output = {"ok": False, "status": "UNAVAILABLE", "error": str(exc)}
         exit_code = 2
     print(json.dumps(output, ensure_ascii=False, indent=2))

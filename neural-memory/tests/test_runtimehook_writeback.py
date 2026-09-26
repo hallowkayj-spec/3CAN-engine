@@ -158,6 +158,20 @@ def test_native_hooks_never_deliver(lane, monkeypatch, capsys):
         capsys.readouterr()
 
 
+def test_connect_configuration_failure_is_typed(lane, monkeypatch, capsys):
+    controller = hook_tests.controller
+    _activate(lane.root)
+    def unavailable():
+        raise wb.WritebackError("INVALID_WRITEBACK_CONFIG")
+    monkeypatch.setattr(wb, "config", unavailable)
+    assert controller.main(["--root", str(lane.root), "--session-id", _session_id(lane.root),
+        "connect", "--agent-id", "fixture-agent", "--workorder-id", "fixture-workorder",
+        "--node-id", "DOC-fixture", "--reference", "test:connect"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "UNAVAILABLE" and result["error"] == "INVALID_WRITEBACK_CONFIG"
+    assert not lane.calls
+
+
 def test_real_graph_persistence_and_canonical_writeback(lane, graph_runtime, monkeypatch):  # noqa: F811
     module, engine, graph_dir = graph_runtime
     engine.create_node(module.NodeCreate(id="DOC-fixture", name="Fixture module", cluster="fixture",
