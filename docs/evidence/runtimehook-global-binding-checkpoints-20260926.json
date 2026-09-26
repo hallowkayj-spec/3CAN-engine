@@ -1,0 +1,26 @@
+{
+  "schema": "3can.checkpoints/v1",
+  "final_checkpoint": "delivery",
+  "checkpoints": [
+    {
+      "id": "scope-recovery",
+      "title": "宿主锚点与开发目标解耦：根因、最小修复、隔离反例",
+      "criteria": ["SCOPE", "JEV"],
+      "parameters": ["focused_tests_passed", "new_services", "native_event_verified"],
+      "rubric": ["没有根因证据或破坏任务隔离", "设计合理但缺少当前范围的实现或反例", "当前修复与反例支持范围隔离，后续验证与未完成项明确"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    },
+    {
+      "id": "delivery",
+      "title": "跨目录检查点、Jev、完整回归与插件交付边界",
+      "criteria": ["SCOPE", "JEV", "DELIVERY"],
+      "parameters": ["tests_passed", "tests_skipped", "installed_files_verified", "native_event_verified"],
+      "rubric": ["反例失败或未经验证却宣称完成", "组件验证有重要缺口或交付状态不明确", "组件验证与交付证据完整，App重载和业务验收的未验证边界如实保留"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    }
+  ]
+}

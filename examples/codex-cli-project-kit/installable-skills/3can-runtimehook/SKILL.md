@@ -47,10 +47,14 @@ host-scope cache described below is an observation, not a lease or task schedule
 Separate command workdirs do not change a task's native Hook cwd. Before first
 activation, after moving project work, or when another task's Intent appears,
 obtain the native task cwd from the host's task metadata (not the command's
-workdir). Pass `--root <physical-root> --native-cwd <observed-cwd>` to `on`;
+workdir). The observed host cwd and the verified development worktree may
+differ: do not require folder cleanup, move the App task, or copy state just to
+make them equal. Pass `--root <physical-root> --native-cwd <observed-cwd>` to `on`;
 `--session-id` defaults to the host's `CODEX_THREAD_ID` when available. This
-records the scope as part of activation. For an existing verified task or an
-Owner-authorized handoff, retain its state and record only the relationship:
+records a same-worktree scope as part of activation. For cross-directory use,
+first verify the target Intent/writer and run `bind-scope` below, then `on`
+only if a new main Intent is actually needed. For an existing verified task or
+an Owner-authorized handoff, retain its state and record only the relationship:
 
 ```text
 <controller> --root <physical-root> --native-cwd <observed-cwd> --session-id <host-task-id> bind-scope --reference <host-observation-and-current-intent-evidence>
@@ -66,9 +70,15 @@ The disposable cache under `CODEX_HOME/runtimehook/scopes/` contains only the
 observed task/root/activation relation and evidence pointers, not goals,
 priorities, tickets or execution state. Already-bound native events do a local
 lookup without Git discovery, transcript scanning or 9700. New tasks, changed
-worktrees or activations require a new observation. At registration only,
+host anchors, worktrees or activations require a new observation. A non-Git
+host cwd matches exactly; a Git host also permits subdirectories of its same
+observed worktree. Native events then use only the verified target, never the
+host peer's semantic state. At registration only,
 relevant 3CAN handoff evidence may be compared using `--knowledge-worktree` and
 `--knowledge-reference`; absent knowledge stays `UNVERIFIED`, not a failure.
+A historical `CONTRADICTS` is advisory, not an identity authority or a reason
+to skip Jev. Verify the current mapping, then update durable meaning through
+the normal bounded 3CAN writeback at handoff/closeout, not on every Hook event.
 
 Unknown/stale/mismatched scope gives advisory feedback without a Stop block,
 without adopting or changing peer state. Do not finish the entire task merely
@@ -81,6 +91,9 @@ and continue safe local work. Do not guess it, edit Session databases, start a
 second writer, or switch off/replace foreign Intent. Use a supported host
 binding repair, then confirm the actual native event's Worktree and activation
 after resume. Manual controller success is not native Hook acceptance.
+Old v1 scope caches remain same-worktree-only until explicitly rebound; v2
+separates host and target. Older plugin versions cannot read v2: keep them for
+already-running tasks, but reload the updated plugin for a newly rebound task.
 
 Run `status`. If the active RUN_INTENT still matches the current Owner task,
 reuse it. Classify an intervening request with the rules below before replacing

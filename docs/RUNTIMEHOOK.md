@@ -34,13 +34,15 @@ The state is scoped to one physical Git worktree, not to one chat. At most one
 current RuntimeHook task may use that worktree; concurrent tasks require
 separate worktrees so one task cannot replace another task's Intent.
 
-### Native task directory must match
+### Global installation, separate host and development directories (0.1.10)
 
 An explicit command workdir or controller `--root` does not change the native
 task cwd supplied to Hooks. A legacy chat can therefore execute code in one
-repository while its native events still address another repository's state.
-The optional `--native-cwd` check accepts an independently observed host task
-directory and refuses a mismatch before reading or writing semantic state:
+repository while its native events retain the old cwd. The verified task
+binding separates that host anchor from the development target. A non-Git host
+is supported when the target is a Git worktree; no directory migration or
+project-local plugin copy is required. After explicit binding, this command
+checks the observed host against its anchor and reads only the target:
 
 ```text
 <controller> --root <physical-worktree> --native-cwd <host-task-cwd> status
@@ -49,19 +51,20 @@ directory and refuses a mismatch before reading or writing semantic state:
 The same check can precede `on`, `review`, `checkpoint`, or `off`. A matching
 subdirectory resolves to its Git worktree. It is a scope diagnostic, not a
 Session registry or authentication boundary; omission does not mechanically
-certify native scope. Native Hooks also reject a conflicting explicit `--root`
-when their payload contains cwd, and active context/reminders identify the
-worktree they actually use. The lightweight scope cache below prevents an
-unregistered chat from inheriting that worktree's activation; the host binding
-itself still needs correction.
+certify native scope. Native Hooks reject an explicit `--root` conflicting
+with the task's verified target, and context/reminders identify the actual
+target. An unregistered chat still cannot inherit an existing activation.
 
 ### Once-observed relationship, local fast path
 
 Use the host-provided task ID and cwd, not transcript parsing or task-title
 heuristics. The controller's `bind-scope` command records an existing verified
 task/root/activation relation without changing semantic state. `on` also does
-this when passed `--native-cwd` and a native `--session-id` (the latter defaults
-to `CODEX_THREAD_ID`). A bulk initial inventory can call the same command per
+this for a same-worktree host when passed `--native-cwd` and a native
+`--session-id` (the latter defaults to `CODEX_THREAD_ID`). For a different host
+cwd, run `bind-scope` first, after verifying target Intent and single-writer
+ownership; `--root` alone cannot opt into a cross-directory handoff.
+A bulk initial inventory can call the same command per
 verified task; there is no second importer, daemon, polling service or database.
 
 ```text
@@ -75,15 +78,18 @@ per-task replacement avoids a shared registry lock. Deleting it loses no
 engineering evidence: the next relevant event reports `SCOPE_UNBOUND` until a
 new observation. It never automatically adopts an existing activation.
 
-A hit checks the physical root and local Git marker identity using filesystem
+A v2 hit checks the recorded host anchor and target Git marker identity using filesystem
 operations only. Native events then reuse the existing semantic review logic;
 that logic still queries Git for boundary/freshness and safe state access. Thus
 local relationship-lookup latency and full native Hook latency are different
 measurements. No milliseconds claim includes a network request or a model review.
 
-New task IDs, moved/nested worktrees, changed Git markers or changed activation
-IDs cannot silently reuse an old binding. A same-worktree subdirectory remains
-valid. Codex subagent hooks may share the parent session ID; a child cannot
+New task IDs, changed host anchors, moved/nested worktrees, changed Git markers
+or changed activation IDs cannot silently reuse an old binding. A subdirectory
+of the same Git host remains valid; a non-Git host requires the exact observed
+cwd. Legacy v1 bindings remain same-worktree-only until explicitly rebound.
+Older plugins reject v2 instead of interpreting it as their former contract.
+Codex subagent hooks may share the parent session ID; a child cannot
 rebind the parent's entry to its own root. This adapter is not a complete
 subagent ownership service and does not grant concurrent writer permission.
 
@@ -91,7 +97,10 @@ subagent ownership service and does not grant concurrent writer permission.
 handoff meaning is relevant. Pass the observed `--knowledge-worktree` and
 `--knowledge-reference` for a comparison; otherwise it stays `UNVERIFIED`.
 The saved comparison is explicitly dated evidence, not a live 9700 check or
-authentication. Do not cache a ticket or infer business priority from it.
+authentication. `CONTRADICTS` reports stale/disagreeing knowledge without
+overriding a verified current mapping or disabling checkpoints/Jev. Update
+durable meaning at a normal 3CAN handoff/closeout; callbacks never write the
+graph. Do not cache a ticket or infer business priority from it.
 
 Scope problems emit a bounded advisory at SessionStart/UserPromptSubmit or a
 Stop system message, never `decision:block` or `continue:false`. PostToolUse
@@ -100,15 +109,13 @@ is applied or changed; safe independent work continues and only a genuinely
 unsafe affected operation remains deferred. Correctly scoped semantic review
 timing below is unchanged, as are independent project safety gates.
 
-Use the supported host path to repair the existing task. Codex App Server
-documents cwd overrides on `turn/start`, but protocol support does not prove
-that a particular Desktop client exposes a safe in-place rebind. Do not use a
-Git-moving handoff as a metadata edit, raw-edit JSONL/SQLite, or attach a second
-runtime to an owned thread. An already-loaded resume and a cold resume need
-separate verification. Accept the repair only after actual native events and
-reopen/resume agree with the intended root, without modifying the peer state.
-Until then, report automatic supervision as `UNAVAILABLE`/unverified and keep
-safe local development moving; do not clear foreign state to silence it.
+The native [Hook input](https://learn.chatgpt.com/docs/hooks#common-input-fields)
+provides `session_id` and `cwd`. Keep those actual host values; a tool workdir
+does not replace them. Use the explicit verified binding instead of editing
+App JSONL/SQLite, Git-moving a task, creating junctions, or clearing foreign
+state. Accept actual App lifecycle delivery only after its event references
+the intended target/activation; controller and launcher simulations alone do
+not prove an already-running task reloaded the new plugin.
 
 ## Use
 
@@ -245,7 +252,9 @@ RuntimeHook is distributed as the repository Plugin at
 launcher supports `python.exe`, `python3.exe`, and the standard `py.exe -3`
 launcher, while both platform launchers reject interpreters resolved inside the
 current worktree. Non-SessionStart events exit before Python and Git discovery
-when no RuntimeHook state exists. Windows commands run directly in the native
+when neither local state nor a host scope-cache directory exists. With scope
+bindings present, the controller selects by native task ID; the launcher does
+not duplicate that lookup or discard cross-directory events. Windows commands run directly in the native
 PowerShell hook host; there is no nested shell or batch wrapper. A custom cmd
 or Git Bash hook shell on Windows is not a validated configuration. Launcher failures report typed
 `UNAVAILABLE` instead of silently disabling Hooks. Native Hooks need no 3CAN Runtime,
@@ -289,7 +298,9 @@ desktop app so the local install picks up the new files, as specified in the
 Then safely resume the intended task and inspect the actual native event and
 current Hook trust, not only the enabled entry in Settings. An already-running
 task is not proven to hot-reload it. A restart does not change a task's saved cwd
-or resolve `CONTEXT_MISMATCH`: verify the actual task/worktree binding separately.
+or invent a verified target binding: the Agent records it once using actual
+host metadata and current Intent. Cross-directory binding does not require
+changing that saved cwd or waiting for folder cleanup.
 Do not activate over another task's Intent merely to check installation.
 Neither this restart nor a successful component/Provider simulation is proof of
 real business acceptance. No 9700/9711 restart is needed for this plugin update.

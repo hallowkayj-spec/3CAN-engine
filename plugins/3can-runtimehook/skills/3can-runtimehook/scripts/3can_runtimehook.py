@@ -35,7 +35,7 @@ LOCAL_EXCLUDE_RULE = "/.codex/runtimehook/"
 STATE_SCHEMA = "3can.runtimehook-state/v1"
 TEMPORARY_STATE_SCHEMA = "3can.runtimehook-state/v2"
 CHECKPOINT_STATE_SCHEMA = "3can.runtimehook-state/v3"
-SCOPE_SCHEMA = "3can.runtimehook-scope/v1"
+SCOPE_SCHEMA = "3can.runtimehook-scope/v2"
 MAX_STATE_BYTES = 64 * 1024
 MAX_CONTEXT_CHARS = 4_000
 INTENSITIES = {"light", "medium", "max"}
@@ -874,8 +874,7 @@ def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
         if not args.native_cwd or not args.session_id:
             raise RuntimeHookError("检查点需要宿主实际 --native-cwd 和 --session-id")
         scoped, binding = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
-        if (scoped != root or binding.get("activation_id") != state["activation_id"]
-                or binding.get("knowledge", {}).get("status") == "CONTRADICTS"):
+        if scoped != root or binding.get("activation_id") != state["activation_id"]:
             raise RuntimeHookError("CONTEXT_MISMATCH：不记录其他任务检查点")
         if not all((spec_path, checkpoint_id, supplied)):
             raise RuntimeHookError("CHECKPOINT_SPEC_REQUIRED：提供 --spec、--id、--packet；说明和证据不能省略")
@@ -957,8 +956,7 @@ def _review_checkpoint(args, root, state, reference):
     if not args.native_cwd or not args.session_id:
         raise RuntimeHookError("Jev 必经复核需要宿主实际 --native-cwd 和 --session-id")
     scoped, current_binding = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
-    if (scoped != root or current_binding.get("activation_id") != state["activation_id"]
-            or current_binding.get("knowledge", {}).get("status") == "CONTRADICTS"):
+    if scoped != root or current_binding.get("activation_id") != state["activation_id"]:
         raise RuntimeHookError("CONTEXT_MISMATCH：不代签其他任务检查点")
     if args.stage == "final" and args.result == "PASS":
         if key != spec["final_checkpoint"]:
@@ -1022,7 +1020,7 @@ def assess(args: argparse.Namespace) -> dict[str, Any]:
     def snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
         scoped, binding = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
         state = _load_state(root)
-        if scoped != root or not state or state["status"] != "active" or binding.get("activation_id") != state["activation_id"] or binding.get("knowledge", {}).get("status") == "CONTRADICTS":
+        if scoped != root or not state or state["status"] != "active" or binding.get("activation_id") != state["activation_id"]:
             raise RuntimeHookError("Jev CONTEXT_MISMATCH：不读取其他任务意图")
         # Narrow call-currentness only, not a candidate or artifact fingerprint.
         return state, {"session_id": args.session_id, "worktree": str(root), "state": state, "git_head": _git_head(root)}
@@ -1149,7 +1147,10 @@ def _native_worktree(cwd: Any) -> Path | None:
 
 def _scope_marker(root: Path) -> list[int]:
     marker = root / ".git"
-    info = marker.stat()
+    try:
+        info = marker.stat()
+    except OSError as exc:
+        raise RuntimeHookError("CONTEXT_MISMATCH：已登记的 Git 标记不存在或不可读；先核实工作树") from exc
     # Commits change a .git directory's mtime, but not its identity. A linked
     # worktree's .git *file* changing invalidates its recorded Git binding.
     return [info.st_dev, info.st_ino] + (
@@ -1169,13 +1170,23 @@ def _read_scope(session_id: str) -> dict[str, Any]:
         raise RuntimeHookError("范围缓存不可读") from exc
     if (
         not isinstance(value, dict)
-        or value.get("schema") != SCOPE_SCHEMA
+        or value.get("schema") not in {SCOPE_SCHEMA, "3can.runtimehook-scope/v1"}
         or value.get("session_id") != session_id
         or not isinstance(value.get("worktree"), str)
         or not Path(value["worktree"]).is_absolute()
         or not isinstance(value.get("knowledge"), dict)
     ):
         raise RuntimeHookError("范围缓存身份无效")
+    if value["schema"] == SCOPE_SCHEMA and (
+        not isinstance(value.get("native_cwd"), str)
+        or not Path(value["native_cwd"]).is_absolute()
+        or "native_worktree" not in value
+        or (value["native_worktree"] is not None and (
+            not isinstance(value["native_worktree"], str)
+            or not Path(value["native_worktree"]).is_absolute()
+        ))
+    ):
+        raise RuntimeHookError("范围缓存缺少已观察的宿主锚点")
     return value
 
 
@@ -1184,12 +1195,23 @@ def _check_scope(payload: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     binding = _read_scope(payload.get("session_id", ""))
     root = _native_worktree(payload.get("cwd"))
     expected = Path(binding["worktree"])
-    if root != expected or root is None or _scope_marker(root) != binding.get("git_marker"):
+    if binding["schema"] == SCOPE_SCHEMA:
+        # The host anchor and the verified development target are distinct.
+        # A non-Git host is matched exactly; Git hosts retain subdir support.
+        anchor = Path(binding["native_worktree"]) if binding["native_worktree"] else None
+        host_matches = root == anchor and (
+            _scope_marker(root) == binding.get("native_git_marker") if root is not None
+            else Path(payload["cwd"]).resolve(strict=True) == Path(binding["native_cwd"])
+        )
+    else:
+        # Never silently opt a formerly mismatched v1 cache into cross-root use.
+        host_matches = root == expected
+    if not host_matches or _scope_marker(expected) != binding.get("git_marker"):
         raise RuntimeHookError(
-            f"CONTEXT_MISMATCH：原生工作树 {root}；已登记工作树 {expected}。"
+            f"CONTEXT_MISMATCH：宿主锚点或开发工作树已变化；已登记开发工作树 {expected}。"
             "不得使用其他任务状态；报告不匹配并继续不受影响的安全工作"
         )
-    return root, binding
+    return expected, binding
 
 
 def _save_scope(binding: dict[str, Any]) -> None:
@@ -1219,7 +1241,8 @@ def bind_scope(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeHookError("bind-scope 需要宿主实际观察到的 --native-cwd")
     native_root = _native_worktree(str(args.native_cwd))
     reference = _text(args.reference, label="host/Owner binding reference")
-    state = _load_state(root) if native_root == root else None
+    # Explicit observation/handoff only: never inspect the host peer's state.
+    state = _load_state(root)
     knowledge_root = getattr(args, "knowledge_worktree", None)
     knowledge_reference = getattr(args, "knowledge_reference", "")
     if knowledge_root is not None and (not knowledge_root.is_absolute() or not knowledge_reference):
@@ -1228,6 +1251,8 @@ def bind_scope(args: argparse.Namespace) -> dict[str, Any]:
         "schema": SCOPE_SCHEMA,
         "session_id": _text(args.session_id, label="native session ID"),
         "native_cwd": str(args.native_cwd.resolve(strict=True)),
+        "native_worktree": str(native_root) if native_root else None,
+        "native_git_marker": _scope_marker(native_root) if native_root else None,
         "worktree": str(root),
         "git_marker": _scope_marker(root),
         "activation_id": state["activation_id"] if state else None,
@@ -1245,7 +1270,7 @@ def bind_scope(args: argparse.Namespace) -> dict[str, Any]:
     _save_scope(binding)
     return {
         "ok": True,
-        "status": "MATCH" if native_root == root else "CONTEXT_MISMATCH",
+        "status": "MATCH",
         "binding": binding,
         "semantic_state_changed": False,
     }
@@ -1309,23 +1334,29 @@ def hook(args: argparse.Namespace) -> int:
             "clear",
             "compact",
         }
-        # Preserve the explicit-root preflight; native events otherwise reuse
-        # the once-observed mapping rather than running Git just to locate it.
-        root = _hook_root(args.root, payload) if args.root is not None else _native_worktree(payload.get("cwd"))
         state = None
-        has_state = root is not None and os.path.lexists(root / STATE_PATH)
         session_id = payload.get("session_id", "")
         has_binding = bool(isinstance(session_id, str) and ID_PATTERN.fullmatch(session_id) and _scope_path(session_id).exists())
+        # Resolve a verified task mapping before consulting the host's directory.
+        # An explicit --root still cannot select a different target.
+        root = None if has_binding else (
+            _hook_root(args.root, payload) if args.root is not None else _native_worktree(payload.get("cwd"))
+        )
+        has_state = root is not None and os.path.lexists(root / STATE_PATH)
+        knowledge_note = ""
         if has_state or has_binding:
             try:
                 scoped_root, binding = _check_scope(payload)
-                if scoped_root != root:
+                if args.root is not None and scoped_root != args.root.resolve(strict=True):
                     raise RuntimeHookError("CONTEXT_MISMATCH：指定目录与原生任务绑定不一致")
+                root = scoped_root
+                has_state = os.path.lexists(root / STATE_PATH)
                 knowledge = binding.get("knowledge", {})
                 if knowledge.get("status") == "CONTRADICTS":
-                    raise RuntimeHookError(
-                        "CONTEXT_MISMATCH：3CAN 记录的工作树与原生绑定不一致；"
-                        f"请核对 {knowledge.get('reference')}。这是历史观察，不是实时 3CAN 授权"
+                    knowledge_note = (
+                        " 3CAN 关联记录待核对（CONTRADICTS）："
+                        f"{knowledge.get('reference')}。保留已核实的当前任务绑定，"
+                        "在有意义的交接/收口时更新历史记录；不因此停止开发或跳过 Jev。"
                     )
             except (RuntimeHookError, OSError, RuntimeError) as exc:
                 return _scope_feedback(event, str(exc), orientation=is_session_start and args.session_orientation)
@@ -1340,7 +1371,7 @@ def hook(args: argparse.Namespace) -> int:
                         {
                             "hookSpecificOutput": {
                                 "hookEventName": "SessionStart",
-                                "additionalContext": SESSION_FAST_PATH + (JEV_REQUIRED_TEXT if checkpoints.required() else ""),
+                                "additionalContext": SESSION_FAST_PATH + (JEV_REQUIRED_TEXT if checkpoints.required() else "") + knowledge_note,
                             }
                         },
                         ensure_ascii=False,
@@ -1364,6 +1395,7 @@ def hook(args: argparse.Namespace) -> int:
                                         "STALE" if stale_reasons else None
                                     ),
                                 )
+                                + knowledge_note
                             ),
                         }
                     },
@@ -1390,7 +1422,7 @@ def hook(args: argparse.Namespace) -> int:
                                 state,
                                 worktree=root,
                                 review_result="STALE" if stale_reasons else None,
-                            ),
+                            ) + knowledge_note,
                         }
                     },
                     ensure_ascii=False,
@@ -1471,7 +1503,7 @@ def hook(args: argparse.Namespace) -> int:
                     "请重新核对实际结果，只有干净 Git 检查点才能记录主任务最终 PASS。"
                 )
                 continue_for_review = True
-            message = f"RuntimeHook 工作树：{root}。{message} 独立项目安全与证据门禁不变。"
+            message = f"RuntimeHook 工作树：{root}。{message} 独立项目安全与证据门禁不变。{knowledge_note}"
             if checkpoints.required():
                 message += JEV_REQUIRED_TEXT
             if continue_for_review and not bool(payload.get("stop_hook_active")):
@@ -1581,7 +1613,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.native_cwd is not None and args.command != "bind-scope":
             if not args.native_cwd.is_absolute():
                 raise RuntimeHookError("实际观察的原生 cwd 必须是绝对路径")
-            root = _hook_root(args.root, {"cwd": str(args.native_cwd)})
+            if args.session_id and _scope_path(args.session_id).exists():
+                root, _ = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
+            else:
+                # First cross-directory use requires explicit verified binding;
+                # a command's workdir or --root is never an implicit handoff.
+                root = _hook_root(args.root, {"cwd": str(args.native_cwd)})
             scope = {"status": "MATCH", "worktree": str(root)}
         if args.command == "bind-scope":
             output = bind_scope(args)

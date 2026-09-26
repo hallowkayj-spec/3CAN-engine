@@ -1,6 +1,6 @@
 {
   "name": "3can-runtimehook",
-  "version": "0.1.9-rc.1+codex.20260925133943",
+  "version": "0.1.10-rc.1+codex.20260926",
   "description": "中文任务监督、项目检查点与经授权的 Jev 必经复核；不替代独立安全和业务验收。",
   "author": {
     "name": "hallowkayj-spec",

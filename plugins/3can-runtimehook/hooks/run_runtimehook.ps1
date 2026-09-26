@@ -55,7 +55,11 @@ try {
         else {
             $null
         }
-        if ($null -eq $stateEntry) {
+        # Scope selection belongs to the controller. A task may be bound to a
+        # target outside this cwd; do not suppress its events at the launcher.
+        $codexRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+        $hasScopes = Test-Path -LiteralPath (Join-Path $codexRoot "runtimehook/scopes") -PathType Container
+        if ($null -eq $stateEntry -and -not $hasScopes) {
             [Console]::In.ReadToEnd() | Out-Null
             exit 0
         }

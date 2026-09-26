@@ -97,6 +97,26 @@ def test_review_automatically_calls_once_and_reuses_opinion(plain_repo, packet, 
     assert str(plain_repo) not in json.dumps(calls) and args.session_id not in json.dumps(calls)
 
 
+def test_cross_directory_checkpoint_and_jev_use_target_not_stale_knowledge(plain_repo, packet, tmp_path, monkeypatch):
+    args = prepare(plain_repo, packet)
+    host = tmp_path / "non-git-host"
+    host.mkdir()
+    args.native_cwd = host
+    controller.bind_scope(SimpleNamespace(root=plain_repo, native_cwd=host,
+        session_id=args.session_id, reference="Owner-confirmed target",
+        knowledge_worktree=tmp_path / "historical-location", knowledge_reference="3can:old-handoff"))
+    calls = []
+    monkeypatch.setattr(jev, "request_gateway", lambda r, t: calls.append(r) or response(r))
+    captured = controller.record_checkpoint(args)
+    assert captured["online_calls"] == 0
+    result = controller.record_review(SimpleNamespace(root=plain_repo, native_cwd=host,
+        session_id=args.session_id, scope="main", stage="episode", result="PASS",
+        reference="fixture:verified target result", next_objective="继续验收", timeout=10))
+    assert result["result"] == "PASS" and len(calls) == 1
+    assert not (host / controller.STATE_PATH).exists()
+    assert str(host) not in json.dumps(calls) and args.session_id not in json.dumps(calls)
+
+
 @pytest.mark.parametrize("failure", ["score", "confidence", "probability", "claim"])
 def test_negative_or_uncertain_jev_cannot_be_signed_pass(plain_repo, packet, monkeypatch, failure):
     args = prepare(plain_repo, packet)

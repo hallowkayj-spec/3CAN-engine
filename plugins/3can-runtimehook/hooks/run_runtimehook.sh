@@ -19,7 +19,10 @@ done
 
 if [ "$session_orientation" = false ]; then
     state_path=$boundary/.codex/runtimehook/state.json
-    if [ -z "$boundary" ] || { [ ! -e "$state_path" ] && [ ! -L "$state_path" ]; }; then
+    # The controller resolves task bindings outside the host cwd. Keep the
+    # no-install fast path without guessing task ownership in a second parser.
+    scopes=${CODEX_HOME:-$HOME/.codex}/runtimehook/scopes
+    if [ ! -d "$scopes" ] && { [ -z "$boundary" ] || { [ ! -e "$state_path" ] && [ ! -L "$state_path" ]; }; }; then
         while IFS= read -r _line; do :; done
         exit 0
     fi

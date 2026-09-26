@@ -762,8 +762,11 @@ def test_scope_3can_disagreement_is_nonblocking_and_does_not_override_git(plain_
                               "--knowledge-worktree", str(tmp_path / "old-location"),
                               "--knowledge-reference", "3can:fixture-contradicting-handoff")
     assert code == 0 and report["binding"]["knowledge"]["status"] == "CONTRADICTS"
-    result = _plugin_hook(plain_repo, "Stop", {"cwd": str(plain_repo), "hook_event_name": "Stop"})
-    assert "3CAN 记录的工作树" in result["systemMessage"]
+    result = _plugin_hook(plain_repo, "SessionStart", {
+        "cwd": str(plain_repo), "hook_event_name": "SessionStart", "source": "resume",
+    })
+    context = result["hookSpecificOutput"]["additionalContext"]
+    assert "3CAN 关联记录待核对" in context and "交付当前开源任务" in context
     assert "decision" not in result and (plain_repo / STATE_PATH).read_bytes() == before
 
 
@@ -781,19 +784,86 @@ def test_scope_missing_or_corrupt_cache_never_auto_adopts(plain_repo: Path):
     assert (plain_repo / STATE_PATH).read_bytes() == before
 
 
-def test_scope_binding_import_can_report_migration_without_peer_state_access(plain_repo: Path, tmp_path: Path, monkeypatch):
+def test_explicit_binding_reads_only_verified_target_not_host_peer(plain_repo: Path, tmp_path: Path, monkeypatch):
     module = _scope_module()
     peer = tmp_path / "peer"
     _git(plain_repo, "worktree", "add", "-qb", "scope-import", str(peer))
-    monkeypatch.setattr(module, "_load_state", lambda *_: pytest.fail("mismatch read another state"))
+    _activate(plain_repo, goal="Host peer must remain untouched")
+    target = _activate(peer, goal="Verified development target")
+    before = [(p / STATE_PATH).read_bytes() for p in (plain_repo, peer)]
+    load = module._load_state
+    def target_only(root):
+        assert root == peer
+        return load(root)
+    monkeypatch.setattr(module, "_load_state", target_only)
     args = module.build_parser().parse_args([
         "--root", str(peer), "--native-cwd", str(plain_repo), "--session-id", "migrating-task",
-        "bind-scope", "--reference", "Owner and host metadata identify an incomplete native migration",
+        "bind-scope", "--reference", "Owner verified the target Intent; host cwd remains unchanged",
     ])
     result = module.bind_scope(args)
-    assert result["status"] == "CONTEXT_MISMATCH"
-    assert result["binding"]["activation_id"] is None
-    assert not (plain_repo / STATE_PATH).exists() and not (peer / STATE_PATH).exists()
+    assert result["status"] == "MATCH"
+    assert result["binding"]["activation_id"] == target["activation_id"]
+    assert [(p / STATE_PATH).read_bytes() for p in (plain_repo, peer)] == before
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"])
+def test_bound_non_git_host_runs_all_native_events_on_target(plain_repo: Path, tmp_path: Path, event: str):
+    host = tmp_path / "旧宿主 folder"
+    host.mkdir()
+    active = _activate(plain_repo)
+    code, bound = _controller(plain_repo, "--native-cwd", str(host), "bind-scope",
+                              "--reference", "Host metadata and Owner-confirmed target Intent")
+    assert code == 0 and bound["status"] == "MATCH", bound
+    result = _plugin_hook(host, event, {
+        "session_id": _session_id(plain_repo), "cwd": str(host),
+        "hook_event_name": event, "source": "compact", "tool_name": "update_plan",
+        "tool_input": {"plan": [{"step": "核对目标模块", "status": "completed"}]},
+    })
+    assert active["activation_id"] in json.dumps(result)
+    assert str(plain_repo) in (result.get("reason") or result["hookSpecificOutput"]["additionalContext"])
+    assert not (host / STATE_PATH).exists()
+    code, status = _controller(plain_repo, "--native-cwd", str(host), "status")
+    assert code == 0 and status["activation_id"] == active["activation_id"]
+
+
+@pytest.mark.parametrize("change", ["unknown_session", "host", "git_marker", "activation"])
+def test_cross_directory_binding_never_adopts_changed_identity(plain_repo: Path, tmp_path: Path, change: str):
+    host, moved = tmp_path / "host", tmp_path / "moved"
+    host.mkdir()
+    moved.mkdir()
+    active = _activate(plain_repo, goal="Private target Intent")
+    code, _ = _controller(plain_repo, "--native-cwd", str(host), "bind-scope", "--reference", "verified")
+    assert code == 0
+    module = _scope_module()
+    binding = module._read_scope(_session_id(plain_repo))
+    if change == "git_marker":
+        binding["git_marker"] = [0, 0]
+        module._save_scope(binding)
+    elif change == "activation":
+        binding["activation_id"] = "rh-outdated"
+        module._save_scope(binding)
+    before = (plain_repo / STATE_PATH).read_bytes()
+    result = _plugin_hook(host, "Stop", {
+        "session_id": "unknown-task" if change == "unknown_session" else _session_id(plain_repo),
+        "cwd": str(moved if change == "host" else host), "hook_event_name": "Stop",
+    })
+    assert "decision" not in result
+    assert active["activation_id"] not in json.dumps(result)
+    assert "Private target Intent" not in json.dumps(result)
+    assert (plain_repo / STATE_PATH).read_bytes() == before
+
+
+def test_legacy_scope_does_not_silently_enable_old_mismatch(plain_repo: Path, tmp_path: Path):
+    _activate(plain_repo)
+    module = _scope_module()
+    binding = module._read_scope(_session_id(plain_repo))
+    binding["schema"] = "3can.runtimehook-scope/v1"
+    binding.pop("native_worktree", None)
+    binding.pop("native_git_marker", None)
+    module._save_scope(binding)
+    assert module._check_scope({"session_id": _session_id(plain_repo), "cwd": str(plain_repo)})[0] == plain_repo
+    with pytest.raises(module.RuntimeHookError, match="CONTEXT_MISMATCH"):
+        module._check_scope({"session_id": _session_id(plain_repo), "cwd": str(tmp_path)})
 
 
 def test_scope_new_nested_git_marker_invalidates_cached_parent(plain_repo: Path, tmp_path: Path):
