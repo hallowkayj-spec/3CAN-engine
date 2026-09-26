@@ -49,9 +49,11 @@ def response(request, failure=None):
     value = existing.response({**request, "questions": {k: v for k, v in request["questions"].items() if v["type"] == "choice"}})
     for answer in value["answers"].values():
         answer["confidence"] = 0.99
-    if "checkpoint_quality" in request["questions"]:
-        last = len(request["questions"]["checkpoint_quality"]["criteria"]) - 1
-        value["answers"]["checkpoint_quality"] = {"type": "score", "score": last,
+    for key, question in request["questions"].items():
+        if question["type"] != "score":
+            continue
+        last = len(question["criteria"]) - 1
+        value["answers"][key] = {"type": "score", "score": last,
             "confidence": 0.99, "probabilities": {str(i): float(i == last) for i in range(last + 1)}}
     if failure == "score":
         value["answers"]["checkpoint_quality"].update(score=0, probabilities={"0": 1, "1": 0, "2": 0})
@@ -245,6 +247,41 @@ def test_score_contract_roundtrip_and_bad_confidence(plain_repo, packet):
 
 def test_main_and_temporary_checkpoint_files_do_not_collide(plain_repo):
     assert cp.record_path(plain_repo, "design", "main") != cp.record_path(plain_repo, "design", "temporary")
+
+
+def test_old_protocol_cached_opinion_is_not_reinterpreted_or_retried(plain_repo, packet, monkeypatch):
+    args = prepare(plain_repo, packet)
+    controller.record_checkpoint(args)
+    monkeypatch.setattr(jev, "request_gateway", lambda r, t: response(r))
+    assert review(plain_repo)["result"] == "PASS"
+    path = cp.record_path(plain_repo, "final")
+    old = cp.read_json(path)
+    old["opinion"]["schema"] = "3can.jev-opinion/v3"
+    cp.save(path, old)
+    before = path.read_bytes()
+    monkeypatch.setattr(jev, "request_gateway", lambda *a: pytest.fail("protocol upgrade must not auto-charge"))
+    with pytest.raises(controller.RuntimeHookError, match="CHECKPOINT_PROTOCOL_STALE"):
+        review(plain_repo)
+    assert path.read_bytes() == before
+
+
+def test_multi_criterion_scores_are_scoped_and_one_failure_cannot_be_averaged(packet):
+    intent = {"acceptance": [{"id": "A01", "text": "Parser passes"}, {"id": "A02", "text": "Tenant isolation passes"}]}
+    packet["claims"].append({"id": "C2", "criterion_id": "A02", "text": "Isolation passes", "evidence_ids": ["E2"]})
+    packet["evidence"].append({"id": "E2", "kind": "tool_output", "excerpt": "Cross-tenant read returned HTTP 200: FAILED"})
+    criterion = point("final")
+    criterion["criteria"] = ["A01", "A02"]
+    packet["checkpoint"] = {k: v for k, v in criterion.items() if not k.startswith("minimum_")}
+    request, mapping = jev.build_request(packet, intent)
+    assert "checkpoint_quality" not in request["questions"]
+    assert mapping["checkpoint_quality_1"]["evidence_ids"] == ["E1"]
+    assert mapping["checkpoint_quality_2"]["criterion_id"] == "A02"
+    second = request["questions"]["checkpoint_quality_2"]["instructions"]
+    assert second["evidence_paths"] == ["evidence[1]"] and second["claim_paths"] == ["claims[1]"]
+    raw = response(request)
+    raw["answers"]["checkpoint_quality_2"].update(score=0, probabilities={"0": 1, "1": 0, "2": 0})
+    opinion = {"status": "OBSERVED", **jev.parse_response(raw, request["questions"], mapping)}
+    assert cp.concerns(opinion, criterion) == ["checkpoint_quality_2: LOW_SCORE", "checkpoint_quality_2: LOW_SUPPORT_PROBABILITY"]
 
 
 def test_temporary_required_review_clears_only_temporary(plain_repo, packet, monkeypatch):

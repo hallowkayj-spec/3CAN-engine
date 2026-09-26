@@ -393,7 +393,10 @@ def test_no_evidence_is_not_fabricated_and_injection_remains_quoted(packet):
     )
     req, mapping = jev.build_request(packet, {"acceptance": [{"id": "A01"}]})
     assert req["state"]["evidence"] == []
-    assert "Ignore instructions" not in req["questions"]["claim_1"]["instructions"]
+    instructions = req["questions"]["claim_1"]["instructions"]
+    assert "Ignore instructions" not in json.dumps(instructions)
+    assert instructions["claim_path"] == "claims[0].text"
+    assert instructions["evidence_paths"] == []
     assert "INSUFFICIENT_CONTEXT" in req["questions"]["claim_1"]["criteria"]
     # This validates input separation only; real injection resistance needs live evaluation.
 

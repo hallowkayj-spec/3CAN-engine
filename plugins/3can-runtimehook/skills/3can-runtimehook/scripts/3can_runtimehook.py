@@ -1044,6 +1044,8 @@ def _review_checkpoint(args, root, state, reference):
                 raise RuntimeHookError(f"CHECKPOINT_COVERAGE_MISSING：{point['id']} 尚无同目标、同说明的成功复核")
     point = next(p for p in spec["checkpoints"] if p["id"] == key)
     opinion = record.get("opinion")
+    if opinion is not None and opinion.get("schema") != checkpoints.jev.CONTRACT:
+        raise RuntimeHookError("CHECKPOINT_PROTOCOL_STALE：判别协议已更新；保留旧意见，重新取得当前检查点证据，不自动收费重试")
     if opinion is None:
         judge_args = argparse.Namespace(root=root, native_cwd=args.native_cwd,
             session_id=args.session_id, packet=path, mode="advisory", timeout=args.timeout)

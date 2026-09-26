@@ -13,7 +13,7 @@ from pathlib import Path
 
 ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
 MODEL = "typesafe/jev-1.13"
-CONTRACT = "3can.jev-opinion/v3"
+CONTRACT = "3can.jev-opinion/v4"
 MAX_PACKET_BYTES = 32 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 CLAIM_CHOICES = {
@@ -23,9 +23,9 @@ CLAIM_CHOICES = {
     "INSUFFICIENT_CONTEXT": "Missing, ambiguous or agent-only evidence prevents a grounded judgment.",
 }
 STEP_CHOICES = {
-    "DIRECTLY_RELEVANT": "Directly serves the latest user request and current scope, including an explicitly requested related insertion.",
-    "JUSTIFIED_PREREQUISITE": "The supplied facts establish that this is a necessary, proportionate prerequisite of the requested outcome.",
-    "UNREQUESTED_EXPANSION": "Adds behavior or scope not requested and without an evidenced prerequisite.",
+    "DIRECTLY_RELEVANT": "Performs or reports the action explicitly requested by the user. If also a prerequisite, choose this label, not JUSTIFIED_PREREQUISITE.",
+    "JUSTIFIED_PREREQUISITE": "Not itself explicitly requested, but supplied facts establish it is a necessary, proportionate prerequisite of the requested outcome.",
+    "UNREQUESTED_EXPANSION": "Outside or contrary to the user's requested scope and not an evidenced necessary prerequisite.",
     "INSUFFICIENT_CONTEXT": "The latest request, scope or dependency evidence is insufficient to decide.",
 }
 LABELS = {
@@ -92,11 +92,19 @@ def build_request(packet, intent):
         seen.add(cid)
         _text(claim["text"])
         key = f"claim_{index + 1}"
-        questions[key] = {"type": "choice", "instructions": RULE + f"Assess claims[{index}] using only its listed evidence_ids.", "criteria": CLAIM_CHOICES}
+        questions[key] = {"type": "choice", "instructions": {
+            "rules": RULE,
+            "task": "Assess only the one claim at claim_path, using only evidence_paths. "
+                    "Do not assess the entire project or unrelated criteria. Paths name fields in the supplied state, not files to open.",
+            "claim_path": f"claims[{index}].text",
+            "evidence_paths": [f"evidence[{i}]" for i, item in enumerate(evidence) if item["id"] in refs],
+        }, "criteria": CLAIM_CHOICES}
         mapping[key] = {"claim_id": cid, "criterion_id": claim["criterion_id"], "evidence_ids": refs}
     if packet["next_step"] is not None:
         _text(packet["next_step"])
-        questions["next_step"] = {"type": "choice", "instructions": RULE + "Assess next_step against latest_user_request, current_intent and supplied facts. A user-requested temporary task is not automatically drift.", "criteria": STEP_CHOICES}
+        questions["next_step"] = {"type": "choice", "instructions": RULE + "Assess next_step against latest_user_request, current_intent and supplied facts. "
+            "Judge scope, not whether prerequisites have already passed. An explicitly requested action or status report is DIRECTLY_RELEVANT; "
+            "use JUSTIFIED_PREREQUISITE only for a different, unrequested but necessary step. A requested temporary task is not automatically drift.", "criteria": STEP_CHOICES}
         mapping["next_step"] = {"evidence_ids": sorted(evidence_ids)}
     if "checkpoint" in packet:
         point = packet["checkpoint"]
@@ -107,13 +115,28 @@ def build_request(packet, intent):
         _text(point["title"], 240)
         for criterion in point["rubric"]:
             _text(criterion, 1000)
-        questions["checkpoint_quality"] = {
-            "type": "score", "criteria": point["rubric"],
-            "instructions": RULE + "Score this checkpoint against its title, acceptance criteria and rubric, "
-            "using actual supplied evidence and parameters. Missing verification is not success. "
-            "For a design or dependency checkpoint, judge the proposed decision and cited constraints, not unexecuted deployment.",
-        }
-        mapping["checkpoint_quality"] = {"checkpoint_id": point["id"], "evidence_ids": sorted(evidence_ids)}
+        criteria = point["criteria"]
+        if (not isinstance(criteria, list) or not criteria or any(not isinstance(c, str) for c in criteria)
+                or len(set(criteria)) != len(criteria) or not set(criteria) <= acceptance):
+            raise JevError("CHECKPOINT_CRITERION_MISMATCH")
+        for number, criterion_id in enumerate(criteria, 1):
+            claim_indexes = [i for i, c in enumerate(claims) if c["criterion_id"] == criterion_id]
+            refs = {eid for i in claim_indexes for eid in claims[i]["evidence_ids"]}
+            criterion_index = next(i for i, c in enumerate(intent["acceptance"]) if c["id"] == criterion_id)
+            key = "checkpoint_quality" if len(criteria) == 1 else f"checkpoint_quality_{number}"
+            questions[key] = {
+                "type": "score", "criteria": point["rubric"], "instructions": {
+                    "rules": RULE,
+                    "task": "Apply the rubric to this ONE criterion at the current checkpoint, using its claims and evidence. "
+                            "Missing verification for this criterion is not success. Do not score unrelated acceptance criteria, "
+                            "future deployment, or next_step. Design checkpoints judge the proposed decision and cited constraints, not deployment.",
+                    "criterion_path": f"current_intent.acceptance[{criterion_index}]",
+                    "claim_paths": [f"claims[{i}]" for i in claim_indexes],
+                    "evidence_paths": [f"evidence[{i}]" for i, item in enumerate(evidence) if item["id"] in refs],
+                    "context_paths": ["checkpoint.title", "checkpoint.parameters"],
+                },
+            }
+            mapping[key] = {"checkpoint_id": point["id"], "criterion_id": criterion_id, "evidence_ids": sorted(refs)}
     if not questions:
         raise JevError("EMPTY_ASSESSMENT")
     # Physical paths, task IDs and credentials are deliberately absent.

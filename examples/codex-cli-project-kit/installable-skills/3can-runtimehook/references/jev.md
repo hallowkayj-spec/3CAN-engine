@@ -1,6 +1,6 @@
 # Jev：局部判别与检查点评分，不是另一个任务系统
 
-维护者：3CAN RuntimeHook。协议 `3can.jev-opinion/v3`。必经开发模式先读 [检查点说明](checkpoints.md)。
+维护者：3CAN RuntimeHook。协议 `3can.jev-opinion/v4`。必经开发模式先读 [检查点说明](checkpoints.md)。
 `review` 在该模式下自动调用 Jev，缺评判/有异议不能登记 PASS；下面的 observe/advisory 是显式诊断入口，不能代替必经模式。
 用户启用后在重要复核边界调用；不在 SessionStart / PostToolUse / Stop 中联网。
 当前唯一接入为 OpenRouter；不需要 TypeSafe/Vercel 账户或 9700/9711 服务。模型不是视觉模型。
@@ -27,6 +27,8 @@
 ```
 
 criterion 必须来自当前主任务或临时任务验收列表。一个 claim 只陈述一个可验证结果。
+不要把“测试、安装、上线、业务成功”塞进同一条声明；分别给对应片段。设计评判应提供真实约束、候选差异和反例，
+让 Jev 核对具体选型是否适配，而不是凭模型参数猜当前工具能力。Git 哈希比较、计数和阈值计算由代码完成，不能交给 Jev 心算。
 evidence kind 为 `tool_output`、`source_code`、`external_source` 或 `agent_summary`；
 摘要不能冒充工具证据。来源类别是调用方声明，不是来源真实性证明。
 可只检查下一步（claims/evidence 空列表）；不查下一步则设 `next_step: null`。
@@ -41,6 +43,8 @@ python <Skill>/scripts/3can_runtimehook.py --root <物理工作树> --native-cwd
 `off` 不读取任务内容、不联网；`observe` 保存供对照的模型观察，不据此改变工作流；
 `advisory` 可以把异常选择作为建议交给 Agent 检查，但同样不阻塞、授权或自动记 PASS。
 模式不是置信度阈值。概率是分类分布，不是可靠性或验收通过率。
+Provider 的 confidence 表示分布集中程度，不是“判断正确的概率”。多种解释分走概率时，应先核对问题是否含糊，不能直接认定实现有错。
+明确请求的下一步（包括如实汇报）归为 DIRECTLY_RELEVANT；只有未被直接要求、但证据表明确有必要的步骤才归为 JUSTIFIED_PREREQUISITE。
 
 只有声明/下一步、绑定状态、Git HEAD、片段或判别协议改变才重新判断；
 同一输入复用 `.codex/runtimehook/jev-observation.json`，不重复请求到满意为止。
@@ -87,6 +91,7 @@ python <Skill>/scripts/3can_runtimehook.py --root <物理工作树> --native-cwd
 官方模型页当前列输入 $0.042/百万 tokens、输出 $0；以实际回执和账户账单为准，不承诺永久价格。
 本版替换 Vercel 路径，不回退、不读取或发送旧的 `AI_GATEWAY_API_KEY`/Vercel 加密文件。
 旧观察协议不会被新请求复用；不需要迁移 RuntimeHook 主状态。
+已有检查点若保存了旧判别协议，返回 `CHECKPOINT_PROTOCOL_STALE`，不自动重评或收费。先保留有价值的旧失败，取得当前证据，再记录检查点。
 仅 Python 标准库，无新的 SDK、服务、浏览器自动化、后台轮询或模型自动回退。
 网络单次尝试，`provider.allow_fallbacks=false`；socket timeout 默认 10 秒（1–30 可选），响应最多 64 KiB，并检查读取截止。
 socket/DNS/系统调度不等于严格整进程墙钟 SLA；记录真实耗时，不宣传毫秒级模型调用。
@@ -99,6 +104,7 @@ HTTP 401/402/429 等只返回脱敏错误码；检查凭据/余额/限流后再�
 - [专用 API Key](https://openrouter.ai/settings/keys)
 - [Jev 模型页：以账户实时价格为准](https://openrouter.ai/typesafe/jev-1.13)
 - [TypeSafe 已知局限](https://docs.typesafe.ai/model-jaggedness/jev-1.13)
+- [置信度含义](https://docs.typesafe.ai/confidence) 与 [单维度评分](https://docs.typesafe.ai/primitives/score)（2026-09-26 核验）
 
 ## 验收与回滚
 

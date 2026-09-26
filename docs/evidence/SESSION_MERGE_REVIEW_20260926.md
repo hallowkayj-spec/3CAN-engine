@@ -1,5 +1,15 @@
 # Session cumulative merge review — 2026-09-26
 
+Follow-up: the Owner did not authorize a merge exception for low-confidence Jev.
+The initial integration candidate `fbf2567` completed all five CI jobs in
+[run 36233075830](https://github.com/hallowkayj-spec/3CAN-engine/actions/runs/36233075830)
+(772 passed, 7 skipped). Subsequent scoped Jev adapter changes, fixed-case real
+provider comparisons and their unresolved false rejections are documented in
+[the decision-scope review](JEV_DECISION_SCOPE_REVIEW_20260926.md).
+Those later changes require their own CI. Cumulative merge and global rollout
+remain unaccepted; the initial code-review result below is not model-efficacy
+acceptance or approval of a changed candidate.
+
 ## Scope and authority
 
 The Owner requested review and repair of this Session's accumulated development,
