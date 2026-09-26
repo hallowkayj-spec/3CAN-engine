@@ -1947,6 +1947,11 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
     hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
     session_hook = hooks["SessionStart"][0]["hooks"][0]
     command = session_hook["commandWindows" if os.name == "nt" else "command"]
+    if os.name == "nt":
+        command = [
+            str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command,
+        ]
     native = subprocess.run(
         command,
         cwd=scripts_dir,
@@ -1955,7 +1960,7 @@ def test_repeatable_hook_is_parameterized_and_promoted_after_reproduction(
         text=True,
         encoding="utf-8",
         errors="replace",
-        shell=True,
+        shell=os.name != "nt",
         timeout=30,
     )
     assert native.returncode == 0, native.stdout + native.stderr
