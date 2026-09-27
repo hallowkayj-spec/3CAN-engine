@@ -53,6 +53,31 @@
           }
         ]
       }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\" --session-orientation",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1') -SessionOrientation",
+            "timeout": 10,
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/hooks/run_runtimehook.sh\"",
+            "commandWindows": "& (Join-Path $env:PLUGIN_ROOT 'hooks/run_runtimehook.ps1')",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

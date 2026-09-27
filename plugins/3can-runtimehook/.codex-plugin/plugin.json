@@ -1,6 +1,6 @@
 {
   "name": "3can-runtimehook",
-  "version": "0.1.13-rc.1+codex.20260927",
+  "version": "0.1.14-rc.1+codex.20260927",
   "description": "中文任务监督、项目检查点与经授权的 Jev 必经复核；不替代独立安全和业务验收。",
   "author": {
     "name": "hallowkayj-spec",
@@ -32,7 +32,7 @@
     "defaultPrompt": [
       "这个任务使用 3CAN RuntimeHook，以最轻且有效的强度进行复核。",
       "先完成这个临时任务，再返回主任务；临时完成后清除临时状态。",
-      "关闭当前工作树的 3CAN RuntimeHook，不影响独立安全门禁。"
+      "关闭当前会话的 3CAN RuntimeHook，不影响其他任务或独立安全门禁。"
     ]
   }
 }

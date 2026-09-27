@@ -10,7 +10,7 @@
 先确认宿主任务 ID、实际 cwd、物理 Git 根和激活目标匹配。`--root` 不改变宿主 cwd。
 无法绑定当前任务时仅报告不匹配，不冒用别的 activation。继续安全本地工作。
 
-准备一个 UTF-8 JSON，放在项目现有输出目录或 `.codex/runtimehook/` 中：
+准备一个 UTF-8 JSON，放在项目现有输出目录 中：
 
 ```json
 {
@@ -47,7 +47,7 @@ Provider 的 confidence 表示分布集中程度，不是“判断正确的概�
 明确请求的下一步（包括如实汇报）归为 DIRECTLY_RELEVANT；只有未被直接要求、但证据表明确有必要的步骤才归为 JUSTIFIED_PREREQUISITE。
 
 只有声明/下一步、绑定状态、Git HEAD、片段或判别协议改变才重新判断；
-同一输入复用 `.codex/runtimehook/jev-observation.json`，不重复请求到满意为止。
+同一输入复用 `CODEX_HOME/runtimehook/sessions/<task-hash>/jev-observation.json`，不重复请求到满意为止。
 这里只保存一份最新观察产物，不新增语义状态、历史库或调度器。删除它只丢失意见缓存。
 失败不自动重试；缺 Key 后先配置，限流后另一个合适边界再试，而不是本轮循环。
 
@@ -115,7 +115,7 @@ HTTP 401/402/429 等只返回脱敏错误码；检查凭据/余额/限流后再�
 
 未启用 required 策略的可选模式可以停止 `assess`；现有 Hook、状态和独立门禁不变。
 已启用 required 时，只有 Owner 可以决定停用或改变策略；`assess --mode off` 不是退出必经复核的方式。
-已有检查点使用 v3 状态，不能交给 0.1.7 或其他不支持 v3 的控制器，不可强制降级或删除现场。
+会话检查点使用 v4 状态，不能交给不支持 v4 的旧控制器，不可强制降级或删除现场。
 回滚使用兼容当前状态版本的已备份插件；保留旧失败、检查点和回写回执，不把回滚视为验收通过。
 只有尚未使用检查点的旧任务才可保留其原兼容插件。不要隐式恢复 Vercel 调用。
 Key 撤销在 OpenRouter 完成；删除本地文件不等于撤销远端 Key。

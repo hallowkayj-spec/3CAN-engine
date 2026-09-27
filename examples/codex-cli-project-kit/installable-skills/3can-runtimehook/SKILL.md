@@ -9,8 +9,9 @@ RuntimeHook is a semantic supervisor, not an evidence kernel. Apply it without
 asking the user to choose a mode when the task is long, multi-stage,
 cross-module, historically drift-prone, or explicitly requests RuntimeHook. Do
 not invoke it for every small edit merely because it is installed. An
-Owner-enabled `jev_required` machine policy instead requires this Skill for
-development, including small tasks with a proportionately small checkpoint.
+Owner-enabled `jev_required` machine policy requires this Skill in every new,
+resumed or dispatched task, including small and non-Git tasks. Use a
+proportionately small checkpoint; never wait for another Owner reminder.
 
 ## Apply the 3CAN fast path
 
@@ -31,80 +32,74 @@ then writes its `--summary`, result and reference automatically; real errors and
 progress use `error` with the same fault ID. Inspect the returned writeback status;
 local success is not proof of remote persistence. Do not wait for another user reminder.
 
-## Locate and inspect
+## Global entry and task-owned state
 
 Use `scripts/3can_runtimehook.py` inside this loaded Skill directory as the
 controller. Resolve its absolute path from the Skill location; do not require or
-copy a controller into the target repository. Resolve the physical worktree with
-`git rev-parse --show-toplevel` and pass that exact root through `--root`.
-If Git, Python 3, or the bundled controller is unavailable, report
-`UNAVAILABLE`; do not create a daemon, transcript parser, graph call, task
-registry service, or replacement Hook.
+copy a controller into the target repository. Python 3 is required. For Git
+work use the exact physical root from `git rev-parse --show-toplevel`; for a
+non-Git task use its observed existing directory. Pass that path as `--root`.
+Non-Git tasks have no fabricated Git HEAD or source-checkpoint acceptance.
 
-The first `on` in a repository adds only `/.codex/runtimehook/` to that
-repository's local Git exclude when no existing ignore already covers it. It
-does not edit tracked project files. A tracked, redirected, or unsafe state root
-remains `UNAVAILABLE`.
-
-RuntimeHook state is current-task state for one physical Git worktree, not
-per-chat state. Parallel writers still require separate worktrees. The small
-host-scope cache described below is an observation, not a lease or task scheduler.
-
-Separate command workdirs do not change a task's native Hook cwd. Before first
-activation, after moving project work, or when another task's Intent appears,
-obtain the native task cwd from the host's task metadata (not the command's
-workdir). The observed host cwd and the verified development worktree may
-differ: do not require folder cleanup, move the App task, or copy state just to
-make them equal. Pass `--root <physical-root> --native-cwd <observed-cwd>` to `on`;
-`--session-id` defaults to the host's `CODEX_THREAD_ID` when available. This
-records a same-worktree scope as part of activation. For cross-directory use,
-first verify the target Intent/writer and run `bind-scope` below, then `on`
-only if a new main Intent is actually needed. For an existing verified task or
-an Owner-authorized handoff, retain its state and record only the relationship:
+With the Owner-enabled required policy, native SessionStart, SubagentStart and
+subsequent events automatically register the observed task/cwd relationship.
+`REQUIRED / INTENT_REQUIRED` means the entry ran and the Agent must initialize
+its own goal and acceptance now, not ask the Owner to enable it again:
 
 ```text
-<controller> --root <physical-root> --native-cwd <observed-cwd> --session-id <host-task-id> bind-scope --reference <host-observation-and-current-intent-evidence>
+<controller> --root <observed-workspace> --native-cwd <actual-host-cwd> --session-id <actual-task-id> on --goal <current-goal> --acceptance <ID=observable-result> --intensity light --reason <scope-based-reason>
 ```
 
-Do not adopt an existing activation solely because its directory matches;
-verify that its current Intent belongs to this task. A new task ID must not
-automatically inherit the old task's activation. Subagent Hook payloads may
-carry the parent session ID; never replace the parent's cache with a child
-worktree. Report unsupported automatic supervision and continue scoped work.
+Use the exact task ID and cwd shown by the native event or official host
+metadata. The event's child `agent_id`, when present, is the child's actual
+thread ID; use it as `--session-id`. Do not substitute the common parent
+`session_id` or an inherited environment variable. Missing child identity is
+`CHILD_ID_REQUIRED`, never permission to use the parent. Supported Codex versions
+emit that child ID on tool events as well as SubagentStart/SubagentStop.
 
-The disposable cache under `CODEX_HOME/runtimehook/scopes/` contains only the
-observed task/root/activation relation and evidence pointers, not goals,
-priorities, tickets or execution state. Already-bound native events do a local
-lookup without Git discovery, transcript scanning or 9700. New tasks, changed
-host anchors, worktrees or activations require a new observation. A non-Git
-host cwd matches exactly; a Git host also permits subdirectories of its same
-observed worktree. Native events then use only the verified target, never the
-host peer's semantic state. At registration only,
-relevant 3CAN handoff evidence may be compared using `--knowledge-worktree` and
-`--knowledge-reference`; absent knowledge stays `UNVERIFIED`, not a failure.
-A historical `CONTRADICTS` is advisory, not an identity authority or a reason
-to skip Jev. Verify the current mapping, then update durable meaning through
-the normal bounded 3CAN writeback at handoff/closeout, not on every Hook event.
+Each task owns its state, checkpoints and receipts under
+`CODEX_HOME/runtimehook/sessions/<sha256(task-id)>/`. Every command and native
+event selects the same task directory. A physical workspace is an observed
+binding, not the semantic-state owner. Independent read-only tasks may share a
+workspace; concurrent source writers still require separate worktrees/leases.
+No activation, intent, checkpoint or 3CAN identity is inherited from a peer.
 
-Unknown/stale/mismatched scope gives advisory feedback without a Stop block,
-without adopting or changing peer state. Do not finish the entire task merely
-because of that feedback: report it and continue independent safe work. A
-cached match is not authentication, a live 3CAN check or a writer lease. The
-existing `--native-cwd` check also protects pending local state writes; neither
-check rebinds the native task.
-If the native cwd cannot be verified, keep automatic supervision unverified
-and continue safe local work. Do not guess it, edit Session databases, start a
-second writer, or switch off/replace foreign Intent. Use a supported host
-binding repair, then confirm the actual native event's Worktree and activation
-after resume. Manual controller success is not native Hook acceptance.
-Old v1 scope caches remain same-worktree-only until explicitly rebound; v2
-separates host and target. Older plugin versions cannot read v2: keep them for
-already-running tasks, but reload the updated plugin for a newly rebound task.
+The separate `CODEX_HOME/runtimehook/scopes/` files retain only host/target
+observations. An already-bound event checks that relationship locally. For a
+new task, registration creates no semantic goal, network request or graph write.
+The Agent provides the actual goal/acceptance with `on`, then performs the
+required checkpoint/review and connect/error/writeback steps. Stop and
+SubagentStop request one bounded continuation when initialization or review is
+missing. Reporting a real limitation is allowed; claiming unperformed work is not.
+An explicit Owner `off` affects only that task and retains its records.
 
-Run `status`. If the active RUN_INTENT still matches the current Owner task,
-reuse it. Classify an intervening request with the rules below before replacing
-Intent. Use `on` for a verified main-task change only, never to overwrite a
-temporary or peer task. Git/PR artifacts retain durable engineering history.
+A different command workdir does not change the native host cwd. Before a new
+task initializes deliberate cross-directory development, verify the target and
+writer context, then record that task's observed host/target relationship:
+
+```text
+<controller> --root <physical-target> --native-cwd <actual-host-cwd> --session-id <actual-task-id> bind-scope --reference <current-host-and-target-evidence>
+```
+
+An initialized task remains bound to its verified workspace. This command does
+not move an existing task's state or silently retarget its intent.
+
+Do not adopt an existing activation solely because its directory matches. A
+new task always initializes its own intent, even when the target has legacy
+state. Native callbacks neither parse transcripts nor contact 9700. Scope
+mismatch or corruption remains typed unavailable; preserve state and continue
+independent safe work. Verify real App lifecycle events separately from a
+manual controller or launcher test.
+
+The v4 state and v3 binding replace worktree-local execution state. A verified
+v1/v2 binding may import only its matching legacy activation and owner, plus
+bounded checkpoints. Original files remain for rollback; the new controller
+never writes them. Foreign or mismatched legacy state is not adopted. Restore
+the prior package and that exact task's saved scope for rollback, retaining new
+receipts. Never downgrade or overwrite another task's records.
+
+Run `status` for the current task. Reuse matching current intent; ordinary
+continuation does not need another `on`. Classify changed user requests below.
 
 ## 同一任务中的临时插入与目标变化
 
@@ -230,7 +225,7 @@ deployment, publication, security, or PR15 convergence gates.
 
 ## 开发检查点与 Jev 必经复核（OpenRouter）
 
-当本机 `CODEX_HOME/runtimehook/policy.json` 已由 Owner 配置 `jev_required: true`，开发任务必须启用本 Skill，
+当本机 `CODEX_HOME/runtimehook/policy.json` 已由 Owner 配置 `jev_required: true`，所有新建、恢复及派发任务必须启用本 Skill，
 完整读取 [检查点说明](references/checkpoints.md) 和 [Jev 指引](references/jev.md)。在项目已有文档目录配置关键点、
 验收关联、要记录的参数和评分量表。架构/技术栈/开源组件选型、关键实现与集成、失败改路、交付都要覆盖。
 用 `checkpoint --spec ... --id ... --packet ...` 记录实际证据，再用现有 `review`：它自动调用 Jev，
@@ -265,8 +260,7 @@ language may invoke it implicitly. `/3CAN` is product shorthand only; Codex does
 not currently expose a reliable custom slash-command registration path, so do
 not implement a slash parser.
 
-Before activation the stateless 3CAN fast path also reports an enabled Jev
-requirement; no online call or task state is created by that event. Installing
-the Plugin alone does not authorize paid uploads. Activate when supervision
-materially helps, the Owner asks, or an Owner-enabled machine policy requires
-development checkpoints. Preserve scope isolation in every case.
+With required policy, native entry enrolls each task and requires its own
+semantic initialization. Without that policy, public installation alone only
+provides orientation and optional supervision; it does not authorize paid
+uploads. Preserve task isolation and report unsupported host delivery honestly.

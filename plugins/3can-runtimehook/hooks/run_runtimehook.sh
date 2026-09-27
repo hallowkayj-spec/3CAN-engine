@@ -17,17 +17,6 @@ while :; do
     [ -n "$current" ] || current=/
 done
 
-if [ "$session_orientation" = false ]; then
-    state_path=$boundary/.codex/runtimehook/state.json
-    # The controller resolves task bindings outside the host cwd. Keep the
-    # no-install fast path without guessing task ownership in a second parser.
-    scopes=${CODEX_HOME:-$HOME/.codex}/runtimehook/scopes
-    if [ ! -d "$scopes" ] && { [ -z "$boundary" ] || { [ ! -e "$state_path" ] && [ ! -L "$state_path" ]; }; }; then
-        while IFS= read -r _line; do :; done
-        exit 0
-    fi
-fi
-
 untrusted_root=${boundary:-$PWD}
 python=
 old_ifs=$IFS

@@ -124,10 +124,10 @@ def make_packet(spec, checkpoint_id, supplied, intent):
     return packet
 
 
-def record_path(root, checkpoint_id, scope="main"):
+def record_path(state_dir, checkpoint_id, scope="main"):
     if scope not in {"main", "temporary"}:
         raise jev.JevError("INVALID_CHECKPOINT_SCOPE")
-    return Path(root) / ".codex/runtimehook" / ("checkpoint." + scope + "." + jev._id(checkpoint_id) + ".json")
+    return Path(state_dir) / ("checkpoint." + scope + "." + jev._id(checkpoint_id) + ".json")
 
 
 def save(path, value):

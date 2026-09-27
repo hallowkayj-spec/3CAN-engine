@@ -20,6 +20,7 @@ STATE_PATH = Path(".codex/runtimehook/state.json")
 def runtimehook_project(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.setattr(sys.modules[__name__], "STATE_PATH", Path(os.environ["CODEX_HOME"]) / "runtimehook/sessions" / hashlib.sha256(b"kit-test-session").hexdigest() / "state.json")
     installed = tmp_path / "runtimehook project"
     shutil.copytree(PROJECT_KIT, installed)
     shutil.rmtree(installed / "test-results", ignore_errors=True)
@@ -684,39 +685,17 @@ def test_runtimehook_adopts_existing_boundary_without_plan_dedupe_field(
     assert state["boundary"]["last_completed_plan_label"] is None
 
 
-def test_runtimehook_rejects_tracked_state_root_before_writing(runtimehook_project):
+def test_runtimehook_keeps_tracked_project_files_outside_task_state(runtimehook_project):
     installed, _hooks, command, _native_hook = runtimehook_project
-    state_root = installed / STATE_PATH.parent
-    state_root.mkdir()
-    marker = state_root / "tracked.txt"
-    marker.write_text("project truth\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "-C", str(installed), "add", "-f", marker.relative_to(installed)],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(installed), "commit", "-qm", "track conflicting root"],
-        check=True,
-    )
-    before = _sha256(marker)
-
-    completed, output = command(
-        "on",
-        "--goal",
-        "Do not overwrite project truth.",
-        "--acceptance",
-        "A01=Tracked truth remains unchanged.",
-        "--intensity",
-        "light",
-        "--reason",
-        "Small task.",
-    )
-
-    assert completed.returncode == 2
-    assert output["status"] == "UNAVAILABLE"
-    assert "未被跟踪且已被 Git 忽略" in output["error"]
-    assert _sha256(marker) == before
-    assert not (installed / STATE_PATH).exists()
+    legacy = installed / ".codex/runtimehook/state.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("tracked project truth", encoding="utf-8")
+    subprocess.run(["git", "-C", str(installed), "add", "-f", ".codex/runtimehook/state.json"], check=True)
+    subprocess.run(["git", "-C", str(installed), "commit", "-qm", "tracked project file"], check=True)
+    before = _sha256(legacy)
+    _activate(command)
+    assert _sha256(legacy) == before
+    assert (installed / STATE_PATH).exists()
 
 
 def test_runtimehook_rejects_redirected_state_root(runtimehook_project, tmp_path: Path):
@@ -724,6 +703,7 @@ def test_runtimehook_rejects_redirected_state_root(runtimehook_project, tmp_path
     outside = tmp_path / "outside"
     outside.mkdir()
     state_root = installed / STATE_PATH.parent
+    state_root.parent.mkdir(parents=True, exist_ok=True)
     try:
         state_root.symlink_to(outside, target_is_directory=True)
     except OSError as exc:
@@ -757,7 +737,7 @@ def test_runtimehook_malformed_state_is_non_owning_unavailable(runtimehook_proje
     stopped = native_hook("Stop", {"hook_event_name": "Stop"})
 
     assert "UNAVAILABLE" in stopped["systemMessage"]
-    assert "独立项目与 PR15 证据门禁" in stopped["systemMessage"]
+    assert "独立安全门禁" in stopped["systemMessage"]
     assert "decision" not in stopped
     assert _sha256(state_path) == before
 

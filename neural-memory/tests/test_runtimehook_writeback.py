@@ -132,9 +132,9 @@ def test_failed_write_is_typed_kept_for_retry_and_not_a_local_gate(lane, monkeyp
 def test_review_cli_automatically_delivers_without_writeback_command(lane, monkeypatch, capsys):
     controller = hook_tests.controller
     _activate(lane.root)
-    state = controller._load_state(lane.root)
+    state = controller._load_state(lane.root, _session_id(lane.root))
     state["knowledge"] = {**lane.binding, "session_id": _session_id(lane.root)}
-    controller._write_state(lane.root, state)
+    controller._write_state(lane.root, state, _session_id(lane.root))
     monkeypatch.setattr(wb, "config", lambda: lane.settings)
     code = controller.main(["--root", str(lane.root), "--native-cwd", str(lane.root),
         "--session-id", _session_id(lane.root), "review", "--stage", "episode", "--result", "PARTIAL",
@@ -142,7 +142,7 @@ def test_review_cli_automatically_delivers_without_writeback_command(lane, monke
     result = json.loads(capsys.readouterr().out)
     assert code == 0 and result["result"] == "PARTIAL"
     assert result["writeback"]["status"] == "WRITTEN_AND_READBACK_VERIFIED"
-    assert list((lane.root / ".codex/runtimehook").glob("runtimehook_delta_*.json"))
+    assert list((controller._session_dir(_session_id(lane.root))).glob("runtimehook_delta_*.json"))
 
 
 def test_native_hooks_never_deliver(lane, monkeypatch, capsys):

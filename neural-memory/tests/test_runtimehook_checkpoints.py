@@ -30,6 +30,9 @@ def prepare(root, packet, keys=("final",)):
     policy.parent.mkdir(exist_ok=True, parents=True)
     policy.write_text(json.dumps({"schema": cp.POLICY_SCHEMA, "jev_required": True}))
     spec = root / ".codex/runtimehook/checkpoints-spec.json"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    with (root / ".git/info/exclude").open("a", encoding="utf-8") as ignore:
+        ignore.write("\n/.codex/runtimehook/\n")
     spec.write_text(json.dumps({"schema": cp.SPEC_SCHEMA, "final_checkpoint": keys[-1],
                                "checkpoints": [point(k) for k in keys]}, ensure_ascii=False), encoding="utf-8")
     supplied = root / ".codex/runtimehook/input.json"
@@ -80,10 +83,10 @@ def test_checkpoint_records_actual_values_without_network(plain_repo, packet, mo
     args = prepare(plain_repo, packet)
     monkeypatch.setattr(jev, "request_gateway", lambda *a: pytest.fail("capture network"))
     result = controller.record_checkpoint(args)
-    record = cp.read_json(cp.record_path(plain_repo, "final"))
+    record = cp.read_json(cp.record_path(controller._session_dir(_session_id(plain_repo)), "final"))
     assert result["online_calls"] == 0 and result["local_elapsed_ms"] >= 0
     assert record["packet"]["checkpoint"]["parameters"] == {"tests_passed": 3}
-    assert controller._load_state(plain_repo)["schema"] == controller.CHECKPOINT_STATE_SCHEMA
+    assert controller._load_state(plain_repo, _session_id(plain_repo))["schema"] == controller.SESSION_STATE_SCHEMA
     assert record["review"] is None
 
 
@@ -129,7 +132,7 @@ def test_negative_or_uncertain_jev_cannot_be_signed_pass(plain_repo, packet, mon
         result = review(plain_repo)
         assert not result["ok"] and result["status"] == "REVIEW_REQUIRED" and result["issues"]
     assert len(calls) == 1
-    assert controller._load_state(plain_repo)["semantic_review"]["result"] == "PENDING"
+    assert controller._load_state(plain_repo, _session_id(plain_repo))["semantic_review"]["result"] == "PENDING"
     assert review(plain_repo, "PARTIAL")["result"] == "PARTIAL"
 
 
@@ -178,7 +181,7 @@ def test_stale_or_foreign_checkpoint_not_reused(plain_repo, packet, monkeypatch,
     if change == "head":
         _git(plain_repo, "commit", "--allow-empty", "-qm", "new candidate")
     elif change == "packet":
-        path = cp.record_path(plain_repo, "final")
+        path = cp.record_path(controller._session_dir(_session_id(plain_repo)), "final")
         value = cp.read_json(path)
         value["packet"]["claims"][0]["text"] = "已经部署"
         cp.save(path, value)
@@ -198,13 +201,13 @@ def test_concurrent_boundary_not_overwritten_even_for_partial(plain_repo, packet
     args = prepare(plain_repo, packet)
     controller.record_checkpoint(args)
     def mutate(request, timeout):
-        state = controller._load_state(plain_repo)
+        state = controller._load_state(plain_repo, _session_id(plain_repo))
         state = controller._mark_boundary(state, kind="stage", label="另一个当前边界", observed_git_head=state["boundary"]["observed_git_head"])
-        controller._write_state(plain_repo, state)
+        controller._write_state(plain_repo, state, _session_id(plain_repo))
         return response(request)
     monkeypatch.setattr(jev, "request_gateway", mutate)
     assert review(plain_repo, "PARTIAL")["status"] == "STALE"
-    assert controller._load_state(plain_repo)["boundary"]["last_label"] == "另一个当前边界"
+    assert controller._load_state(plain_repo, _session_id(plain_repo))["boundary"]["last_label"] == "另一个当前边界"
 
 
 def test_required_stop_continues_once_without_online_call(plain_repo, packet, monkeypatch, capsys):
@@ -228,14 +231,14 @@ def test_bad_parameters_never_recorded(plain_repo, packet):
     cp.save(args.packet, value)
     with pytest.raises(jev.JevError, match="PARAMETERS_MISMATCH"):
         controller.record_checkpoint(args)
-    assert not cp.record_path(plain_repo, "final").exists()
+    assert not cp.record_path(controller._session_dir(_session_id(plain_repo)), "final").exists()
 
 
 def test_score_contract_roundtrip_and_bad_confidence(plain_repo, packet):
     args = prepare(plain_repo, packet)
     controller.record_checkpoint(args)
-    intent = controller._load_state(plain_repo)["run_intent"]
-    record = cp.read_json(cp.record_path(plain_repo, "final"))
+    intent = controller._load_state(plain_repo, _session_id(plain_repo))["run_intent"]
+    record = cp.read_json(cp.record_path(controller._session_dir(_session_id(plain_repo)), "final"))
     request, mapping = jev.build_request(record["packet"], intent)
     raw = response(request)
     parsed = jev.parse_response(raw, request["questions"], mapping)
@@ -246,7 +249,7 @@ def test_score_contract_roundtrip_and_bad_confidence(plain_repo, packet):
 
 
 def test_main_and_temporary_checkpoint_files_do_not_collide(plain_repo):
-    assert cp.record_path(plain_repo, "design", "main") != cp.record_path(plain_repo, "design", "temporary")
+    assert cp.record_path(controller._session_dir(_session_id(plain_repo)), "design", "main") != cp.record_path(controller._session_dir(_session_id(plain_repo)), "design", "temporary")
 
 
 def test_old_protocol_cached_opinion_is_not_reinterpreted_or_retried(plain_repo, packet, monkeypatch):
@@ -254,7 +257,7 @@ def test_old_protocol_cached_opinion_is_not_reinterpreted_or_retried(plain_repo,
     controller.record_checkpoint(args)
     monkeypatch.setattr(jev, "request_gateway", lambda r, t: response(r))
     assert review(plain_repo)["result"] == "PASS"
-    path = cp.record_path(plain_repo, "final")
+    path = cp.record_path(controller._session_dir(_session_id(plain_repo)), "final")
     old = cp.read_json(path)
     old["opinion"]["schema"] = "3can.jev-opinion/v3"
     cp.save(path, old)
@@ -287,9 +290,9 @@ def test_multi_criterion_scores_are_scoped_and_one_failure_cannot_be_averaged(pa
 def test_temporary_required_review_clears_only_temporary(plain_repo, packet, monkeypatch):
     args = prepare(plain_repo, packet)
     controller.record_checkpoint(args)
-    main_path = cp.record_path(plain_repo, "final")
+    main_path = cp.record_path(controller._session_dir(_session_id(plain_repo)), "final")
     main_before = main_path.read_bytes()
-    controller.task_relation(SimpleNamespace(root=plain_repo, kind="temporary", reference="Owner insertion",
+    controller.task_relation(SimpleNamespace(root=plain_repo, session_id=_session_id(plain_repo), kind="temporary", reference="Owner insertion",
         goal="先检查用户新增的解析案例", acceptance=["A01=该临时用例通过"], resume_objective="返回主目标"))
     controller.record_checkpoint(args)
     monkeypatch.setattr(jev, "request_gateway", lambda r, t: response(r))
@@ -297,7 +300,7 @@ def test_temporary_required_review_clears_only_temporary(plain_repo, packet, mon
         session_id=args.session_id, scope="temporary", stage="final", result="PASS",
         reference="temporary-test-evidence", next_objective="", timeout=10))
     assert result["temporary_cleared"]
-    assert not controller._load_state(plain_repo).get("temporary_task")
+    assert not controller._load_state(plain_repo, _session_id(plain_repo)).get("temporary_task")
     assert main_path.read_bytes() == main_before
 
 

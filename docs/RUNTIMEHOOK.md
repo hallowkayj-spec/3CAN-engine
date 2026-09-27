@@ -11,10 +11,10 @@ safe local work immediately, use fresh ticket context only just in time for a
 ticket-governed operation, and write durable meaning only at a real checkpoint.
 It does not activate RuntimeHook or contact 9700.
 
-It is not a second Task Oracle. Semantic execution state remains in one ignored file:
+Each native task owns one semantic state file outside the project:
 
 ```text
-.codex/runtimehook/state.json
+CODEX_HOME/runtimehook/sessions/<sha256(actual-thread-id)>/state.json
 ```
 
 That file contains enabled/disabled state, an activation ID, RUN_INTENT,
@@ -30,9 +30,11 @@ RuntimeHook does not own a convergence selector, binding policy, or project
 evidence decision. Git remains engineering truth; the existing
 `3can_convergence.py` and Task Oracle remain the evidence kernel.
 
-The state is scoped to one physical Git worktree, not to one chat. At most one
-current RuntimeHook task may use that worktree; concurrent tasks require
-separate worktrees so one task cannot replace another task's Intent.
+State belongs to the actual native task, with a separately verified workspace
+binding. Read-only chats may share a directory; concurrent source writers still
+require separate worktrees. With the Owner-enabled required policy, every new,
+resumed and spawned task must initialize its own supervision.
+See [global session design and migration](RUNTIMEHOOK_GLOBAL_SESSIONS.md).
 
 ### Automatic semantic writeback (0.1.11)
 
@@ -63,7 +65,7 @@ An explicit command workdir or controller `--root` does not change the native
 task cwd supplied to Hooks. A legacy chat can therefore execute code in one
 repository while its native events retain the old cwd. The verified task
 binding separates that host anchor from the development target. A non-Git host
-is supported when the target is a Git worktree; no directory migration or
+and non-Git target are supported; no directory migration or
 project-local plugin copy is required. After explicit binding, this command
 checks the observed host against its anchor and reads only the target:
 
@@ -98,10 +100,10 @@ The cache is one bounded JSON observation per native task under
 `CODEX_HOME/runtimehook/scopes/`, keyed by a hash of the ID for a portable file
 name. It contains no goal, priority, token, ticket or execution history. Atomic
 per-task replacement avoids a shared registry lock. Deleting it loses no
-engineering evidence: the next relevant event reports `SCOPE_UNBOUND` until a
-new observation. It never automatically adopts an existing activation.
+engineering evidence: required native entry records a fresh observed binding
+for that same task. Its own state can be recovered; a peer activation is never adopted.
 
-A v2 hit checks the recorded host anchor and target Git marker identity using filesystem
+A v3 hit checks the recorded host anchor and target Git/directory identity using filesystem
 operations only. Native events then reuse the existing semantic review logic;
 that logic still queries Git for boundary/freshness and safe state access. Thus
 local relationship-lookup latency and full native Hook latency are different
@@ -111,10 +113,11 @@ New task IDs, changed host anchors, moved/nested worktrees, changed Git markers
 or changed activation IDs cannot silently reuse an old binding. A subdirectory
 of the same Git host remains valid; a non-Git host requires the exact observed
 cwd. Legacy v1 bindings remain same-worktree-only until explicitly rebound.
-Older plugins reject v2 instead of interpreting it as their former contract.
-Codex subagent hooks may share the parent session ID; a child cannot
-rebind the parent's entry to its own root. This adapter is not a complete
-subagent ownership service and does not grant concurrent writer permission.
+Legacy v1/v2 bindings migrate only their matching original state owner; old
+files remain read-only for rollback. Codex child events provide `agent_id` as
+the actual child thread identity even when `session_id` refers to the parent.
+All child lifecycle/tool events use that ID. Missing child identity never
+selects parent state. No binding grants concurrent source-writer permission.
 
 3CAN is consulted by the registering Agent only when its durable project or
 handoff meaning is relevant. Pass the observed `--knowledge-worktree` and
@@ -125,12 +128,17 @@ overriding a verified current mapping or disabling checkpoints/Jev. Update
 durable meaning at a normal 3CAN handoff/closeout; callbacks never write the
 graph. Do not cache a ticket or infer business priority from it.
 
-Scope problems emit a bounded advisory at SessionStart/UserPromptSubmit or a
+Corrupt or mismatched scopes emit a bounded advisory at session entry or a
 Stop system message, never `decision:block` or `continue:false`. PostToolUse
 does not repeat the same mismatch on every tool call. No foreign semantic state
 is applied or changed; safe independent work continues and only a genuinely
 unsafe affected operation remains deferred. Correctly scoped semantic review
 timing below is unchanged, as are independent project safety gates.
+
+New/uninitialized required tasks instead receive `REQUIRED / INTENT_REQUIRED`;
+Stop/SubagentStop requests one bounded continuation to perform `on` with the
+actual goal and acceptance. This reuses the existing review continuation,
+without inventing a goal or calling a service.
 
 The native [Hook input](https://learn.chatgpt.com/docs/hooks#common-input-fields)
 provides `session_id` and `cwd`. Keep those actual host values; a tool workdir
@@ -152,7 +160,7 @@ opinions cannot be signed PASS. PARTIAL remains possible without claiming accept
 See the complete [checkpoint contract](../plugins/3can-runtimehook/skills/3can-runtimehook/references/checkpoints.md).
 This supersedes the optional-only description below **only when that policy is enabled**.
 One current checkpoint reference uses state v3; bounded per-checkpoint output records share
-the existing ignored state root. No scheduler, graph execution-state mirror or network daemon is added.
+the existing task-owned state directory. No scheduler, graph execution-state mirror or network daemon is added.
 Native callbacks remain offline and use one bounded Stop continuation, not an infinite blocking loop.
 Public installs still require explicit permission for paid third-party uploads.
 
@@ -257,13 +265,13 @@ deployment, publication, security, or the independent PR15 convergence gate.
 ### 可选 Jev 复核（0.1.8 起）
 
 经用户启用，Agent 在重要阶段/最终复核中通过 OpenRouter Decisions API 调用 `assess`，只检查当前片段的
-“声明—证据”和“下一步—最新要求”。四个原生生命周期 Hook 保持离线，
+“声明—证据”和“下一步—最新要求”。会话及子 Agent 原生生命周期 Hook 保持离线，
 没有新增 Stop gate，也不将模型意见写入语义状态或替代项目验收。
 部署初期采用 observe；结构合法的 `OBSERVED` 不等于任务 PASS。
 
 接口、证据 JSON、Windows 加密 Key 配置、费用与回滚详见
 [随插件交付的 Jev 指引](../plugins/3can-runtimehook/skills/3can-runtimehook/references/jev.md)。
-唯一额外本地产物是 ignored state root 中可替换的 `jev-observation.json`；
+唯一额外本地产物是 task-owned state directory 中可替换的 `jev-observation.json`；
 它是最近一次片段意见缓存，不是第二套执行状态。相同输入复用，变化/过期不得套用。
 缺少有效 Key 时在线功能是 `UNAVAILABLE`；不能宣称实际 Jev 调用或准确率已经验收。
 
@@ -271,13 +279,13 @@ deployment, publication, security, or the independent PR15 convergence gate.
 
 RuntimeHook is distributed as the repository Plugin at
 `plugins/3can-runtimehook` and is exposed by
-`.agents/plugins/marketplace.json`. It requires Git and Python 3; the Windows
+`.agents/plugins/marketplace.json`. It requires Python 3, plus Git for Git
+workspaces; the Windows
 launcher supports `python.exe`, `python3.exe`, and the standard `py.exe -3`
 launcher, while both platform launchers reject interpreters resolved inside the
-current worktree. Non-SessionStart events exit before Python and Git discovery
-when neither local state nor a host scope-cache directory exists. With scope
-bindings present, the controller selects by native task ID; the launcher does
-not duplicate that lookup or discard cross-directory events. Windows commands run directly in the native
+current workspace. Every configured event reaches the controller, which selects
+by actual native task ID; an absent worktree-local state file never suppresses
+global invocation. Windows commands run directly in the native
 PowerShell hook host; there is no nested shell or batch wrapper. A custom cmd
 or Git Bash hook shell on Windows is not a validated configuration. Launcher failures report typed
 `UNAVAILABLE` instead of silently disabling Hooks. Native Hooks need no 3CAN Runtime,
@@ -299,20 +307,18 @@ Restart the ChatGPT desktop app, open the Plugins Directory, choose the
 open `/plugins` and install it from the configured marketplace, then start a new
 session. Review the exact bundled Hook definition and trust it before use; in
 Codex CLI, `/hooks` is the native inspection and trust surface. Installation
-does not activate a task or create state. It only makes the bounded 3CAN
-SessionStart orientation automatic; semantic supervision starts when Codex
-selects the Skill or the Owner asks for RuntimeHook.
+does not authorize paid calls by itself. With the Owner-enabled required policy,
+new and dispatched tasks automatically register and must initialize their own
+real intent; otherwise the public install retains optional supervision.
 
-The first activation in a Git repository adds only
-`/.codex/runtimehook/` to that repository's local Git exclude when an existing
-ignore does not already cover it. This keeps state untracked without editing
-`.gitignore` or any project source file. A tracked, redirected, or unsafe state
-root remains typed `UNAVAILABLE`.
+Activation writes only the task's directory in `CODEX_HOME/runtimehook/sessions/`.
+It does not add a Git exclude or edit project files. Unsafe redirected state
+paths remain typed unavailable. Exact-owner legacy import preserves originals.
 
 To update, upgrade the `3can-engine` marketplace and reinstall the Plugin from
 that source. To remove it, first say `关闭 RuntimeHook` in active worktrees, then
 disable or uninstall it through the Plugins browser. Uninstalling deliberately
-does not delete retained project-local state or rewrite a repository's Git
+does not delete retained task state or rewrite a repository's Git
 exclude file.
 
 After a local plugin update, pause at a safe boundary and restart the ChatGPT
@@ -321,8 +327,8 @@ desktop app so the local install picks up the new files, as specified in the
 Then safely resume the intended task and inspect the actual native event and
 current Hook trust, not only the enabled entry in Settings. An already-running
 task is not proven to hot-reload it. A restart does not change a task's saved cwd
-or invent a verified target binding: the Agent records it once using actual
-host metadata and current Intent. Cross-directory binding does not require
+or authorize a foreign target: new required entry registers the actual native
+cwd, and the Agent still records a deliberate cross-directory relationship. Cross-directory binding does not require
 changing that saved cwd or waiting for folder cleanup.
 Do not activate over another task's Intent merely to check installation.
 Neither this restart nor a successful component/Provider simulation is proof of
@@ -344,10 +350,10 @@ is:
 ```powershell
 $root = (git rev-parse --show-toplevel).Trim()
 $cli = Join-Path $root 'plugins\3can-runtimehook\skills\3can-runtimehook\scripts\3can_runtimehook.py'
-python $cli --root $root on --goal 'Deliver the requested bounded result.' --acceptance 'A01=The requested result is complete.' --intensity light --reason 'Small and clear.'
-python $cli --root $root checkpoint --kind episode --label 'Implementation completed' --next-objective 'Review the result.'
-python $cli --root $root review --stage final --result PASS --reference 'git:reviewed-commit'
-python $cli --root $root off
+python $cli --root $root --native-cwd $root --session-id $env:CODEX_THREAD_ID on --goal 'Deliver the requested bounded result.' --acceptance 'A01=The requested result is complete.' --intensity light --reason 'Small and clear.'
+python $cli --root $root --native-cwd $root --session-id $env:CODEX_THREAD_ID checkpoint --kind episode --label 'Implementation completed' --next-objective 'Review the result.'
+python $cli --root $root --native-cwd $root --session-id $env:CODEX_THREAD_ID review --stage final --result PASS --reference 'git:reviewed-commit'
+python $cli --root $root --native-cwd $root --session-id $env:CODEX_THREAD_ID off
 ```
 
 This smoke tests semantic state only. Existing convergence tests separately

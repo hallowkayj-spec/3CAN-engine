@@ -1,7 +1,7 @@
 # 自动回写：接入、关键阶段、错误进展
 
 Owner 启用后，`connect` 自动登记 Agent 并写入关联；已有 `review` 自动回写阶段摘要与真实复核状态。
-原生四个 Hook 仍离线，不扫描会话全文，不额外调用模型，不新建 Runtime、队列或图谱节点。
+原生会话和子 Agent Hook 均保持离线，不扫描会话全文，不额外调用模型，不新建 Runtime、队列或图谱节点。
 
 ## 机器配置一次，任务关联一次
 
@@ -29,7 +29,7 @@ Agent 从当前项目已有 route/精确读取核实知识落点后自行执行�
 `.agents/project.json`、Git 物理工作树、节点 project/namespace、Runtime identity/deep readiness 必须一致。
 缺失绑定明确 `UNAVAILABLE`，不能猜节点、复制别的项目胶囊或借用其他任务身份。
 新主目标的 `on` 建立新 activation，须重新 connect；普通继续不重复 on。
-子 Agent 若只有父任务 ID，不得改写父 scope cache；由父任务汇总子任务证据，或使用独立宿主身份的受支持客户端。
+子 Agent 使用原生 `agent_id`（真实子线程 ID）作为控制器的 `--session-id`，独立保存绑定和回执。宿主确实未提供子身份时，不得改写父 scope 或借用父任务身份。
 安装插件不等于所有外部 Agent 已自动接入；未遵循该协议的 Agent 不在可证明覆盖内。
 
 ## 关键开发和交付
@@ -68,7 +68,7 @@ error --id <同一ID> --state resolution_claimed --summary "修复、验证结�
 仅本地记录或 Jev 意见不能声称远端成功。标记由完整作用域和增量内容生成，重放不重复追加；原 notes 保留。
 版本冲突不覆盖、不自动重试。HTTP 成功但 count=0、identity/项目不匹配、缺失读回均不算成功。
 
-脱敏回执保存在当前 `.codex/runtimehook/runtimehook_delta_<摘要>.json`，失败也保留原待写增量和 typed 状态。
+脱敏回执保存在当前 `CODEX_HOME/runtimehook/sessions/<task-hash>/runtimehook_delta_<摘要>.json`，失败也保留原待写增量和 typed 状态。
 不后台重试；诊断/恢复后可显式重放原参数，不能盲重试。身份校验失败时可能没有可安全保存的 packet，先修正绑定。
 服务拒绝只尝试一次脱敏 `3can_issue_observed`，该上报失败不递归。
 网络沿用约 10 秒整体预算；强制深检请求至多 5 秒，其他请求至多 2 秒，均受剩余预算约束（拒绝上报另至多 1 秒）。

@@ -79,6 +79,31 @@
           }
         ]
       }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
+            "commandWindows": "$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONUTF8 = '1'; $root = (& git rev-parse --show-toplevel | Out-String).Trim(); python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook",
+            "timeout": 10,
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\" && python3 \"$root/scripts/3can_runtimehook.py\" --root \"$root\" hook",
+            "commandWindows": "$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONUTF8 = '1'; $root = (& git rev-parse --show-toplevel | Out-String).Trim(); python (Join-Path $root 'scripts/3can_runtimehook.py') --root $root hook",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

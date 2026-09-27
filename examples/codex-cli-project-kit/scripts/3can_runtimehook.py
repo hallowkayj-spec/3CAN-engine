@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin semantic supervisor for a project-local Codex task.
+"""Thin semantic supervisor with one local state per native Codex task.
 
 RuntimeHook remembers Owner Intent and semantic review timing. It deliberately
 does not own convergence selectors, candidate freshness, proof receipts, or Stop
@@ -32,11 +32,11 @@ import runtimehook_writeback as writeback_adapter  # noqa: E402
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATE_ROOT = Path(".codex/runtimehook")
 STATE_PATH = STATE_ROOT / "state.json"
-LOCAL_EXCLUDE_RULE = "/.codex/runtimehook/"
 STATE_SCHEMA = "3can.runtimehook-state/v1"
 TEMPORARY_STATE_SCHEMA = "3can.runtimehook-state/v2"
 CHECKPOINT_STATE_SCHEMA = "3can.runtimehook-state/v3"
-SCOPE_SCHEMA = "3can.runtimehook-scope/v2"
+SESSION_STATE_SCHEMA = "3can.runtimehook-state/v4"
+SCOPE_SCHEMA = "3can.runtimehook-scope/v3"
 MAX_STATE_BYTES = 64 * 1024
 MAX_CONTEXT_CHARS = 4_000
 INTENSITIES = {"light", "medium", "max"}
@@ -65,7 +65,8 @@ SESSION_FAST_PATH = (
 
 
 JEV_REQUIRED_TEXT = (
-    "本机已启用开发检查点必经 Jev：开发时使用 RuntimeHook 并按 Skill 建立项目检查点说明，"
+    "本机已启用 RuntimeHook 全局必经：每个新建、恢复及派发任务均使用自己的身份和状态，不等待用户再次提醒。"
+    "按 Skill 和任务大小建立检查点说明；开发检查点必经 Jev，"
     "在架构/依赖选型、关键实现/集成、失败改路及交付边界记录实际参数和证据。"
     "checkpoint 本地记录后，review 会自动调用 Jev；未调用、低分、低置信或有异议不能登记 PASS。"
     "不要用 observe/off、自写 PASS 或省略检查点替代；按具体异议补证据、调研或修复再验证，"
@@ -156,9 +157,15 @@ def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return completed
 
 
-def _git_head(root: Path) -> str:
+def _git_head(root: Path) -> str | None:
+    if not os.path.lexists(root / ".git"):
+        return None  # Non-Git tasks have no fabricated source checkpoint.
     head = _git(root, "rev-parse", "--verify", "HEAD")
     if head.returncode != 0:
+        branch = _git(root, "symbolic-ref", "--quiet", "HEAD")
+        if branch.returncode == 0 and branch.stdout.strip().startswith("refs/heads/"):
+            if _git(root, "show-ref", "--verify", "--quiet", branch.stdout.strip()).returncode == 1:
+                return None  # An unborn repository can initialize supervision.
         raise RuntimeHookError("Git HEAD 不可用")
     current_head = head.stdout.strip()
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", current_head):
@@ -166,8 +173,10 @@ def _git_head(root: Path) -> str:
     return current_head
 
 
-def _git_checkpoint(root: Path) -> tuple[str, bool]:
+def _git_checkpoint(root: Path) -> tuple[str | None, bool]:
     current_head = _git_head(root)
+    if not os.path.lexists(root / ".git"):
+        return None, False
     status = _git(
         root,
         "status",
@@ -185,6 +194,10 @@ def _repository_root(root: Path) -> Path:
         resolved = root.resolve()
     except (OSError, RuntimeError) as exc:
         raise RuntimeHookError("无法解析项目根目录") from exc
+    if not resolved.is_dir():
+        raise RuntimeHookError("工作区必须是现有目录")
+    if _native_worktree(str(resolved)) is None:
+        return resolved
     completed = _git(resolved, "rev-parse", "--show-toplevel")
     if completed.returncode != 0:
         raise RuntimeHookError("RuntimeHook 需要 Git 工作树")
@@ -208,18 +221,14 @@ def _validate_directory(path: Path, expected: Path, *, label: str) -> None:
         raise RuntimeHookError(f"{label} 重定向到了专用路径之外")
 
 
-def _state_root(root: Path, *, create: bool) -> Path | None:
+def _legacy_state_root(root: Path) -> Path | None:
     codex = root / ".codex"
     state_root = root / STATE_ROOT
     if not os.path.lexists(codex):
-        if not create:
-            return None
-        codex.mkdir()
+        return None
     _validate_directory(codex, root / ".codex", label=".codex directory")
     if not os.path.lexists(state_root):
-        if not create:
-            return None
-        state_root.mkdir()
+        return None
     _validate_directory(state_root, root / STATE_ROOT, label="RuntimeHook state root")
 
     tracked = _git(root, "ls-files", "--", STATE_ROOT.as_posix())
@@ -231,85 +240,31 @@ def _state_root(root: Path, *, create: bool) -> Path | None:
     return state_root
 
 
-def _local_exclude_path(root: Path) -> Path:
-    exclude = _git(
-        root,
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-path",
-        "info/exclude",
-    )
-    common = _git(
-        root,
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-    )
-    if exclude.returncode != 0 or common.returncode != 0:
-        raise RuntimeHookError("本地 Git exclude 路径不可用")
-    exclude_path = Path(exclude.stdout.strip())
-    expected = Path(common.stdout.strip()) / "info" / "exclude"
-    if not exclude_path.is_absolute() or exclude_path != expected:
-        raise RuntimeHookError("本地 Git exclude 路径无效")
-    info_dir = exclude_path.parent
-    if not info_dir.is_dir() or _is_redirect(info_dir):
-        raise RuntimeHookError("本地 Git info 不是直接目录")
-    if os.path.lexists(exclude_path) and (
-        _is_redirect(exclude_path) or not exclude_path.is_file()
-    ):
-        raise RuntimeHookError("本地 Git exclude 不是直接文件")
-    return exclude_path
+def _session_dir(session_id: str) -> Path:
+    """Same owner for state and all task artifacts, independent of its workspace."""
+    scope = _scope_path(session_id)
+    return scope.parent.parent / "sessions" / scope.stem
 
 
-def _ensure_state_ignored(root: Path) -> bool:
-    _state_root(root, create=False)
-    tracked = _git(root, "ls-files", "--", STATE_ROOT.as_posix())
-    if tracked.returncode != 0 or tracked.stdout.strip():
-        raise RuntimeHookError(
-            "RuntimeHook 状态目录必须未被跟踪且已被 Git 忽略"
-        )
-    ignored = _git(root, "check-ignore", "-q", "--", STATE_PATH.as_posix())
-    if ignored.returncode == 0:
-        return False
-    if ignored.returncode != 1:
-        raise RuntimeHookError("RuntimeHook 的 Git 忽略状态不可用")
+def _state_root(root: Path, session_id: str, *, create: bool) -> Path | None:
+    return _managed_directory(_session_dir(session_id), create=create)
 
-    exclude_path = _local_exclude_path(root)
-    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
-    flags |= getattr(os, "O_BINARY", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(exclude_path, flags, 0o666)
-        try:
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode):
-                raise RuntimeHookError("本地 Git exclude 不是直接文件")
-            needs_newline = False
-            if info.st_size:
-                os.lseek(descriptor, -1, os.SEEK_END)
-                needs_newline = os.read(descriptor, 1) not in {b"\n", b"\r"}
-            entry = (
-                (b"\n" if needs_newline else b"")
-                + b"# 3CAN RuntimeHook local state\n"
-                + LOCAL_EXCLUDE_RULE.encode("ascii")
-                + b"\n"
-            )
-            remaining = memoryview(entry)
-            while remaining:
-                written = os.write(descriptor, remaining)
-                if written <= 0:
-                    raise OSError("本地 Git exclude 写入未完成")
-                remaining = remaining[written:]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    except OSError as exc:
-        raise RuntimeHookError("本地 Git exclude 文件不可写") from exc
 
-    verified = _git(root, "check-ignore", "-q", "--", STATE_PATH.as_posix())
-    if verified.returncode != 0:
-        raise RuntimeHookError("RuntimeHook 的本地 Git 忽略规则未生效")
-    return True
+def _managed_directory(directory: Path, *, create: bool) -> Path | None:
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    if not home.is_absolute() or not directory.is_relative_to(home / "runtimehook"):
+        raise RuntimeHookError("RuntimeHook 路径必须位于 CODEX_HOME/runtimehook")
+    components = [home]
+    for part in directory.relative_to(home).parts:
+        components.append(components[-1] / part)
+    # Validate each managed component before creating a child or following it.
+    for path in components:
+        if not os.path.lexists(path):
+            if not create:
+                return None
+            path.mkdir(parents=path == home, exist_ok=True)
+        _validate_directory(path, path, label="RuntimeHook session directory")
+    return directory
 
 
 def _text(value: Any, *, label: str) -> str:
@@ -354,8 +309,17 @@ def _validate_intent(intent: Any) -> None:
 
 
 def _validate_state(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or value.get("schema") not in {STATE_SCHEMA, TEMPORARY_STATE_SCHEMA, CHECKPOINT_STATE_SCHEMA}:
+    if not isinstance(value, dict) or value.get("schema") not in {STATE_SCHEMA, TEMPORARY_STATE_SCHEMA, CHECKPOINT_STATE_SCHEMA, SESSION_STATE_SCHEMA}:
         raise RuntimeHookError("RuntimeHook 状态版本不受支持")
+    session_state = value["schema"] == SESSION_STATE_SCHEMA
+    if session_state and (
+        not isinstance(value.get("session_id"), str)
+        or not ID_PATTERN.fullmatch(value["session_id"])
+        or not isinstance(value.get("workspace"), str)
+        or not Path(value["workspace"]).is_absolute()
+        or value.get("workspace_kind") not in {"git", "directory"}
+    ):
+        raise RuntimeHookError("会话状态缺少独立身份或工作区")
     status = value.get("status")
     if status not in {"active", "disabled_by_owner"}:
         raise RuntimeHookError("RuntimeHook 状态无效")
@@ -365,7 +329,7 @@ def _validate_state(value: Any) -> dict[str, Any]:
     _validate_intent(value.get("run_intent"))
     temporary = value.get("temporary_task")
     if temporary is not None:
-        if value["schema"] not in {TEMPORARY_STATE_SCHEMA, CHECKPOINT_STATE_SCHEMA}:
+        if value["schema"] not in {TEMPORARY_STATE_SCHEMA, CHECKPOINT_STATE_SCHEMA, SESSION_STATE_SCHEMA}:
             raise RuntimeHookError("临时任务需要 v2 状态，防止旧控制器误用主目标")
         _validate_intent(temporary)
         for key in ("reference", "resume_objective"):
@@ -373,7 +337,7 @@ def _validate_state(value: Any) -> dict[str, Any]:
 
     checkpoint = value.get("checkpoint")
     if checkpoint is not None:
-        if value["schema"] != CHECKPOINT_STATE_SCHEMA or not isinstance(checkpoint, dict):
+        if value["schema"] not in {CHECKPOINT_STATE_SCHEMA, SESSION_STATE_SCHEMA} or not isinstance(checkpoint, dict):
             raise RuntimeHookError("检查点需要 v3 状态，旧控制器不得忽略 Jev 要求")
         checkpoints.jev._id(checkpoint.get("id"))
         if not isinstance(checkpoint.get("spec"), str) or not Path(checkpoint["spec"]).is_absolute():
@@ -400,9 +364,9 @@ def _validate_state(value: Any) -> dict[str, Any]:
         _text(review.get("reference"), label="semantic review reference")
     reviewed_git_head = review.get("reviewed_git_head")
     if result == "PASS" and review.get("stage") == "final":
-        if not isinstance(reviewed_git_head, str) or not re.fullmatch(
+        if not (session_state and value["workspace_kind"] == "directory" and reviewed_git_head is None) and (not isinstance(reviewed_git_head, str) or not re.fullmatch(
             r"(?:[0-9a-f]{40}|[0-9a-f]{64})", reviewed_git_head
-        ):
+        )):
             raise RuntimeHookError("主任务最终 PASS 必须记录 reviewed_git_head")
     elif reviewed_git_head is not None:
         raise RuntimeHookError("只有主任务最终 PASS 才使用 reviewed_git_head")
@@ -424,9 +388,9 @@ def _validate_state(value: Any) -> dict[str, Any]:
         ):
             raise RuntimeHookError("复核边界序号无效")
         observed_git_head = boundary.get("observed_git_head")
-        if not isinstance(observed_git_head, str) or not re.fullmatch(
+        if not (session_state and observed_git_head is None) and (not isinstance(observed_git_head, str) or not re.fullmatch(
             r"(?:[0-9a-f]{40}|[0-9a-f]{64})", observed_git_head
-        ):
+        )):
             raise RuntimeHookError("复核边界 Git HEAD 无效")
         if boundary.get("last_kind") not in BOUNDARY_KINDS:
             raise RuntimeHookError("复核边界类型无效")
@@ -474,11 +438,11 @@ def _with_boundary(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _load_state(root: Path) -> dict[str, Any] | None:
-    state_path = root / STATE_PATH
+def _load_state(root: Path, session_id: str) -> dict[str, Any] | None:
+    state_root = _state_root(root, session_id, create=False)
+    state_path = _session_dir(session_id) / "state.json"
     if not os.path.lexists(state_path):
         return None
-    state_root = _state_root(root, create=False)
     if state_root is None or _is_redirect(state_path) or not state_path.is_file():
         raise RuntimeHookError("RuntimeHook 状态不是直接文件")
     if state_path.stat().st_size > MAX_STATE_BYTES:
@@ -487,6 +451,9 @@ def _load_state(root: Path) -> dict[str, Any] | None:
         value = json.loads(state_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeHookError("无法读取 RuntimeHook 状态") from exc
+    if (not isinstance(value, dict) or value.get("schema") != SESSION_STATE_SCHEMA
+            or value.get("session_id") != session_id or value.get("workspace") != str(root)):
+        raise RuntimeHookError("CONTEXT_MISMATCH：会话状态身份或工作区不匹配；不继承其他任务")
     return _validate_state(_with_boundary(root, _validate_state(value)))
 
 
@@ -576,7 +543,7 @@ def _mark_boundary(
     *,
     kind: str,
     label: str,
-    observed_git_head: str,
+    observed_git_head: str | None,
 ) -> dict[str, Any]:
     if kind not in BOUNDARY_KINDS - {"activation"}:
         raise RuntimeHookError("只能新增 Git、阶段或 episode 边界")
@@ -600,7 +567,7 @@ def _mark_boundary(
 
 
 def _sync_git_boundary(
-    root: Path, state: dict[str, Any]
+    root: Path, state: dict[str, Any], session_id: str
 ) -> tuple[dict[str, Any], bool]:
     current_head = _git_head(root)
     previous_head = state["boundary"]["observed_git_head"]
@@ -609,24 +576,23 @@ def _sync_git_boundary(
     state = _mark_boundary(
         state,
         kind="git",
-        label=f"Git HEAD {previous_head[:12]} -> {current_head[:12]}",
+        label=f"Git HEAD {str(previous_head)[:12]} -> {str(current_head)[:12]}",
         observed_git_head=current_head,
     )
-    _write_state(root, state)
+    _write_state(root, state, session_id)
     return state, True
 
 
-def _write_state(root: Path, value: dict[str, Any]) -> None:
-    # Old controllers must not silently ignore a live temporary task.
-    schema = CHECKPOINT_STATE_SCHEMA if value.get("checkpoint") else (
-        TEMPORARY_STATE_SCHEMA if value.get("temporary_task") else STATE_SCHEMA)
-    value = {**value, "schema": schema}
+def _write_state(root: Path, value: dict[str, Any], session_id: str, *, create_only: bool = False) -> None:
+    value = {**value, "schema": SESSION_STATE_SCHEMA, "session_id": session_id,
+             "workspace": str(root),
+             "workspace_kind": "git" if os.path.lexists(root / ".git") else "directory"}
     value = _validate_state(value)
     _context(value)
     payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
     if len(payload.encode("utf-8")) > MAX_STATE_BYTES:
         raise RuntimeHookError("RuntimeHook 状态超过大小限制")
-    state_root = _state_root(root, create=True)
+    state_root = _state_root(root, session_id, create=True)
     assert state_root is not None
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".state.", suffix=".tmp", dir=str(state_root)
@@ -636,8 +602,13 @@ def _write_state(root: Path, value: dict[str, Any]) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        _state_root(root, create=False)
-        os.replace(temporary_name, root / STATE_PATH)
+        _state_root(root, session_id, create=False)
+        destination = _session_dir(session_id) / "state.json"
+        if create_only:
+            # Publish once, atomically; never replace a concurrent on/review.
+            os.link(temporary_name, destination)
+        else:
+            os.replace(temporary_name, destination)
     finally:
         try:
             os.unlink(temporary_name)
@@ -669,10 +640,10 @@ def _acceptance(values: list[str]) -> list[dict[str, str]]:
 
 def activate(args: argparse.Namespace) -> dict[str, Any]:
     root = _repository_root(args.root)
-    existing = _load_state(root)
+    existing = _load_state(root, args.session_id)
     if existing and existing.get("temporary_task"):
         raise RuntimeHookError("TEMPORARY_TASK_ACTIVE：请先完成或按用户要求取消临时任务，不得覆盖主目标")
-    local_exclude_added = _ensure_state_ignored(root)
+    local_exclude_added = False
     current_head = _git_head(root)
     activation_id = f"rh-{uuid.uuid4().hex[:16]}"
     state = {
@@ -708,20 +679,20 @@ def activate(args: argparse.Namespace) -> dict[str, Any]:
             "last_completed_plan_label": None,
         },
     }
-    _write_state(root, state)
+    _write_state(root, state, args.session_id)
     return {
         "ok": True,
         "status": "active",
         "activation_id": activation_id,
         "internal_intensity": state["internal_intensity"],
-        "state_path": STATE_PATH.as_posix(),
+        "state_path": str(_session_dir(args.session_id) / "state.json"),
         "local_exclude_added": local_exclude_added,
     }
 
 
 def disable(args: argparse.Namespace) -> dict[str, Any]:
     root = _repository_root(args.root)
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     if state is None:
         return {"ok": True, "status": "inactive", "changed": False}
     if state["status"] == "disabled_by_owner":
@@ -730,7 +701,7 @@ def disable(args: argparse.Namespace) -> dict[str, Any]:
         **state,
         "status": "disabled_by_owner",
     }
-    _write_state(root, state)
+    _write_state(root, state, args.session_id)
     return {
         "ok": True,
         "status": "disabled_by_owner",
@@ -767,14 +738,14 @@ def task_relation(args: argparse.Namespace) -> dict[str, Any]:
                        "这里只给建议，不新建、不迁移、不停止安全工作，也不把用户明确追加的要求当作漂移。",
         }
     root = _repository_root(args.root)
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     if state is None:
         raise RuntimeHookError("没有可关联的主任务，请先确认当前任务的 RuntimeHook 状态")
     if args.kind == "cancel":
         if not state.get("temporary_task"):
             return {"ok": True, "status": "NO_TEMPORARY_TASK", "changed": False}
         state = _resume_main(state, reference, "临时任务已按用户要求取消；恢复主任务")
-        _write_state(root, state)
+        _write_state(root, state, args.session_id)
         return {"ok": True, "status": "CANCELLED", "temporary_cleared": True,
                 "main_result": "PARTIAL", "next_objective": state["current_episode"]}
     if state["status"] != "active":
@@ -792,32 +763,33 @@ def task_relation(args: argparse.Namespace) -> dict[str, Any]:
     state["temporary_task"] = temporary
     state.pop("checkpoint", None)
     state["current_episode"] = temporary["goal"]
-    _write_state(root, state)
+    _write_state(root, state, args.session_id)
     return {"ok": True, "status": "TEMPORARY_ACTIVE", "activation_id": state["activation_id"],
             "main_intent_preserved": True, "resume_objective": temporary["resume_objective"]}
 
 
 def record_review(args: argparse.Namespace) -> dict[str, Any]:
     root = _repository_root(args.root)
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     if state is None or state["status"] != "active":
         raise RuntimeHookError("没有启用中的 RuntimeHook 语义任务")
     if (args.scope == "temporary") != bool(state.get("temporary_task")):
         raise RuntimeHookError("REVIEW_SCOPE_MISMATCH：复核对象与当前主/临时任务不一致；状态未改变")
-    state, _git_changed = _sync_git_boundary(root, state)
+    state, _git_changed = _sync_git_boundary(root, state, args.session_id)
     next_objective = args.next_objective.strip()
     if args.stage == "episode" and not next_objective:
         raise RuntimeHookError("阶段复核必须指定 --next-objective")
     reference = _text(args.reference, label="semantic review reference")
     if args.stage == "final" and args.result == "PASS" and not state.get("temporary_task"):
-        if _git_checkpoint(root)[1]:
+        current_head, dirty = _git_checkpoint(root)
+        if dirty or (state["workspace_kind"] == "git" and current_head is None):
             raise RuntimeHookError("主任务最终 PASS 需要干净 Git 检查点")
     jev_review = _review_checkpoint(args, root, state, reference)
     if jev_review and not jev_review["ok"]:
         return jev_review
     if state.get("temporary_task") and args.stage == "final" and args.result == "PASS":
         state = _resume_main(state, reference, "临时任务已复核完成并清除；恢复主任务")
-        _write_state(root, state)
+        _write_state(root, state, args.session_id)
         return {"ok": True, "status": "review_recorded", "scope": "temporary",
                 "result": "PASS", "reference": reference, "temporary_cleared": True,
                 "main_result": "PARTIAL", "next_objective": state["current_episode"]}
@@ -846,7 +818,7 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
             next_objective if args.stage == "episode" else state.get("current_episode")
         ),
     }
-    _write_state(root, state)
+    _write_state(root, state, args.session_id)
     return {
         "ok": True,
         "status": "review_recorded",
@@ -863,10 +835,10 @@ def record_review(args: argparse.Namespace) -> dict[str, Any]:
 def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
     started = time.monotonic()
     root = _repository_root(args.root)
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     if state is None or state["status"] != "active":
         raise RuntimeHookError("没有启用中的 RuntimeHook 语义任务")
-    state, _git_changed = _sync_git_boundary(root, state)
+    state, _git_changed = _sync_git_boundary(root, state, args.session_id)
     spec_path = getattr(args, "spec", None)
     checkpoint_id = getattr(args, "checkpoint_id", None)
     supplied = getattr(args, "packet", None)
@@ -912,9 +884,9 @@ def record_checkpoint(args: argparse.Namespace) -> dict[str, Any]:
             "packet_sha256": checkpoints.digest(packet),
             "review": None,
         }
-        _state_root(root, create=False)
-        checkpoints.save(checkpoints.record_path(root, checkpoint_id, record["scope"]), record)
-    _write_state(root, state)
+        _state_root(root, args.session_id, create=False)
+        checkpoints.save(checkpoints.record_path(_session_dir(args.session_id), checkpoint_id, record["scope"]), record)
+    _write_state(root, state, args.session_id)
     return {
         "ok": True,
         "status": "review_due",
@@ -932,7 +904,7 @@ def connect_knowledge(args):
     if not settings:
         raise RuntimeHookError("WRITEBACK_POLICY_NOT_ENABLED：先配置 Owner 授权的全局 3CAN 客户端")
     root = _repository_root(args.root)
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     if not state or state["status"] != "active":
         raise RuntimeHookError("请先为当前任务启用 RuntimeHook")
     if not args.session_id or not args.native_cwd:
@@ -944,7 +916,7 @@ def connect_knowledge(args):
                                    workorder_id=args.workorder_id, node_id=args.node_id)
     binding["session_id"] = args.session_id
     state["knowledge"] = binding
-    _write_state(root, state)
+    _write_state(root, state, args.session_id)
     return {"ok": True, "status": "CONNECTED_LOCALLY", "knowledge": binding}
 
 
@@ -954,7 +926,7 @@ def _auto_writeback(args, output):
     if not settings:
         return {"status": "NOT_ENABLED", "local_work_blocked": False}
     root = _repository_root(args.root)
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     if not state or not state.get("knowledge"):
         return {"status": "UNAVAILABLE", "error_code": "KNOWLEDGE_BINDING_REQUIRED",
                 "message": "当前任务先 connect 到已核实的项目/模块节点；不猜测或借用其他任务节点。", "local_work_blocked": False}
@@ -988,10 +960,10 @@ def _auto_writeback(args, output):
     # For temporary completion the review already cleared the slot. Use the
     # caller's explicit scope and summary, never relabel it as main completion.
     receipt = writeback_adapter.deliver(settings, root, state["knowledge"], event)
-    _state_root(root, create=False)
+    _state_root(root, args.session_id, create=False)
     event_id = receipt.get("event_id")
     if event_id:
-        checkpoints.save(root / STATE_ROOT / (event_id.lower() + ".json"), receipt)
+        checkpoints.save(_session_dir(args.session_id) / (event_id.lower() + ".json"), receipt)
     return receipt
 
 
@@ -1012,7 +984,7 @@ def _review_checkpoint(args, root, state, reference):
     spec = checkpoints.spec_from(descriptor["spec"], intent)
     key = descriptor["id"]
     scope = "temporary" if state.get("temporary_task") else "main"
-    path = checkpoints.record_path(root, key, scope)
+    path = checkpoints.record_path(_session_dir(args.session_id), key, scope)
     record = checkpoints.read_json(path)
     record_before = checkpoints.digest(record)
     binding = {"activation_id": state["activation_id"],
@@ -1036,7 +1008,7 @@ def _review_checkpoint(args, root, state, reference):
             if point["id"] == key:
                 continue
             try:
-                previous = checkpoints.read_json(checkpoints.record_path(root, point["id"], scope))
+                previous = checkpoints.read_json(checkpoints.record_path(_session_dir(args.session_id), point["id"], scope))
             except FileNotFoundError:
                 previous = {}
             if (not isinstance(previous, dict) or any(previous.get(k) != v for k, v in binding.items())
@@ -1055,14 +1027,14 @@ def _review_checkpoint(args, root, state, reference):
         request, mapping = checkpoints.jev.build_request(record["packet"], intent)
         opinion = {**opinion, **checkpoints.jev.parse_response(opinion, request["questions"], mapping), "reused": True}
     issues = checkpoints.concerns(opinion, point)
-    if _load_state(root) != state or _git_head(root) != record["git_head"]:
+    if _load_state(root, args.session_id) != state or _git_head(root) != record["git_head"]:
         return {"ok": False, "status": "STALE", "message": "复核期间任务或 Git 变化；不写回旧状态"}
     if checkpoints.digest(checkpoints.read_json(path)) != record_before:
         return {"ok": False, "status": "STALE", "message": "复核期间检查点变化；不覆盖新记录"}
     allowed = args.result != "PASS" or not issues
     record["review"] = {"result": args.result if allowed else "PARTIAL", "reference": reference,
                         "issues": issues, "jev_request_sha256": opinion.get("request_sha256")}
-    _state_root(root, create=False)
+    _state_root(root, args.session_id, create=False)
     checkpoints.save(path, record)
     return {"ok": allowed, "status": "REVIEWED" if allowed else "REVIEW_REQUIRED",
             "request_sha256": opinion.get("request_sha256"), "checkpoint_id": key,
@@ -1072,7 +1044,7 @@ def _review_checkpoint(args, root, state, reference):
 
 def status(args: argparse.Namespace) -> dict[str, Any]:
     root = _repository_root(args.root)
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     if state is None:
         return {"ok": True, "status": "inactive"}
     return {"ok": True, **state}
@@ -1092,7 +1064,7 @@ def assess(args: argparse.Namespace) -> dict[str, Any]:
 
     def snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
         scoped, binding = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
-        state = _load_state(root)
+        state = _load_state(root, args.session_id)
         if scoped != root or not state or state["status"] != "active" or binding.get("activation_id") != state["activation_id"]:
             raise RuntimeHookError("Jev CONTEXT_MISMATCH：不读取其他任务意图")
         # Narrow call-currentness only, not a candidate or artifact fingerprint.
@@ -1120,8 +1092,8 @@ def assess(args: argparse.Namespace) -> dict[str, Any]:
         public_intent = {k: intent[k] for k in ("goal", "acceptance", "non_goals") if k in intent}
         request, mapping = jev.build_request(packet, public_intent)
         digest = hashlib.sha256(json.dumps({"contract": jev.CONTRACT, "binding": binding, "request": request}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        receipt = root / STATE_ROOT / "jev-observation.json"
-        _state_root(root, create=False)
+        receipt = _session_dir(args.session_id) / "jev-observation.json"
+        _state_root(root, args.session_id, create=False)
         if os.path.lexists(receipt):
             if _is_redirect(receipt) or not receipt.is_file() or receipt.stat().st_size > MAX_STATE_BYTES:
                 raise RuntimeHookError("Jev 观察记录不是大小受限的直接文件")
@@ -1145,7 +1117,7 @@ def assess(args: argparse.Namespace) -> dict[str, Any]:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(result, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
-            _state_root(root, create=False)
+            _state_root(root, args.session_id, create=False)
             os.replace(temporary, receipt)
         finally:
             if os.path.exists(temporary):
@@ -1212,6 +1184,8 @@ def _native_worktree(cwd: Any) -> Path | None:
     if not candidate.is_absolute():
         raise RuntimeHookError("原生 cwd 必须是绝对路径")
     candidate = candidate.resolve(strict=True)
+    if not candidate.is_dir():
+        raise RuntimeHookError("原生 cwd 必须是现有目录")
     return next(
         (p for p in (candidate, *candidate.parents) if os.path.lexists(p / ".git")),
         None,
@@ -1219,7 +1193,7 @@ def _native_worktree(cwd: Any) -> Path | None:
 
 
 def _scope_marker(root: Path) -> list[int]:
-    marker = root / ".git"
+    marker = root / ".git" if os.path.lexists(root / ".git") else root
     try:
         info = marker.stat()
     except OSError as exc:
@@ -1233,6 +1207,7 @@ def _scope_marker(root: Path) -> list[int]:
 
 def _read_scope(session_id: str) -> dict[str, Any]:
     path = _scope_path(session_id)
+    _managed_directory(path.parent, create=False)
     if not path.exists():
         raise RuntimeHookError("SCOPE_UNBOUND：当前原生任务尚未登记已观察的绑定")
     if _is_redirect(path) or not path.is_file() or path.stat().st_size > 8192:
@@ -1243,14 +1218,14 @@ def _read_scope(session_id: str) -> dict[str, Any]:
         raise RuntimeHookError("范围缓存不可读") from exc
     if (
         not isinstance(value, dict)
-        or value.get("schema") not in {SCOPE_SCHEMA, "3can.runtimehook-scope/v1"}
+        or value.get("schema") not in {SCOPE_SCHEMA, "3can.runtimehook-scope/v2", "3can.runtimehook-scope/v1"}
         or value.get("session_id") != session_id
         or not isinstance(value.get("worktree"), str)
         or not Path(value["worktree"]).is_absolute()
         or not isinstance(value.get("knowledge"), dict)
     ):
         raise RuntimeHookError("范围缓存身份无效")
-    if value["schema"] == SCOPE_SCHEMA and (
+    if value["schema"] in {SCOPE_SCHEMA, "3can.runtimehook-scope/v2"} and (
         not isinstance(value.get("native_cwd"), str)
         or not Path(value["native_cwd"]).is_absolute()
         or "native_worktree" not in value
@@ -1268,7 +1243,7 @@ def _check_scope(payload: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     binding = _read_scope(payload.get("session_id", ""))
     root = _native_worktree(payload.get("cwd"))
     expected = Path(binding["worktree"])
-    if binding["schema"] == SCOPE_SCHEMA:
+    if binding["schema"] in {SCOPE_SCHEMA, "3can.runtimehook-scope/v2"}:
         # The host anchor and the verified development target are distinct.
         # A non-Git host is matched exactly; Git hosts retain subdir support.
         anchor = Path(binding["native_worktree"]) if binding["native_worktree"] else None
@@ -1287,11 +1262,9 @@ def _check_scope(payload: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     return expected, binding
 
 
-def _save_scope(binding: dict[str, Any]) -> None:
+def _save_scope(binding: dict[str, Any], *, create_only: bool = False) -> None:
     path = _scope_path(binding["session_id"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if any(_is_redirect(p) for p in (path.parent, path.parent.parent)):
-        raise RuntimeHookError("范围缓存必须存放在直接目录")
+    _managed_directory(path.parent, create=True)
     if os.path.lexists(path) and (_is_redirect(path) or not path.is_file()):
         raise RuntimeHookError("范围缓存必须是直接文件")
     payload = json.dumps(binding, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -1301,36 +1274,82 @@ def _save_scope(binding: dict[str, Any]) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
-        os.replace(temporary, path)
+        if create_only:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
 
+def _scope_observation(root: Path, cwd: Path, session_id: str, reference: str,
+                       activation_id: str | None = None) -> dict[str, Any]:
+    native_root = _native_worktree(str(cwd))
+    return {
+        "schema": SCOPE_SCHEMA,
+        "session_id": session_id,
+        "native_cwd": str(cwd.resolve(strict=True)),
+        "native_worktree": str(native_root) if native_root else None,
+        "native_git_marker": _scope_marker(native_root) if native_root else None,
+        "worktree": str(root),
+        "git_marker": _scope_marker(root),
+        "activation_id": activation_id,
+        "reference": reference,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "knowledge": {"status": "UNVERIFIED", "reference": None, "worktree": None},
+    }
+
+
+def _migrate_legacy(root: Path, session_id: str, binding: dict[str, Any]) -> None:
+    """Import only a verified old owner, never consult legacy state for new chats."""
+    if binding["schema"] == SCOPE_SCHEMA:
+        return
+    state = _load_state(root, session_id)
+    if state is None and binding.get("activation_id"):
+        legacy = root / STATE_PATH
+        if _legacy_state_root(root) is None:
+            raise RuntimeHookError("LEGACY_STATE_MISSING：旧绑定的状态不存在；不得自动新建目标")
+        state = _validate_state(checkpoints.read_json(legacy, MAX_STATE_BYTES))
+        if (state["activation_id"] != binding["activation_id"]
+                or (state.get("knowledge", {}).get("session_id") not in {None, session_id})):
+            raise RuntimeHookError("LEGACY_OWNER_MISMATCH：旧状态不属于当前会话；不得迁移或继承")
+        records = list(legacy.parent.glob("checkpoint.*.json"))
+        if len(records) > 128:
+            raise RuntimeHookError("LEGACY_ARTIFACT_LIMIT：先核对旧检查点范围")
+        owned = []
+        for path in records:
+            record = checkpoints.read_json(path)
+            if record.get("activation_id") == state["activation_id"]:
+                owned.append((path.name, record))
+        directory = _state_root(root, session_id, create=True)
+        for name, record in owned:
+            checkpoints.save(directory / name, record)
+        _write_state(root, _with_boundary(root, state), session_id, create_only=True)
+    if state and state["activation_id"] != binding.get("activation_id"):
+        raise RuntimeHookError("SCOPE_STALE：已有会话状态与旧绑定不一致；不自动覆盖")
+    # Preserve source files and knowledge references for a reversible upgrade.
+    migrated = _scope_observation(root, Path(binding.get("native_cwd") or root),
+                                  session_id, "verified legacy owner migration",
+                                  state["activation_id"] if state else None)
+    migrated["knowledge"] = binding["knowledge"]
+    _save_scope(migrated)
+
+
 def bind_scope(args: argparse.Namespace) -> dict[str, Any]:
-    """One explicit observation/import; never changes a worktree's task state."""
+    """Explicit host/target observation for this session, never a peer activation."""
     root = _repository_root(args.root)
     if args.native_cwd is None:
         raise RuntimeHookError("bind-scope 需要宿主实际观察到的 --native-cwd")
-    native_root = _native_worktree(str(args.native_cwd))
     reference = _text(args.reference, label="host/Owner binding reference")
-    # Explicit observation/handoff only: never inspect the host peer's state.
-    state = _load_state(root)
+    state = _load_state(root, args.session_id)
     knowledge_root = getattr(args, "knowledge_worktree", None)
     knowledge_reference = getattr(args, "knowledge_reference", "")
     if knowledge_root is not None and (not knowledge_root.is_absolute() or not knowledge_reference):
         raise RuntimeHookError("3CAN 比对需要绝对工作树路径和证据引用")
     binding = {
-        "schema": SCOPE_SCHEMA,
-        "session_id": _text(args.session_id, label="native session ID"),
-        "native_cwd": str(args.native_cwd.resolve(strict=True)),
-        "native_worktree": str(native_root) if native_root else None,
-        "native_git_marker": _scope_marker(native_root) if native_root else None,
-        "worktree": str(root),
-        "git_marker": _scope_marker(root),
-        "activation_id": state["activation_id"] if state else None,
-        "reference": reference,
-        "observed_at": datetime.now(timezone.utc).isoformat(),
+        **_scope_observation(root, args.native_cwd, args.session_id, reference,
+                             state["activation_id"] if state else None),
         "knowledge": {
             "status": (
                 "UNVERIFIED" if knowledge_root is None else
@@ -1349,18 +1368,48 @@ def bind_scope(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _native_session_id(payload: dict[str, Any]) -> str:
+    """Installed Codex supplies the actual child thread ID as agent_id."""
+    child = payload.get("agent_id")
+    if payload.get("hook_event_name") in {"SubagentStart", "SubagentStop"} and not child:
+        raise RuntimeHookError("CHILD_ID_REQUIRED：缺少原生子任务身份；不使用父任务状态")
+    session_id = _text(child if child is not None else payload.get("session_id"),
+                       label="native task ID")
+    _scope_path(session_id)  # Same bounded identity validation as local commands.
+    return session_id
+
+
+def _onboarding_feedback(event: str, root: Path, payload: dict[str, Any]) -> int:
+    text = (
+        "RuntimeHook 全局必经 REQUIRED / INTENT_REQUIRED：已登记当前会话的独立工作区绑定。"
+        f"任务 ID：{payload['session_id']}；工作区：{root}；实际宿主 cwd：{payload['cwd']}。"
+        "立即读取已安装 RuntimeHook Skill，使用其控制器和上述 --root、--native-cwd、--session-id "
+        "执行 on，按当前用户要求填写真实 goal/acceptance；不要要求用户重复开启。"
+        "目标、检查点与回写状态按会话隔离；不得继承同目录或父任务的目标。"
+        "同目录只读任务不需要新工作树；并行源码写入仍须独立工作树。"
+        "随后按既有 checkpoint/review/connect/error 协议执行；此登记没有发起联网、Jev或3CAN回写。"
+    )
+    if event in {"Stop", "SubagentStop"}:
+        output = ({"decision": "block", "reason": text}
+                  if not payload.get("stop_hook_active") else {"systemMessage": text})
+    else:
+        output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+    print(json.dumps(output, ensure_ascii=False))
+    return 0
+
+
 def _scope_feedback(event: str, message: str, *, orientation: bool = False) -> int:
     text = (
         f"RuntimeHook 任务范围不可用 UNAVAILABLE：{message}。未使用或修改语义状态。"
         "报告此状态即可，不因此结束整项任务；继续独立安全工作。不得关闭其他任务钩子或绕过独立安全门禁。"
         "新任务或已核实交接可依据宿主实际 cwd 使用 bind-scope；它不改变宿主目录。"
     )
-    if event in {"SessionStart", "UserPromptSubmit"}:
+    if event in {"SessionStart", "SubagentStart", "UserPromptSubmit"}:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": event,
             "additionalContext": (SESSION_FAST_PATH + " " if orientation else "") + text,
         }}, ensure_ascii=False))
-    elif event == "Stop":
+    elif event in {"Stop", "SubagentStop"}:
         print(json.dumps({"systemMessage": text}, ensure_ascii=False))
     # No PostToolUse spam, decision:block, continuation, network or cache writes.
     return 0
@@ -1385,7 +1434,7 @@ def _hook_root(
         raise RuntimeHookError("原生 Hook 输入缺少工作目录")
     candidate = Path(cwd)
     if _worktree_hint(candidate) is None:
-        return None
+        return candidate.resolve(strict=True)
     completed = _git(candidate, "rev-parse", "--show-toplevel")
     if completed.returncode != 0:
         return None
@@ -1401,29 +1450,42 @@ def hook(args: argparse.Namespace) -> int:
         if not isinstance(payload, dict):
             raise RuntimeHookError("原生 Hook 输入必须是对象")
         event = payload.get("hook_event_name")
-        is_session_start = event == "SessionStart" and payload.get("source") in {
-            "startup",
-            "resume",
-            "clear",
-            "compact",
-        }
+        if event not in {"SessionStart", "SubagentStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop"}:
+            return 0
+        is_session_start = event == "SubagentStart" or (event == "SessionStart" and payload.get("source") in {
+            "startup", "resume", "clear", "compact",
+        })
+        session_id = _native_session_id(payload)
+        payload = {**payload, "session_id": session_id}
+        mandatory = checkpoints.required()
+        has_binding = os.path.lexists(_scope_path(session_id))
+        if not has_binding:
+            root = _hook_root(args.root, payload) if args.root is not None else (
+                _native_worktree(payload.get("cwd")) or Path(payload["cwd"]).resolve(strict=True))
+            if mandatory:
+                own_state = _load_state(root, session_id)
+                observation = _scope_observation(root, Path(payload["cwd"]), session_id,
+                                                  "native lifecycle observed task identity and cwd",
+                                                  own_state["activation_id"] if own_state else None)
+                try:
+                    _save_scope(observation, create_only=True)
+                except FileExistsError:
+                    pass  # Another event registered this same identity; validate it below.
+                has_binding = True
+            elif os.path.lexists(_session_dir(session_id) / "state.json"):
+                return _scope_feedback(event, "SCOPE_UNBOUND：当前任务的原生绑定缺失")
         state = None
-        session_id = payload.get("session_id", "")
-        has_binding = bool(isinstance(session_id, str) and ID_PATTERN.fullmatch(session_id) and _scope_path(session_id).exists())
-        # Resolve a verified task mapping before consulting the host's directory.
-        # An explicit --root still cannot select a different target.
-        root = None if has_binding else (
-            _hook_root(args.root, payload) if args.root is not None else _native_worktree(payload.get("cwd"))
-        )
-        has_state = root is not None and os.path.lexists(root / STATE_PATH)
         knowledge_note = ""
-        if has_state or has_binding:
+        if has_binding:
             try:
-                scoped_root, binding = _check_scope(payload)
-                if args.root is not None and scoped_root != args.root.resolve(strict=True):
+                root, binding = _check_scope(payload)
+                if args.root is not None and root != args.root.resolve(strict=True):
                     raise RuntimeHookError("CONTEXT_MISMATCH：指定目录与原生任务绑定不一致")
-                root = scoped_root
-                has_state = os.path.lexists(root / STATE_PATH)
+                _migrate_legacy(root, session_id, binding)
+                binding = _read_scope(session_id)
+                state = _load_state(root, session_id)
+                if state is not None and binding.get("activation_id") != state["activation_id"]:
+                    raise RuntimeHookError("SCOPE_STALE：activation 已变化；重新绑定前先核实当前任务")
                 knowledge = binding.get("knowledge", {})
                 if knowledge.get("status") == "CONTRADICTS":
                     knowledge_note = (
@@ -1433,32 +1495,23 @@ def hook(args: argparse.Namespace) -> int:
                     )
             except (RuntimeHookError, OSError, RuntimeError) as exc:
                 return _scope_feedback(event, str(exc), orientation=is_session_start and args.session_orientation)
-        if has_state:
-            state = _load_state(root)
-            if state is not None and binding.get("activation_id") != state["activation_id"]:
-                return _scope_feedback(event, "SCOPE_STALE：activation 已变化；重新绑定前先核实当前任务")
+        if state is None and mandatory:
+            return _onboarding_feedback(event, root, payload)
         if state is None or state["status"] != "active":
             if is_session_start and args.session_orientation:
-                print(
-                    json.dumps(
-                        {
-                            "hookSpecificOutput": {
-                                "hookEventName": "SessionStart",
-                                "additionalContext": SESSION_FAST_PATH + (JEV_REQUIRED_TEXT if checkpoints.required() else "") + knowledge_note,
-                            }
-                        },
-                        ensure_ascii=False,
-                    )
-                )
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": event,
+                    "additionalContext": SESSION_FAST_PATH + (JEV_REQUIRED_TEXT if mandatory else "") + knowledge_note,
+                }}, ensure_ascii=False))
             return 0
-        state, git_changed = _sync_git_boundary(root, state)
+        state, git_changed = _sync_git_boundary(root, state, session_id)
         if is_session_start:
             stale_reasons = _stale_review_reasons(root, state)
             print(
                 json.dumps(
                     {
                         "hookSpecificOutput": {
-                            "hookEventName": "SessionStart",
+                            "hookEventName": event,
                             "additionalContext": (
                                 (f"{SESSION_FAST_PATH} " if args.session_orientation else "")
                                 + _context(
@@ -1484,7 +1537,7 @@ def hook(args: argparse.Namespace) -> int:
                     label="用户新要求开启了新对话阶段",
                     observed_git_head=boundary["observed_git_head"],
                 )
-                _write_state(root, state)
+                _write_state(root, state, session_id)
             stale_reasons = _stale_review_reasons(root, state)
             print(
                 json.dumps(
@@ -1516,7 +1569,7 @@ def hook(args: argparse.Namespace) -> int:
                     observed_git_head=state["boundary"]["observed_git_head"],
                 )
                 state["boundary"]["last_completed_plan_label"] = plan_label
-                _write_state(root, state)
+                _write_state(root, state, session_id)
             if git_changed or plan_label:
                 boundary = state["boundary"]
                 reason = (
@@ -1535,7 +1588,7 @@ def hook(args: argparse.Namespace) -> int:
                         ensure_ascii=False,
                     )
                 )
-        elif event == "Stop":
+        elif event in {"Stop", "SubagentStop"}:
             review = state["semantic_review"]
             boundary = state["boundary"]
             task_name = "临时任务" if state.get("temporary_task") else "主任务"
@@ -1687,15 +1740,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         return hook(args)
     if args.root is None:
-        args.root = PROJECT_ROOT
+        args.root = _native_worktree(str(Path.cwd())) or Path.cwd()
     try:
         scope = None
+        _scope_path(args.session_id)  # All task state operations require a native identity.
         if args.command != "bind-scope" and args.session_id and _scope_path(args.session_id).exists():
             binding = _read_scope(args.session_id)
             if Path(binding["worktree"]) != args.root.resolve():
                 raise RuntimeHookError("CONTEXT_MISMATCH：本地命令目录与当前任务的已登记绑定不一致")
+            observed_cwd = str(args.native_cwd or binding.get("native_cwd") or args.root)
+            root, _ = _check_scope({"cwd": observed_cwd, "session_id": args.session_id})
+            _migrate_legacy(root, args.session_id, binding)
+            binding = _read_scope(args.session_id)
             if args.command in {"on", "off", "review", "checkpoint", "task", "connect", "error"}:
-                existing = _load_state(args.root)
+                existing = _load_state(args.root, args.session_id)
                 if existing and existing["activation_id"] != binding.get("activation_id"):
                     raise RuntimeHookError("SCOPE_STALE：绑定或修改语义状态前请先核实当前任务")
         if args.native_cwd is not None and args.command != "bind-scope":

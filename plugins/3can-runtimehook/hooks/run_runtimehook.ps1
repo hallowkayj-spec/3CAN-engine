@@ -42,28 +42,6 @@ try {
     }
     $untrustedRoot = if ($null -ne $boundary) { $boundary } else { $current }
 
-    if (-not $SessionOrientation) {
-        $statePath = if ($null -ne $boundary) {
-            Join-Path $boundary ".codex\runtimehook\state.json"
-        }
-        else {
-            $null
-        }
-        $stateEntry = if ($null -ne $statePath) {
-            Get-Item -Force -LiteralPath $statePath -ErrorAction SilentlyContinue
-        }
-        else {
-            $null
-        }
-        # Scope selection belongs to the controller. A task may be bound to a
-        # target outside this cwd; do not suppress its events at the launcher.
-        $codexRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
-        $hasScopes = Test-Path -LiteralPath (Join-Path $codexRoot "runtimehook/scopes") -PathType Container
-        if ($null -eq $stateEntry -and -not $hasScopes) {
-            [Console]::In.ReadToEnd() | Out-Null
-            exit 0
-        }
-    }
     $hookInput = [Console]::In.ReadToEnd()
 
     $controller = Join-Path $env:PLUGIN_ROOT "skills\3can-runtimehook\scripts\3can_runtimehook.py"

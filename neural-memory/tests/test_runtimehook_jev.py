@@ -71,6 +71,7 @@ def response(request, claim="SUPPORTED", step="DIRECTLY_RELEVANT"):
 def arguments(root, packet):
     _activate(root)
     path = root / ".codex/runtimehook/packet.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
     return SimpleNamespace(
         root=root,
@@ -86,7 +87,7 @@ def test_observation_reuses_exact_packet_and_never_writes_semantic_state(
     plain_repo, packet, monkeypatch
 ):
     args = arguments(plain_repo, packet)
-    state_path = plain_repo / controller.STATE_PATH
+    state_path = controller._session_dir(_session_id(plain_repo)) / "state.json"
     before = state_path.read_bytes()
     calls = []
 
@@ -101,7 +102,7 @@ def test_observation_reuses_exact_packet_and_never_writes_semantic_state(
     assert one["status"] == two["status"] == "OBSERVED"
     assert not one["reused"] and two["reused"] and len(calls) == 1
     assert state_path.read_bytes() == before
-    assert controller._load_state(plain_repo)["semantic_review"]["result"] == "PENDING"
+    assert controller._load_state(plain_repo, _session_id(plain_repo))["semantic_review"]["result"] == "PENDING"
     assert two["answers"]["claim_1"]["evidence_ids"] == ["E1"]
 
 
@@ -124,12 +125,12 @@ def test_context_change_during_response_discards_all_answers(
             binding["worktree"] = str(plain_repo.parent)
             controller._save_scope(binding)
         else:
-            state = controller._load_state(plain_repo)
+            state = controller._load_state(plain_repo, _session_id(plain_repo))
             if change == "activation":
                 state["activation_id"] = "rh-another"
             else:
                 state["boundary"]["sequence"] += 1
-            controller._write_state(plain_repo, state)
+            controller._write_state(plain_repo, state, _session_id(plain_repo))
         return response(request)
 
     monkeypatch.setattr(jev, "request_gateway", send)
@@ -159,14 +160,14 @@ def test_temporary_task_uses_current_goal_and_latest_request(
     plain_repo, packet, monkeypatch
 ):
     args = arguments(plain_repo, packet)
-    state = controller._load_state(plain_repo)
+    state = controller._load_state(plain_repo, _session_id(plain_repo))
     state["temporary_task"] = {
         "goal": "先制作用户追加的视频",
         "acceptance": [{"id": "T01", "text": "有字幕"}],
         "reference": "private/local/reference",
         "resume_objective": "返回主任务",
     }
-    controller._write_state(plain_repo, state)
+    controller._write_state(plain_repo, state, _session_id(plain_repo))
     packet["latest_user_request"] = "中途先帮我制作演示视频，然后继续开发"
     packet["claims"][0]["criterion_id"] = "T01"
     packet["claims"][0]["text"] = "有字幕"
@@ -185,7 +186,7 @@ def test_temporary_task_uses_current_goal_and_latest_request(
     result = controller.assess(args)
     assert result["answers"]["claim_1"]["choice"] == "UNSUPPORTED"
     assert (
-        controller._load_state(plain_repo)["temporary_task"] == state["temporary_task"]
+        controller._load_state(plain_repo, _session_id(plain_repo))["temporary_task"] == state["temporary_task"]
     )
 
 
@@ -195,7 +196,7 @@ def test_negative_opinion_never_blocks_or_changes_state(
 ):
     args = arguments(plain_repo, packet)
     args.mode = mode
-    before = (plain_repo / controller.STATE_PATH).read_bytes()
+    before = (controller._session_dir(_session_id(plain_repo)) / "state.json").read_bytes()
     monkeypatch.setattr(
         jev,
         "request_gateway",
@@ -203,7 +204,7 @@ def test_negative_opinion_never_blocks_or_changes_state(
     )
     result = controller.assess(args)
     assert result["status"] == "OBSERVED" and "decision" not in result
-    assert (plain_repo / controller.STATE_PATH).read_bytes() == before
+    assert (controller._session_dir(_session_id(plain_repo)) / "state.json").read_bytes() == before
 
 
 def test_off_no_state_packet_or_network(monkeypatch):
