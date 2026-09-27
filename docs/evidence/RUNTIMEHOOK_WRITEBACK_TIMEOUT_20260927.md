@@ -82,6 +82,61 @@ idempotence, real-graph persistence, and offline native-callback tests.
   failures and archives; validate a clean Git-built candidate instead of
   changing the scanner, deleting evidence, or claiming this run passed.
 
+## Follow-up root-cause investigation
+
+The Owner challenged stopping at a tested source candidate. Fresh bounded
+component probes measured liveness at 294.492 ms, embedding deep verification
+at 271.107 ms, complete readiness at 4554.545 ms, two deep stats calls at
+2271.408/2085.957 ms, and cached verified stats at 65.797 ms. All completed
+health checks were production-ready. The five-second client cap therefore has
+less margin than the initial controls suggested; it is not a latency guarantee.
+
+Git identifies the blanket two-second cap in the new writeback adapter's
+introduction, `719912b` (2026-09-26). The canonical client's existing
+`_probe_stats` first validates cached stats and only when needed requests a
+fresh deep readiness check with a thirty-second timeout. The adapter's new
+forced-deep request and shorter cap did not follow that operating behavior.
+The endpoint is a complete graph verification, not merely a loopback ping.
+No network, graph corruption or service outage was established by these probes.
+
+Read-only function profiling, without creating a GraphEngine or second runtime,
+used the actual graph's 2,696 nodes and 1,035 edges. It found 299,256 recursive
+normalizer calls, including traversal of model JSON already normalized by the
+existing serializer. The smallest backend repair returns that serializer's
+JSON-mode result directly. Generic non-model normalization and the existing
+compatibility path remain unchanged; no new cache or validation bypass is added.
+
+All 3,731 live node/edge model outputs compared equal before and after that
+change. Three alternating before/after complete-readiness comparisons were
+production-ready and returned identical result objects. The graph file
+signature remained unchanged throughout:
+
+| Pair | Previous function (ms) | Candidate function (ms) |
+| --- | ---: | ---: |
+| 1 | 827.666 | 406.417 |
+| 2 | 671.673 | 394.379 |
+| 3 | 700.318 | 354.980 |
+
+Median function time fell from 700.318 to 394.379 ms (about 44%). These are
+read-only local function comparisons, not measurements of a deployed server.
+The full readiness suite passed 22 tests, including a new counterexample that
+accepts equivalent nested datetime/enum/tuple serialization and rejects a changed
+nested value on disk. Existing corruption, identity, profile, embedding, edge,
+cache invalidation and forced-refresh checks remain covered.
+
+The App-bundled plugin manager confirms that the installed 0.1.12 plugin and
+its configured marketplace both still resolve to the previous 4b8ea7c source.
+Updating this PR cannot update that installed source automatically. The supported
+plugin manager can select a pinned candidate, but installation and actual native
+loading are separate evidence steps. The global npm CLI was incompatible with
+the App's current configuration schema; its read-only listing failed. The App's
+own native binary successfully listed the exact installed plugin. No global
+configuration was edited to work around the unrelated CLI mismatch.
+
+Private component timings, function profiles, equality comparisons and native
+plugin listing are retained beside the original receipts. This follow-up does
+not replace those failures or retroactively label them successful.
+
 ## Delivery and rollback boundary
 
 Source and project-kit mirror must remain identical. Run relevant regression,

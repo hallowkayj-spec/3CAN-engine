@@ -1,6 +1,6 @@
 {
   "schema": "3can.checkpoints/v1",
-  "final_checkpoint": "delivery",
+  "final_checkpoint": "root-cause",
   "checkpoints": [
     {
       "id": "diagnosis",
@@ -18,6 +18,16 @@
       "criteria": ["A01", "A02", "A03"],
       "parameters": ["focused_passed", "focused_failed", "mirrors_equal", "installed_changed", "customer_native_uat_run"],
       "rubric": ["声明与证据冲突或门禁被削弱", "有实现但相关回归或交付证据有缺口", "实现和相关反例有证据，源码、安装及客户验收分别如实报告"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    },
+    {
+      "id": "root-cause",
+      "title": "完整图谱深检热点、调用契约回归和实际安装来源",
+      "criteria": ["A01", "A02", "A03"],
+      "parameters": ["live_deep_max_ms", "compared_models", "comparison_pairs_equal", "readiness_tests_passed", "installed_version_changed"],
+      "rubric": ["无实际调用或等价性证据", "已有根因证据但实现或现场边界未核对", "实际调用、等价性和反例支持修复，源码和现场状态如实记录"],
       "minimum_score": 1.5,
       "minimum_confidence": 0.65,
       "minimum_probability": 0.7

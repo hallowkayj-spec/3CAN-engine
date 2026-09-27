@@ -837,6 +837,50 @@ def test_on_disk_node_corruption_fails_even_when_file_count_is_unchanged(
     assert "node_files_invalid" in {item["code"] for item in result["reasons"]}
 
 
+def test_native_json_node_payload_drift_fails_closed(tmp_path: Path) -> None:
+    import datetime as dt
+
+    from models import Node, NodeType
+
+    engine_root = tmp_path / "engine"
+    graph = engine_root / "graph"
+    node_ids = ["DOC-sentinel"]
+    _write_graph(graph, node_ids, [])
+    node = Node(
+        id=node_ids[0], name="nested payload", cluster="test",
+        content={"extra": {"nested": {
+            "when": dt.datetime(2026, 9, 27, tzinfo=dt.timezone.utc),
+            "kind": NodeType.knowledge, "values": (1, 2),
+        }}},
+    )
+    node_file = graph / "nodes" / f"{node.id}.json"
+    node_file.write_text(node.model_dump_json(), encoding="utf-8")
+    engine = _FakeEngine(node_ids, [])
+    engine.nodes = {node.id: node}
+    profile = graph / "readiness-profile.json"
+    _write_profile(
+        profile, engine_root=engine_root, graph=graph,
+        baseline={"min_valid_nodes": 1, "min_edges": 0,
+                  "sentinel_node_ids": node_ids,
+                  "require_embedding_cache_ready": True},
+    )
+    assert _evaluate(
+        engine, engine_root=engine_root, graph=graph, profile=profile,
+    )["production_ready"] is True
+
+    payload = json.loads(node_file.read_text(encoding="utf-8"))
+    payload["content"]["extra"]["nested"]["values"][1] = 3
+    node_file.write_text(json.dumps(payload), encoding="utf-8")
+    result = _evaluate(
+        engine, engine_root=engine_root, graph=graph, profile=profile,
+    )
+    assert result["production_ready"] is False
+    assert result["metrics"]["node_payload_mismatches"] == 1
+    assert "node_payloads_differ_from_loaded_graph" in {
+        item["code"] for item in result["reasons"]
+    }
+
+
 def test_duplicate_self_and_full_edge_payload_drift_fail_closed(
     tmp_path: Path,
 ) -> None:
