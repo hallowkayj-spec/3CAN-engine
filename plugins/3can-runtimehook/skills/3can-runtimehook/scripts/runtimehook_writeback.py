@@ -106,14 +106,26 @@ def deliver(settings, root, binding, event):
             raise WritebackError("PROJECT_IDENTITY_MISMATCH")
         deadline = started + 10
 
-        def request(path, payload=None):
-            remaining = deadline - time.monotonic()
+        def request(path, payload=None, *, phase, timeout=2):
+            request_started = time.monotonic()
+            remaining = deadline - request_started
             if remaining <= 0:
+                receipt["failed_request"] = {"phase": phase, "cause": "deadline",
+                    "timeout_seconds": 0, "elapsed_ms": 0}
                 raise WritebackError("WRITEBACK_DEADLINE")
+            request_timeout = min(timeout, remaining)
             ok, result = client._try_json_request(base, path, method="POST" if payload is not None else "GET",
-                                                  payload=payload, timeout=min(2, remaining))
+                                                  payload=payload, timeout=request_timeout)
             if not ok:
                 code = result.get("http_status") if isinstance(result, dict) else None
+                # Keep stable codes; never expose raw response bodies or exception text.
+                timed_out = isinstance(result, dict) and result.get("reason") == "timed out"
+                receipt["failed_request"] = {
+                    "phase": phase,
+                    "cause": "timeout" if timed_out else "http" if code else "transport",
+                    "timeout_seconds": request_timeout,
+                    "elapsed_ms": round((time.monotonic() - request_started) * 1000, 3),
+                }
                 raise WritebackError("CONFLICT" if code == 409 else f"HTTP_{code}" if code else "RUNTIME_UNAVAILABLE")
             return result
 
@@ -133,13 +145,13 @@ def deliver(settings, root, binding, event):
         marker = "RUNTIMEHOOK_DELTA_" + cp.digest(packet)
         entry = "\n\n" + marker + "\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         receipt.update(event_id=marker, packet=packet)
-        stats = request("/api/stats?deep=true")
+        stats = request("/api/stats?deep=true", phase="readiness", timeout=5)
         valid, _ = client._validate_stats(stats, min_nodes=0, expected_engine_root=engine, expected_graph_root=graph)
         if not valid:
             raise WritebackError("RUNTIME_IDENTITY_OR_READINESS_UNVERIFIED")
         verified_runtime = True
         node_path = "/api/nodes/" + quote(binding["node_id"], safe="")
-        node = request(node_path)
+        node = request(node_path, phase="node_read")
         extra = (node.get("content") or {}).get("extra") or {}
         if any(extra.get(k) != identity[k] for k in ("project_id", "project_namespace")):
             raise WritebackError("NODE_PROJECT_BINDING_UNVERIFIED")
@@ -154,17 +166,17 @@ def deliver(settings, root, binding, event):
         if event["event"] == "onboarding":
             checked = request("/api/agents/checkin", {"agent_id": binding["agent_id"],
                 "name": "RuntimeHook client", "role": "development", "current_task": packet["summary"][:400],
-                "session_id": event["session_id"], "meta": {"project_identity": identity, "workorder_id": binding["workorder_id"]}})
+                "session_id": event["session_id"], "meta": {"project_identity": identity, "workorder_id": binding["workorder_id"]}}, phase="agent_checkin")
             if checked.get("agent_id") != binding["agent_id"]:
                 raise WritebackError("CHECKIN_NOT_CONFIRMED")
         result = request("/api/writeback", {**identity, "workorder_id": binding["workorder_id"],
             "agent_id": binding["agent_id"], "authorized_by": "user", "verification_state": "observed",
             "evidence_refs": [packet["reference"]], "changes": [{"node_id": binding["node_id"],
                 "field": "notes", "action": "set", "value": notes + entry,
-                "expected_updated_at": node["updated_at"]}]})
+                "expected_updated_at": node["updated_at"]}]}, phase="write")
         if result.get("count") != 1 or result.get("updated") != [binding["node_id"]]:
             raise WritebackError("WRITEBACK_EFFECT_NOT_CONFIRMED")
-        readback = request(node_path)
+        readback = request(node_path, phase="readback")
         if entry.strip() not in (readback.get("content", {}).get("notes") or ""):
             raise WritebackError("WRITEBACK_READBACK_MISMATCH")
         receipt.update(status="WRITTEN_AND_READBACK_VERIFIED", updated_at=readback.get("updated_at"))

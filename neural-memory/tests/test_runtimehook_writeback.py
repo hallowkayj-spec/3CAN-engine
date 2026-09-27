@@ -209,3 +209,112 @@ def test_stale_runtime_identity_and_empty_effect_are_not_success(lane, monkeypat
     result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
     assert result["error_code"] == "RUNTIME_IDENTITY_OR_READINESS_UNVERIFIED"
     assert not any(payload for _, payload in lane.calls)
+
+
+def test_slow_deep_readiness_can_write_and_read_back(lane, monkeypatch):
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(wb.time, "monotonic", lambda: clock.now)
+    timeouts = []
+
+    def request(base, path, *, timeout, **kwargs):
+        timeouts.append((path, timeout))
+        duration = 2.6 if path.startswith("/api/stats") else 0.1
+        clock.now += min(duration, timeout)
+        if duration > timeout:
+            return False, {"reason": "timed out"}
+        return lane.request(base, path, **kwargs)
+
+    monkeypatch.setattr(lane.client, "_try_json_request", request)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == "WRITTEN_AND_READBACK_VERIFIED"
+    assert result["event_id"] in lane.node["content"]["notes"]
+    assert timeouts[0] == ("/api/stats?deep=true", 5)
+    assert all(timeout == 2 for _, timeout in timeouts[1:])
+    assert [path for path, _ in timeouts].count("/api/writeback") == 1
+
+
+@pytest.mark.parametrize("phase", ["readiness", "node_read", "agent_checkin", "write", "readback"])
+@pytest.mark.parametrize("failure,cause,code", [
+    ({"reason": "timed out"}, "timeout", "RUNTIME_UNAVAILABLE"),
+    ({"reason": "private exception detail"}, "transport", "RUNTIME_UNAVAILABLE"),
+    ({"http_status": 409, "body": "private exception detail"}, "http", "CONFLICT"),
+])
+def test_failed_request_diagnostic_is_phased_bounded_and_sanitized(lane, monkeypatch, phase, failure, cause, code):
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(wb.time, "monotonic", lambda: clock.now)
+    lane.event["event"] = "onboarding"
+    node_reads = 0
+    attempts = []
+
+    def request(base, path, *, timeout, **kwargs):
+        nonlocal node_reads
+        if path.startswith("/api/nodes/"):
+            node_reads += 1
+            current = "node_read" if node_reads == 1 else "readback"
+        else:
+            current = {"/api/stats?deep=true": "readiness", "/api/agents/checkin": "agent_checkin",
+                       "/api/writeback": "write", "/api/activity/log": "issue_intake"}[path]
+        attempts.append(current)
+        clock.now += 0.125
+        if current == phase:
+            return False, failure
+        return lane.request(base, path, **kwargs)
+
+    monkeypatch.setattr(lane.client, "_try_json_request", request)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == ("CONFLICT" if code == "CONFLICT" else "UNAVAILABLE")
+    assert result["error_code"] == code
+    assert result["failed_request"] == {"phase": phase, "cause": cause,
+        "timeout_seconds": 5 if phase == "readiness" else 2, "elapsed_ms": 125.0}
+    assert "private exception detail" not in json.dumps(result)
+    assert result["local_work_blocked"] is False
+    assert attempts.count(phase) == 1
+    assert attempts.count("issue_intake") <= 1
+    if phase in {"readiness", "node_read", "agent_checkin"}:
+        assert "write" not in attempts
+
+
+def test_readback_uses_remaining_budget_after_slow_requests(lane, monkeypatch):
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(wb.time, "monotonic", lambda: clock.now)
+    lane.event["event"] = "onboarding"
+    timeouts = []
+
+    def request(base, path, *, timeout, **kwargs):
+        if path == "/api/activity/log":
+            return lane.request(base, path, **kwargs)
+        timeouts.append((path, timeout))
+        duration = 4.0 if path.startswith("/api/stats") else 1.8
+        clock.now += min(duration, timeout)
+        if duration > timeout:
+            return False, {"reason": "timed out"}
+        return lane.request(base, path, **kwargs)
+
+    monkeypatch.setattr(lane.client, "_try_json_request", request)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == "UNAVAILABLE"
+    assert result["failed_request"]["phase"] == "readback"
+    assert result["failed_request"]["cause"] == "timeout"
+    assert timeouts[-1][1] == pytest.approx(0.6)
+    assert result["elapsed_ms"] == pytest.approx(10_000)
+    assert [path for path, _ in timeouts].count("/api/writeback") == 1
+    # The write took effect, but unverified readback must never become success.
+    assert result["event_id"] in lane.node["content"]["notes"]
+
+
+def test_deadline_diagnostic_before_request_has_no_network_attempt(lane, monkeypatch):
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(wb.time, "monotonic", lambda: clock.now)
+    gate = lane.client._project_identity_gate
+
+    def slow_gate(*args, **kwargs):
+        result = gate(*args, **kwargs)
+        clock.now += 10.1
+        return result
+
+    monkeypatch.setattr(lane.client, "_project_identity_gate", slow_gate)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["error_code"] == "WRITEBACK_DEADLINE"
+    assert result["failed_request"] == {"phase": "readiness", "cause": "deadline",
+        "timeout_seconds": 0, "elapsed_ms": 0}
+    assert not lane.calls

@@ -71,7 +71,11 @@ error --id <同一ID> --state resolution_claimed --summary "修复、验证结�
 脱敏回执保存在当前 `.codex/runtimehook/runtimehook_delta_<摘要>.json`，失败也保留原待写增量和 typed 状态。
 不后台重试；诊断/恢复后可显式重放原参数，不能盲重试。身份校验失败时可能没有可安全保存的 packet，先修正绑定。
 服务拒绝只尝试一次脱敏 `3can_issue_observed`，该上报失败不递归。
-网络约 10 秒预算、单次请求至多 2 秒（拒绝上报另至多 1 秒）；OS/DNS 调度不是严格进程 SLA。
+网络沿用约 10 秒整体预算；强制深检请求至多 5 秒，其他请求至多 2 秒，均受剩余预算约束（拒绝上报另至多 1 秒）。
+请求失败在现有回执增加 `failed_request`：固定 `phase`（readiness/node_read/agent_checkin/write/readback）、
+`cause`（timeout/http/transport/deadline）、`timeout_seconds` 和 `elapsed_ms`，不保存原始异常或响应正文。
+预算在请求前耗尽时，两项时间均为 0，表示该请求未执行。旧错误码不变；未知传输原因仍为 transport。
+urllib socket 超时及 OS/DNS 调度不是严格进程墙钟 SLA；扩大深检单次预算不代表故障已恢复或历史事件已重放。
 节点 notes 超过 256 KiB 时要求治理归纳，绝不截断旧证据。
 
 本地交付与回写分别报告；`UNAVAILABLE/CONFLICT` 不阻塞安全开发，治理票据门禁保持原样。

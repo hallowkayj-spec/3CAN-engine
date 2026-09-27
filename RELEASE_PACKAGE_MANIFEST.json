@@ -34,6 +34,8 @@
     "docs/evidence/RUNTIMEHOOK_GLOBAL_BINDING_20260926.md",
     "docs/evidence/runtimehook-global-binding-checkpoints-20260926.json",
     "docs/evidence/runtimehook-auto-writeback-checkpoints-20260926.json",
+    "docs/evidence/RUNTIMEHOOK_WRITEBACK_TIMEOUT_20260927.md",
+    "docs/evidence/runtimehook-writeback-timeout-checkpoints-20260927.json",
     "docs/evidence/SESSION_MERGE_REVIEW_20260926.md",
     "docs/evidence/JEV_DECISION_SCOPE_REVIEW_20260926.md",
     "docs/evidence/session-merge-review-checkpoints-20260926.json",
