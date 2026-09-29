@@ -71,7 +71,11 @@ error --id <同一ID> --state resolution_claimed --summary "修复、验证结�
 脱敏回执保存在当前 `CODEX_HOME/runtimehook/sessions/<task-hash>/runtimehook_delta_<摘要>.json`，失败也保留原待写增量和 typed 状态。
 不后台重试；诊断/恢复后可显式重放原参数，不能盲重试。身份校验失败时可能没有可安全保存的 packet，先修正绑定。
 服务拒绝只尝试一次脱敏 `3can_issue_observed`，该上报失败不递归。
-网络沿用约 10 秒整体预算；强制深检请求至多 5 秒，其他请求至多 2 秒，均受剩余预算约束（拒绝上报另至多 1 秒）。
+先请求 `/api/stats`（至多 4 秒），沿用 canonical client 校验 Runtime identity、production readiness 和 healthy。
+复用的是服务端通过图文件、embedding、profile 等指纹确认仍适用的深检证据，不缓存客户端 PASS。
+仅 `production_not_ready` 才请求一次 `/api/stats?deep=true`，深检沿用 canonical client 的 30 秒时限；
+身份错误、无 readiness 契约、传输失败不会触发刷新或重试。刷新结果仍须完整校验后才能写入。
+整体预算约 40 秒，其他请求仍至多 2 秒，全部请求受剩余预算约束（拒绝上报另至多 1 秒）。
 请求失败在现有回执增加 `failed_request`：固定 `phase`（readiness/node_read/agent_checkin/write/readback）、
 `cause`（timeout/http/transport/deadline）、`timeout_seconds` 和 `elapsed_ms`，不保存原始异常或响应正文。
 预算在请求前耗尽时，两项时间均为 0，表示该请求未执行。旧错误码不变；未知传输原因仍为 transport。

@@ -1,8 +1,58 @@
 # RuntimeHook writeback deep-readiness timeout
 
-Status: source repair verified locally; installed/customer acceptance pending. Owner:
+Status: the September 27 five-second mitigation recurred on September 29; see
+the corrective follow-up below. Owner:
 3CAN RuntimeHook. Workorder: `3CAN-RUNTIMEHOOK-WRITEBACK-TIMEOUT-20260927`.
 Stable fault ID: `RUNTIMEHOOK-WRITEBACK-DEEP-READINESS-TIMEOUT`.
+
+## September 29: reuse canonical verified readiness
+
+Two reported receipts identify the failing request as readiness, with a five-second
+socket limit and elapsed times of 5862.833 and 5257.411 ms. This governance task
+then reproduced the same failure at 5151.431 ms; its marker was independently
+absent from the knowledge node. The failure occurred before any write request.
+
+A sequential read-only measurement found ordinary stats at 59.669 ms, forced
+deep stats at 2295.286 ms, and the canonical client's `_probe_stats` at 60.139 ms.
+All completed measurements passed the canonical identity/readiness validator.
+The canonical client's `prepare` operation instead calls route-ticket and consume
+endpoints, so its success does not prove that the same readiness probe completed.
+
+The adapter unnecessarily forced a full deep check for every write. It now uses
+the canonical probe policy: validate `/api/stats` first (four seconds), and perform
+one deep refresh only for `production_not_ready` (30 seconds). The existing
+server cache validates graph/profile/embedding fingerprints before reusing deep
+evidence. Wrong identity, a missing readiness contract, transport failure, or a
+failed refresh never permits writing or triggers a retry. No client-side readiness
+cache, new service, retry queue, or backend deployment is introduced.
+
+The overall budget is 40 seconds, allowing the existing canonical 30-second deep
+probe plus normal requests; each other request remains capped at two seconds and
+all requests use the remaining budget. Deadline exhaustion and unknown write or
+readback outcomes stay typed failures. This is a bounded request budget, not an
+operating-system wall-clock guarantee.
+
+Eight regression cases failed before the repair. The repaired writeback and
+readiness suites passed 65 tests, including a required 5.9-second deep refresh,
+cached verification, invalid identities, deep failure without writes/retries,
+CAS/effect/readback rejection, and exhausted readback budget. A real candidate
+error write used ordinary stats in 285.465 ms and completed exact readback. Both
+successful diagnostic deltas were independently read back exactly once. The
+previously failed **own** review was explicitly replayed after the diagnosis and
+repair; it succeeded while reusing the existing Jev opinion. No other task's
+identity, Hook state, or failed event was replayed.
+
+The candidate plugin is `0.1.15-rc.1+codex.20260929`. Local receipts, request
+timings, focused tests and installation evidence belong under
+`output/runtimehook-readiness-regression-20260929/`. The original global-session
+acceptance and non-Git direct-writeback limitation are separate and remain open.
+Jev's low-confidence design assessment is retained; no threshold or policy was
+changed and this repair does not register the overall goal as PASS.
+
+Rollback restores the exact saved prior plugin with the official manager while
+retaining task state and receipts. The shared Runtime, graph, selector and proxy
+lifecycle are unchanged. The older diagnosis below is historical evidence, not
+the current request-budget contract.
 
 ## Diagnosis and scope
 

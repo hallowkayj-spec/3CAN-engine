@@ -104,7 +104,8 @@ def deliver(settings, root, binding, event):
         gate = client._project_identity_gate(base, {"selected": str(engine)}, require_configured=True)
         if gate["status"] != "pass":
             raise WritebackError("PROJECT_IDENTITY_MISMATCH")
-        deadline = started + 10
+        # Allow the canonical client's 30s deep probe when evidence has changed.
+        deadline = started + 40
 
         def request(path, payload=None, *, phase, timeout=2):
             request_started = time.monotonic()
@@ -145,8 +146,13 @@ def deliver(settings, root, binding, event):
         marker = "RUNTIMEHOOK_DELTA_" + cp.digest(packet)
         entry = "\n\n" + marker + "\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         receipt.update(event_id=marker, packet=packet)
-        stats = request("/api/stats?deep=true", phase="readiness", timeout=5)
-        valid, _ = client._validate_stats(stats, min_nodes=0, expected_engine_root=engine, expected_graph_root=graph)
+        # Same policy as canonical _probe_stats: reuse server-verified evidence,
+        # refresh once only for non-ready production state, never for wrong identity.
+        stats = request("/api/stats", phase="readiness", timeout=4)
+        valid, warning = client._validate_stats(stats, min_nodes=0, expected_engine_root=engine, expected_graph_root=graph)
+        if not valid and warning and warning.get("kind") == "production_not_ready":
+            stats = request("/api/stats?deep=true", phase="readiness", timeout=30)
+            valid, _ = client._validate_stats(stats, min_nodes=0, expected_engine_root=engine, expected_graph_root=graph)
         if not valid:
             raise WritebackError("RUNTIME_IDENTITY_OR_READINESS_UNVERIFIED")
         verified_runtime = True

@@ -211,26 +211,89 @@ def test_stale_runtime_identity_and_empty_effect_are_not_success(lane, monkeypat
     assert not any(payload for _, payload in lane.calls)
 
 
-def test_slow_deep_readiness_can_write_and_read_back(lane, monkeypatch):
+def test_cached_readiness_does_not_force_deep_refresh(lane, monkeypatch):
+    def request(base, path, **kwargs):
+        assert path != "/api/stats?deep=true"
+        return lane.request(base, path, **kwargs)
+
+    monkeypatch.setattr(lane.client, "_try_json_request", request)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == "WRITTEN_AND_READBACK_VERIFIED"
+    assert [path for path, _ in lane.calls].count("/api/stats") == 1
+
+
+def test_required_slow_deep_refresh_can_write_and_read_back(lane, monkeypatch):
     clock = SimpleNamespace(now=100.0)
     monkeypatch.setattr(wb.time, "monotonic", lambda: clock.now)
     timeouts = []
 
     def request(base, path, *, timeout, **kwargs):
         timeouts.append((path, timeout))
-        duration = 2.6 if path.startswith("/api/stats") else 0.1
+        duration = 5.9 if path == "/api/stats?deep=true" else 0.1
         clock.now += min(duration, timeout)
         if duration > timeout:
             return False, {"reason": "timed out"}
-        return lane.request(base, path, **kwargs)
+        ok, data = lane.request(base, path, **kwargs)
+        if path == "/api/stats":
+            data["readiness"]["production_ready"] = False
+            data["healthy"] = False
+        return ok, data
 
     monkeypatch.setattr(lane.client, "_try_json_request", request)
     result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
     assert result["status"] == "WRITTEN_AND_READBACK_VERIFIED"
     assert result["event_id"] in lane.node["content"]["notes"]
-    assert timeouts[0] == ("/api/stats?deep=true", 5)
-    assert all(timeout == 2 for _, timeout in timeouts[1:])
+    assert timeouts[:2] == [("/api/stats", 4), ("/api/stats?deep=true", 30)]
+    assert all(timeout == 2 for _, timeout in timeouts[2:])
     assert [path for path, _ in timeouts].count("/api/writeback") == 1
+
+
+@pytest.mark.parametrize("invalid", ["wrong_identity", "missing_readiness", "health_mismatch"])
+def test_no_deep_refresh_after_invalid_runtime_contract(lane, monkeypatch, invalid):
+    def request(base, path, **kwargs):
+        assert path == "/api/stats"
+        ok, data = lane.request(base, path, **kwargs)
+        if invalid == "wrong_identity":
+            data["runtime_identity"]["graph_root_sha256"] = "wrong"
+            data["readiness"]["production_ready"] = False
+        elif invalid == "missing_readiness":
+            del data["readiness"]
+        else:
+            data["healthy"] = False
+        return ok, data
+
+    monkeypatch.setattr(lane.client, "_try_json_request", request)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["error_code"] == "RUNTIME_IDENTITY_OR_READINESS_UNVERIFIED"
+    assert len(lane.calls) == 1
+
+
+@pytest.mark.parametrize("failure", ["not_ready", "wrong_identity", "timeout"])
+def test_deep_refresh_failure_never_writes_or_retries(lane, monkeypatch, failure):
+    attempts = []
+
+    def request(base, path, *, timeout, **kwargs):
+        attempts.append(path)
+        assert path in {"/api/stats", "/api/stats?deep=true"}
+        if path.endswith("deep=true") and failure == "timeout":
+            assert timeout == 30
+            return False, {"reason": "timed out"}
+        ok, data = lane.request(base, path, **kwargs)
+        if path == "/api/stats" or failure == "not_ready":
+            data["readiness"]["production_ready"] = False
+        elif failure == "wrong_identity":
+            data["runtime_identity"]["graph_root_sha256"] = "wrong"
+        return ok, data
+
+    monkeypatch.setattr(lane.client, "_try_json_request", request)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == "UNAVAILABLE"
+    assert attempts == ["/api/stats", "/api/stats?deep=true"]
+    if failure == "timeout":
+        assert result["failed_request"]["phase"] == "readiness"
+        assert result["failed_request"]["timeout_seconds"] == 30
+    else:
+        assert result["error_code"] == "RUNTIME_IDENTITY_OR_READINESS_UNVERIFIED"
 
 
 @pytest.mark.parametrize("phase", ["readiness", "node_read", "agent_checkin", "write", "readback"])
@@ -252,7 +315,7 @@ def test_failed_request_diagnostic_is_phased_bounded_and_sanitized(lane, monkeyp
             node_reads += 1
             current = "node_read" if node_reads == 1 else "readback"
         else:
-            current = {"/api/stats?deep=true": "readiness", "/api/agents/checkin": "agent_checkin",
+            current = {"/api/stats": "readiness", "/api/agents/checkin": "agent_checkin",
                        "/api/writeback": "write", "/api/activity/log": "issue_intake"}[path]
         attempts.append(current)
         clock.now += 0.125
@@ -265,7 +328,7 @@ def test_failed_request_diagnostic_is_phased_bounded_and_sanitized(lane, monkeyp
     assert result["status"] == ("CONFLICT" if code == "CONFLICT" else "UNAVAILABLE")
     assert result["error_code"] == code
     assert result["failed_request"] == {"phase": phase, "cause": cause,
-        "timeout_seconds": 5 if phase == "readiness" else 2, "elapsed_ms": 125.0}
+        "timeout_seconds": 4 if phase == "readiness" else 2, "elapsed_ms": 125.0}
     assert "private exception detail" not in json.dumps(result)
     assert result["local_work_blocked"] is False
     assert attempts.count(phase) == 1
@@ -284,19 +347,22 @@ def test_readback_uses_remaining_budget_after_slow_requests(lane, monkeypatch):
         if path == "/api/activity/log":
             return lane.request(base, path, **kwargs)
         timeouts.append((path, timeout))
-        duration = 4.0 if path.startswith("/api/stats") else 1.8
+        duration = 30.0 if path.endswith("deep=true") else 3.9 if path == "/api/stats" else 1.8
         clock.now += min(duration, timeout)
         if duration > timeout:
             return False, {"reason": "timed out"}
-        return lane.request(base, path, **kwargs)
+        ok, data = lane.request(base, path, **kwargs)
+        if path == "/api/stats":
+            data["readiness"]["production_ready"] = False
+        return ok, data
 
     monkeypatch.setattr(lane.client, "_try_json_request", request)
     result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
     assert result["status"] == "UNAVAILABLE"
     assert result["failed_request"]["phase"] == "readback"
     assert result["failed_request"]["cause"] == "timeout"
-    assert timeouts[-1][1] == pytest.approx(0.6)
-    assert result["elapsed_ms"] == pytest.approx(10_000)
+    assert timeouts[-1][1] == pytest.approx(0.7)
+    assert result["elapsed_ms"] == pytest.approx(40_000)
     assert [path for path, _ in timeouts].count("/api/writeback") == 1
     # The write took effect, but unverified readback must never become success.
     assert result["event_id"] in lane.node["content"]["notes"]
@@ -309,7 +375,7 @@ def test_deadline_diagnostic_before_request_has_no_network_attempt(lane, monkeyp
 
     def slow_gate(*args, **kwargs):
         result = gate(*args, **kwargs)
-        clock.now += 10.1
+        clock.now += 40.1
         return result
 
     monkeypatch.setattr(lane.client, "_project_identity_gate", slow_gate)
