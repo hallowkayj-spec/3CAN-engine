@@ -92,16 +92,15 @@ def test_create_pr_reuses_existing_open_pr(monkeypatch):
     assert result["number"] == 51
 
 
-def test_hook_blocks_github_connector_pr_creation():
+def test_historical_private_repo_failure_does_not_block_current_connector():
     code, payload = pr._hook_json({
         "hook_event_name": "PreToolUse",
         "tool_name": "mcp__codex_apps__github._create_pull_request",
         "tool_input": {"repository_full_name": "example-org/example-repo"},
     })
 
-    assert code == 2
-    assert payload["decision"] == "block"
-    assert pr.ERROR_NODE_ID in payload["reason"]
+    assert code == 0
+    assert payload == {"continue": True}
 
 
 def test_hook_blocks_gh_pr_create_when_gh_missing(monkeypatch):
@@ -118,7 +117,7 @@ def test_hook_blocks_gh_pr_create_when_gh_missing(monkeypatch):
     assert "gh CLI is not installed" in payload["reason"]
 
 
-def test_hook_guides_after_git_push():
+def test_push_does_not_imply_permission_to_create_pr():
     code, payload = pr._hook_json({
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
@@ -126,8 +125,7 @@ def test_hook_guides_after_git_push():
     })
 
     assert code == 0
-    assert "systemMessage" in payload
-    assert "3can_pr_harness.py create-pr" in payload["systemMessage"]
+    assert payload == {"continue": True}
 
 
 def test_error_node_payload_has_err_prefix_and_key_file():

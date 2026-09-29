@@ -1,0 +1,36 @@
+{
+  "schema": "3can.checkpoints/v1",
+  "final_checkpoint": "root-cause",
+  "checkpoints": [
+    {
+      "id": "diagnosis",
+      "title": "深检超时调用链、有限修复选择和保留门禁",
+      "criteria": ["A01", "A02"],
+      "parameters": ["observed_timeout_ms", "healthy_control_max_seconds", "deep_timeout_seconds", "other_timeout_seconds", "overall_budget_seconds"],
+      "rubric": ["无调用链或实际失败证据", "有证据但修复选择或安全边界不清", "实际失败和调用链支持有限修复，反例及独立门禁明确"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    },
+    {
+      "id": "delivery",
+      "title": "关键实现、分发一致性、回归和交付边界",
+      "criteria": ["A01", "A02", "A03"],
+      "parameters": ["focused_passed", "focused_failed", "mirrors_equal", "installed_changed", "customer_native_uat_run"],
+      "rubric": ["声明与证据冲突或门禁被削弱", "有实现但相关回归或交付证据有缺口", "实现和相关反例有证据，源码、安装及客户验收分别如实报告"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    },
+    {
+      "id": "root-cause",
+      "title": "完整图谱深检热点、调用契约回归和实际安装来源",
+      "criteria": ["A01", "A02", "A03"],
+      "parameters": ["live_deep_max_ms", "compared_models", "comparison_pairs_equal", "readiness_tests_passed", "installed_version_changed"],
+      "rubric": ["无实际调用或等价性证据", "已有根因证据但实现或现场边界未核对", "实际调用、等价性和反例支持修复，源码和现场状态如实记录"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    }
+  ]
+}

@@ -1,659 +1,1912 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Neural Memory — 3CAN Project Graph</title>
-<script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#060612;--panel:rgba(8,8,30,0.92);--border:rgba(0,240,255,0.2);
-  --cyan:#00f0ff;--magenta:#ff00ff;--yellow:#f0e000;--green:#00ff88;
-  --red:#ff3366;--white:#e0e0ff;--dim:#6a6a9a;
-  --glass:rgba(20,20,60,0.6);--glow:0 0 20px;
-}
-body{background:var(--bg);color:var(--white);font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;height:100vh}
-#graph-container{width:100vw;height:100vh;position:absolute;top:0;left:0}
-
-/* ── 顶部栏 ── */
-#topbar{
-  position:fixed;top:0;left:0;right:0;height:52px;z-index:100;
-  background:linear-gradient(180deg,rgba(6,6,18,0.98),rgba(6,6,18,0.8));
-  border-bottom:1px solid var(--border);
-  display:flex;align-items:center;padding:0 20px;gap:16px;
-  backdrop-filter:blur(16px);
-}
-#topbar .logo{font-size:18px;font-weight:800;letter-spacing:2px;text-shadow:0 0 20px rgba(0,240,255,0.5)}
-#topbar .logo span{color:var(--cyan)}
-#topbar .logo .sub{font-size:10px;color:var(--dim);letter-spacing:0.5px;font-weight:400;margin-left:8px}
-.stat-pill{
-  background:var(--glass);border:1px solid var(--border);border-radius:20px;
-  padding:5px 16px;font-size:12px;display:flex;align-items:center;gap:6px;
-  transition:all .3s;
-}
-.stat-pill:hover{border-color:var(--cyan);box-shadow:0 0 12px rgba(0,240,255,0.15)}
-.stat-pill .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
-.dot-cyan{background:var(--cyan);box-shadow:0 0 8px var(--cyan)}
-.dot-green{background:var(--green);box-shadow:0 0 8px var(--green)}
-.dot-magenta{background:var(--magenta);box-shadow:0 0 8px var(--magenta)}
-.dot-red{background:var(--red);box-shadow:0 0 8px var(--red)}
-.dot-yellow{background:var(--yellow);box-shadow:0 0 8px var(--yellow)}
-
-/* ── 视图切换 ── */
-.view-tabs{display:flex;gap:2px;margin-left:16px}
-.view-tab{
-  padding:5px 14px;font-size:11px;border:1px solid var(--border);background:transparent;
-  color:var(--dim);cursor:pointer;transition:all .2s;font-weight:600;letter-spacing:0.5px;
-}
-.view-tab:first-child{border-radius:16px 0 0 16px}
-.view-tab:last-child{border-radius:0 16px 16px 0}
-.view-tab.active{background:rgba(0,240,255,0.15);color:var(--cyan);border-color:var(--cyan)}
-
-/* ── 搜索 ── */
-#search-box{margin-left:auto;position:relative}
-#search-input{
-  background:var(--glass);border:1px solid var(--border);border-radius:20px;
-  color:var(--white);padding:7px 16px 7px 36px;font-size:13px;width:300px;
-  outline:none;transition:all .3s;
-}
-#search-input:focus{border-color:var(--cyan);box-shadow:0 0 16px rgba(0,240,255,0.25);width:360px}
-#search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:14px}
-
-/* ── 右侧面板 ── */
-#panel{
-  position:fixed;right:-480px;top:52px;bottom:0;width:470px;z-index:90;
-  background:var(--panel);border-left:1px solid var(--border);
-  backdrop-filter:blur(20px);transition:right .35s cubic-bezier(.4,0,.2,1);
-  overflow-y:auto;padding:24px;
-}
-#panel.open{right:0}
-#panel-close{position:absolute;top:12px;right:16px;background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer}
-#panel-close:hover{color:var(--cyan);text-shadow:0 0 10px var(--cyan)}
-.panel-header{display:flex;align-items:center;gap:10px;margin-bottom:20px}
-.panel-header .node-badge{font-size:11px;padding:3px 12px;border-radius:12px;font-weight:700;letter-spacing:0.5px}
-.panel-header h2{font-size:18px;font-weight:700}
-.panel-section{margin-bottom:18px}
-.panel-section h3{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:600}
-.panel-section p,.panel-section li{font-size:13px;line-height:1.7}
-.panel-section ul{padding-left:16px}
-.tag{display:inline-block;background:var(--glass);border:1px solid var(--border);border-radius:4px;padding:2px 10px;margin:2px;font-size:11px;color:var(--cyan)}
-.tag-secret{color:var(--red);border-color:rgba(255,51,102,0.3)}
-.tag-error{color:var(--yellow);border-color:rgba(240,224,0,0.3)}
-.status-active{color:var(--green);font-weight:600}
-.status-blocked{color:var(--red);font-weight:600}
-.status-dormant{color:var(--yellow)}
-.status-deprecated{color:var(--dim)}
-.progress-bar{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;margin:6px 0}
-.progress-bar-fill{height:100%;border-radius:3px;transition:width .5s}
-
-/* ── 左侧集群图例 ── */
-#legend{
-  position:fixed;left:16px;bottom:16px;z-index:80;
-  background:var(--panel);border:1px solid var(--border);border-radius:14px;
-  padding:16px;backdrop-filter:blur(16px);max-height:420px;overflow-y:auto;min-width:180px;
-}
-#legend h3{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;font-weight:600}
-.legend-item{display:flex;align-items:center;gap:8px;margin-bottom:7px;cursor:pointer;font-size:12px;opacity:0.85;transition:all .2s}
-.legend-item:hover{opacity:1;transform:translateX(2px)}
-.legend-item .color-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}
-.legend-item.dimmed{opacity:0.2}
-.legend-item .count{margin-left:auto;color:var(--dim);font-size:10px}
-
-/* ── 路由面板 ── */
-#route-panel{
-  position:fixed;left:16px;top:68px;z-index:80;
-  background:var(--panel);border:1px solid var(--border);border-radius:14px;
-  padding:16px;backdrop-filter:blur(16px);width:340px;
-}
-#route-panel h3{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;font-weight:600}
-#route-input{
-  width:100%;background:var(--glass);border:1px solid var(--border);border-radius:10px;
-  color:var(--white);padding:10px 14px;font-size:13px;outline:none;resize:vertical;
-  min-height:64px;font-family:inherit;
-}
-#route-input:focus{border-color:var(--magenta);box-shadow:0 0 16px rgba(255,0,255,0.2)}
-#route-btn{
-  margin-top:10px;width:100%;padding:9px;border:1px solid var(--magenta);
-  background:rgba(255,0,255,0.1);color:var(--magenta);border-radius:10px;
-  font-size:13px;cursor:pointer;transition:all .2s;font-weight:700;letter-spacing:0.5px;
-}
-#route-btn:hover{background:rgba(255,0,255,0.25);box-shadow:0 0 20px rgba(255,0,255,0.3);transform:translateY(-1px)}
-#route-result{margin-top:10px;font-size:12px;max-height:200px;overflow-y:auto}
-.route-hit{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
-.route-hit .score{color:var(--magenta);font-weight:700}
-
-/* ── Dashboard面板 ── */
-#dashboard{
-  position:fixed;top:52px;left:0;right:0;bottom:0;z-index:85;
-  background:var(--bg);display:none;overflow-y:auto;padding:24px 32px;
-}
-#dashboard.visible{display:block}
-.dash-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;margin-bottom:24px}
-.dash-card{
-  background:var(--panel);border:1px solid var(--border);border-radius:14px;
-  padding:20px;backdrop-filter:blur(12px);transition:all .3s;
-}
-.dash-card:hover{border-color:var(--cyan);transform:translateY(-2px);box-shadow:0 4px 20px rgba(0,240,255,0.1)}
-.dash-card h3{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
-.dash-card .big-num{font-size:36px;font-weight:800;line-height:1}
-.dash-card .big-num.cyan{color:var(--cyan);text-shadow:0 0 20px rgba(0,240,255,0.4)}
-.dash-card .big-num.green{color:var(--green);text-shadow:0 0 20px rgba(0,255,136,0.4)}
-.dash-card .big-num.magenta{color:var(--magenta);text-shadow:0 0 20px rgba(255,0,255,0.4)}
-.dash-card .big-num.red{color:var(--red);text-shadow:0 0 20px rgba(255,51,102,0.4)}
-.dash-card .big-num.yellow{color:var(--yellow);text-shadow:0 0 20px rgba(240,224,0,0.4)}
-.module-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
-.module-row .name{flex:1;font-size:13px;font-weight:600}
-.module-row .status-dot{width:8px;height:8px;border-radius:50%}
-.module-row .bar{flex:2;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden}
-.module-row .bar-fill{height:100%;border-radius:4px;transition:width .6s}
-.module-row .pct{font-size:12px;color:var(--dim);width:40px;text-align:right}
-.error-item{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
-.error-item .title{font-size:13px;font-weight:600}
-.error-item .desc{font-size:11px;color:var(--dim);margin-top:3px}
-.error-item .severity{font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700}
-.secret-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
-.secret-item .icon{font-size:16px}
-.secret-item .name{font-size:13px;font-weight:600;flex:1}
-.secret-item .state{font-size:11px;padding:2px 8px;border-radius:8px}
-
-@keyframes pulse{0%,100%{opacity:0.6}50%{opacity:1}}
-@keyframes glow-pulse{0%,100%{box-shadow:0 0 5px currentColor}50%{box-shadow:0 0 20px currentColor}}
-::-webkit-scrollbar{width:4px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
-</style>
-</head>
-<body>
-
-<!-- ── 顶部栏 ── -->
-<div id="topbar">
-  <div class="logo">NEURAL <span>MEMORY</span><span class="sub">3CAN Project Graph</span></div>
-  <div class="view-tabs">
-    <div class="view-tab active" data-view="graph">3D Graph</div>
-    <div class="view-tab" data-view="dashboard">Dashboard</div>
-  </div>
-  <div class="stat-pill"><span class="dot dot-cyan"></span><span id="stat-nodes">0</span> Nodes</div>
-  <div class="stat-pill"><span class="dot dot-magenta"></span><span id="stat-edges">0</span> Edges</div>
-  <div class="stat-pill"><span class="dot dot-green"></span><span id="stat-active">0</span> Active</div>
-  <div class="stat-pill"><span class="dot dot-red"></span><span id="stat-blocked">0</span> Blocked</div>
-  <div class="stat-pill"><span class="dot dot-yellow"></span><span id="stat-errors">0</span> Errors</div>
-  <div class="stat-pill"><span class="dot dot-red"></span>&#x1F512; <span id="stat-secrets">0</span> Secrets</div>
-  <div id="search-box">
-    <span id="search-icon">&#x1F50D;</span>
-    <input id="search-input" placeholder="搜索节点 (名称/关键词/ID)..." />
-  </div>
-</div>
-
-<!-- ── 路由面板 ── -->
-<div id="route-panel">
-  <h3>&#x26A1; Task Router</h3>
-  <textarea id="route-input" placeholder="输入任务描述，路由引擎会激活相关子图...&#10;例如: KB蒸馏推到5000条"></textarea>
-  <button id="route-btn">ACTIVATE SUBGRAPH</button>
-  <div id="route-result"></div>
-</div>
-
-<!-- ── 集群图例 ── -->
-<div id="legend">
-  <h3>Clusters</h3>
-  <div id="legend-items"></div>
-</div>
-
-<!-- ── 节点详情面板 ── -->
-<div id="panel">
-  <button id="panel-close">&times;</button>
-  <div id="panel-content"></div>
-</div>
-
-<!-- ── Dashboard视图 ── -->
-<div id="dashboard"></div>
-
-<!-- ── 视觉控制面板 ── -->
-<div id="visual-controls" style="position:fixed;right:16px;bottom:16px;z-index:80;background:rgba(8,8,30,0.92);border:1px solid rgba(0,240,255,0.2);border-radius:14px;padding:16px;backdrop-filter:blur(16px);width:220px">
-  <h3 style="font-size:10px;color:#6a6a9a;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:12px;font-weight:600">Visual Controls</h3>
-  <div style="margin-bottom:10px">
-    <label style="font-size:11px;color:#e0e0ff;display:flex;align-items:center;gap:8px;cursor:pointer">
-      <input type="checkbox" id="intf-toggle" checked style="accent-color:#00f0ff"> Show INTF nodes
-    </label>
-  </div>
-  <div style="margin-bottom:10px">
-    <label style="font-size:11px;color:#6a6a9a;display:block;margin-bottom:4px">Node Size</label>
-    <input type="range" id="size-slider" min="0.3" max="3" step="0.1" value="1" style="width:100%;accent-color:#ff00ff">
-  </div>
-  <div style="margin-bottom:10px">
-    <label style="font-size:11px;color:#6a6a9a;display:block;margin-bottom:4px">Background</label>
-    <input type="range" id="bg-slider" min="0" max="40" step="2" value="6" style="width:100%;accent-color:#00ff88">
-  </div>
-  <div style="margin-bottom:6px">
-    <label style="font-size:11px;color:#6a6a9a;display:block;margin-bottom:4px">Dormant Nodes</label>
-    <label style="font-size:11px;color:#e0e0ff;display:flex;align-items:center;gap:8px;cursor:pointer">
-      <input type="checkbox" id="dormant-toggle" checked style="accent-color:#f0e000"> Show dormant
-    </label>
-  </div>
-</div>
-
-<!-- ── 3D图容器 ── -->
-<div id="graph-container"></div>
-
-<script>
-const API = window.location.origin;
-
-const CLUSTER_COLORS = {
-  '数据基础设施':'#00f0ff','架构设计':'#ff6b6b','工具链':'#4ECDC4',
-  '业务逻辑':'#FFE66D','前端UI':'#45B7D1','运营知识':'#96CEB4',
-  '密钥配置':'#ff3366','会话记录':'#6a6aaa','系统元节点':'#FFFFFF',
-  '产品与工艺':'#FF6B6B','战略决策':'#E74C3C','Agent协作':'#2ECC71',
-  '训练与模型':'#F0B27A','反馈与规则':'#AED6F1','外部引用':'#F7DC6F',
-  '错误与教训':'#ff3366','项目模块':'#00ff88',
-  '接口契约':'#8888cc','项目交接':'#FF9F43','项目文档':'#A29BFE',
-  '项目活动':'#55E6C1','用户画像':'#F8B739',
-};
-
-// ── 视觉控制状态 ──
-let showINTF = true;
-let nodeSizeMultiplier = 1.0;
-let bgBrightness = 6;  // 0-100
-const PRIORITY_SIZE = {critical:14,high:10,medium:7,low:4};
-const STATUS_OPACITY = {active:1,dormant:0.5,blocked:0.8,deprecated:0.25};
-const TYPE_SHAPE = {secret:'diamond',feedback:'triangle',process:'sphere',tool:'cube',knowledge:'sphere'};
-
-let graphData = {nodes:[],links:[]};
-let allStats = {};
-let Graph;
-let highlightNodes = new Set();
-let highlightLinks = new Set();
-let selectedNode = null;
-let currentView = 'graph';
-
-// ── 初始化 ──
-async function init() {
-  const [graphResp, statsResp] = await Promise.all([
-    fetch(`${API}/api/graph`), fetch(`${API}/api/stats`)
-  ]);
-  graphData = await graphResp.json();
-  allStats = await statsResp.json();
-  updateTopbar(allStats);
-  buildLegend(allStats.clusters);
-  initGraph();
-  buildDashboard();
-  connectWS();
-}
-
-function updateTopbar(stats) {
-  document.getElementById('stat-nodes').textContent = stats.total_nodes;
-  document.getElementById('stat-edges').textContent = stats.total_edges;
-  document.getElementById('stat-active').textContent = stats.active_nodes;
-  document.getElementById('stat-blocked').textContent = stats.blocked_nodes;
-  const errCount = graphData.nodes.filter(n => n.id.startsWith('ERR-')).length;
-  const secCount = graphData.nodes.filter(n => n.id.startsWith('SEC-')).length;
-  document.getElementById('stat-errors').textContent = errCount;
-  document.getElementById('stat-secrets').textContent = secCount;
-}
-
-// ── 3D图（纯内置渲染，零自定义对象） ──
-function initGraph() {
-  Graph = ForceGraph3D()(document.getElementById('graph-container'))
-    .graphData(graphData)
-    .backgroundColor('#060612')
-    .showNavInfo(false)
-    .nodeVal(n => (PRIORITY_SIZE[n.priority] || 7) * 2)
-    .nodeColor(n => {
-      if (highlightNodes.size > 0 && !highlightNodes.has(n.id)) return '#151530';
-      return CLUSTER_COLORS[n.cluster] || '#888888';
-    })
-    .nodeOpacity(1.0)
-    .nodeResolution(24)
-    .nodeLabel(n => {
-      const c = CLUSTER_COLORS[n.cluster]||'#888';
-      return `<div style="background:rgba(6,6,18,0.92);padding:10px 14px;border-radius:10px;border:1px solid ${c}55;max-width:320px;font-size:12px;color:#e0e0ff;line-height:1.5">
-        <div style="font-weight:700;font-size:14px;color:${c};margin-bottom:4px">[${n.id}] ${n.name}</div>
-        <div style="color:#7777aa;font-size:11px">${n.cluster} | ${n.layer} | ${n.type} | ${n.priority}</div>
-        ${n.description ? '<div style="margin-top:6px">'+n.description.substring(0,150)+'</div>' : ''}
-        ${n.current_state ? '<div style="color:#f0e000;margin-top:4px;font-weight:600">'+n.current_state+'</div>' : ''}
-        ${(n.blockers&&n.blockers.length) ? '<div style="color:#ff3366;margin-top:4px">Blockers: '+n.blockers.join(', ')+'</div>' : ''}
-      </div>`;
-    })
-    .linkColor(link => {
-      if (highlightLinks.size > 0 && !highlightLinks.has(link)) return 'rgba(255,255,255,0.03)';
-      if (link.type === 'requires') return 'rgba(255,80,120,0.6)';
-      if (link.type === 'feeds_into') return 'rgba(0,255,136,0.6)';
-      if (link.type === 'validates') return 'rgba(240,224,0,0.6)';
-      if (link.type === 'triggers') return 'rgba(255,0,255,0.6)';
-      return 'rgba(0,240,255,0.35)';
-    })
-    .linkWidth(link => highlightLinks.has(link) ? 2.5 : 0.4)
-    .linkOpacity(0.6)
-    .linkDirectionalArrowLength(5)
-    .linkDirectionalArrowRelPos(1)
-    .linkDirectionalParticles(link => highlightLinks.has(link) ? 6 : 1)
-    .linkDirectionalParticleWidth(link => highlightLinks.has(link) ? 3 : 1)
-    .linkDirectionalParticleColor(link => {
-      if (link.type === 'requires') return '#ff3366';
-      if (link.type === 'feeds_into') return '#00ff88';
-      return '#00f0ff';
-    })
-    .linkDirectionalParticleSpeed(0.004)
-    .onNodeClick(onNodeClick)
-    .onNodeHover(n => { document.body.style.cursor = n ? 'pointer' : 'default'; })
-    .onBackgroundClick(() => { highlightNodes.clear(); highlightLinks.clear(); closePanel(); refreshGraph(); })
-    .d3AlphaDecay(0.015)
-    .d3VelocityDecay(0.25)
-    .warmupTicks(150)
-    .cooldownTicks(200);
-}
-
-function refreshGraph() {
-  if (!Graph) return;
-  Graph.nodeColor(Graph.nodeColor());
-  Graph.linkColor(Graph.linkColor());
-  Graph.linkWidth(Graph.linkWidth());
-  Graph.linkDirectionalParticles(Graph.linkDirectionalParticles());
-  Graph.linkDirectionalParticleWidth(Graph.linkDirectionalParticleWidth());
-}
-
-// ── 节点点击 ──
-function onNodeClick(node) {
-  if (!node) return;
-  selectedNode = node;
-  highlightNodes.clear(); highlightLinks.clear();
-  highlightNodes.add(node.id);
-  graphData.links.forEach(link => {
-    const s = typeof link.source === 'object' ? link.source.id : link.source;
-    const t = typeof link.target === 'object' ? link.target.id : link.target;
-    if (s === node.id || t === node.id) { highlightLinks.add(link); highlightNodes.add(s); highlightNodes.add(t); }
-  });
-  refreshGraph();
-  openPanel(node);
-  const d = 130, r = 1 + d / Math.hypot(node.x||0, node.y||0, node.z||0);
-  Graph.cameraPosition({x:(node.x||0)*r, y:(node.y||0)*r, z:(node.z||0)*r}, node, 1200);
-}
-
-// ── 详情面板 ──
-function openPanel(node) {
-  const color = CLUSTER_COLORS[node.cluster] || '#888';
-  let h = `<div class="panel-header">
-    <span class="node-badge" style="background:${color}22;color:${color};border:1px solid ${color}55">${node.id}</span>
-    <h2>${node.name}</h2>
-  </div>
-  <div class="panel-section"><h3>Status</h3>
-    <p><span class="status-${node.status}">${node.status.toUpperCase()}</span> | ${node.cluster} | ${node.layer} | ${node.type} | ${node.priority}</p>
-  </div>`;
-
-  if (node.description) h += `<div class="panel-section"><h3>Description</h3><p>${node.description}</p></div>`;
-  if (node.current_state) h += `<div class="panel-section"><h3>Current State</h3><p style="color:var(--yellow);font-weight:600">${node.current_state}</p></div>`;
-  if (node.tech_stack?.length) h += `<div class="panel-section"><h3>Tech Stack</h3>${node.tech_stack.map(t=>`<span class="tag">${t}</span>`).join('')}</div>`;
-  if (node.key_files?.length) h += `<div class="panel-section"><h3>Key Files</h3><ul>${node.key_files.map(f=>`<li style="font-size:12px;color:var(--cyan);font-family:monospace">${f}</li>`).join('')}</ul></div>`;
-  if (node.blockers?.length) h += `<div class="panel-section"><h3>&#x1F6A8; Blockers</h3><ul>${node.blockers.map(b=>`<li style="color:var(--red)">${b}</li>`).join('')}</ul></div>`;
-  if (node.keywords?.length) h += `<div class="panel-section"><h3>Activation Keywords</h3>${node.keywords.map(k=>`<span class="tag">${k}</span>`).join('')}</div>`;
-  if (node.notes) h += `<div class="panel-section"><h3>Notes</h3><p style="font-size:12px">${node.notes.substring(0,500)}</p></div>`;
-
-  const edges = graphData.links.filter(l => {
-    const s = typeof l.source === 'object' ? l.source.id : l.source;
-    const t = typeof l.target === 'object' ? l.target.id : l.target;
-    return s === node.id || t === node.id;
-  });
-  if (edges.length) {
-    h += `<div class="panel-section"><h3>Connections (${edges.length})</h3><ul>`;
-    edges.forEach(e => {
-      const s = typeof e.source === 'object' ? e.source.id : e.source;
-      const t = typeof e.target === 'object' ? e.target.id : e.target;
-      const other = s === node.id ? t : s;
-      const dir = s === node.id ? '→' : '←';
-      const tc = e.type === 'requires' ? 'var(--red)' : e.type === 'feeds_into' ? 'var(--green)' : 'var(--dim)';
-      h += `<li style="font-size:12px">${dir} <strong>${other}</strong> <span style="color:${tc}">[${e.type}]</span> ${e.description||''}</li>`;
-    });
-    h += `</ul></div>`;
-  }
-
-  h += `<div class="panel-section"><h3>Meta</h3><p style="font-size:11px;color:var(--dim)">
-    Updated: ${node.updated_at||'N/A'} | By: ${node.updated_by||'N/A'} | Activations: ${node.activation_count||0}
-  </p></div>`;
-
-  document.getElementById('panel-content').innerHTML = h;
-  document.getElementById('panel').classList.add('open');
-}
-function closePanel() { document.getElementById('panel').classList.remove('open'); selectedNode = null; }
-document.getElementById('panel-close').addEventListener('click', () => { highlightNodes.clear(); highlightLinks.clear(); closePanel(); refreshGraph(); });
-
-// ── Dashboard ──
-function buildDashboard() {
-  const modules = graphData.nodes.filter(n => n.id.startsWith('MOD-'));
-  const secrets = graphData.nodes.filter(n => n.id.startsWith('SEC-'));
-  const errors = graphData.nodes.filter(n => n.id.startsWith('ERR-'));
-
-  // 模块进度估算
-  const moduleProgress = {
-    'MOD-advisor': 65, 'MOD-kb': 55, 'MOD-distill': 40, 'MOD-rpa': 70,
-    'MOD-wu': 60, 'MOD-wen': 30, 'MOD-video': 25, 'MOD-frontend': 50,
-    'MOD-pvi': 10, 'MOD-selflearn': 5, 'MOD-tests': 70, 'MOD-c3an': 35,
-    'MOD-neural': 15,
-  };
-
-  let html = `
-  <h2 style="font-size:22px;margin-bottom:20px;font-weight:800">Project Dashboard <span style="color:var(--dim);font-size:13px;font-weight:400">Real-time development status</span></h2>
-  <div class="dash-grid">
-    <div class="dash-card">
-      <h3>Total Nodes</h3>
-      <div class="big-num cyan">${allStats.total_nodes}</div>
-      <p style="font-size:11px;color:var(--dim);margin-top:6px">${Object.keys(allStats.clusters||{}).length} clusters</p>
-    </div>
-    <div class="dash-card">
-      <h3>Edges (Relations)</h3>
-      <div class="big-num magenta">${allStats.total_edges}</div>
-      <p style="font-size:11px;color:var(--dim);margin-top:6px">knowledge graph density</p>
-    </div>
-    <div class="dash-card">
-      <h3>KB Status</h3>
-      <div class="big-num yellow">2754<span style="font-size:16px;color:var(--dim)">/5000</span></div>
-      <div class="progress-bar"><div class="progress-bar-fill" style="width:55%;background:linear-gradient(90deg,var(--yellow),var(--green))"></div></div>
-      <p style="font-size:11px;color:var(--dim)">差2246条蒸馏数据</p>
-    </div>
-    <div class="dash-card">
-      <h3>Error Lessons</h3>
-      <div class="big-num red">${errors.length}</div>
-      <p style="font-size:11px;color:var(--dim);margin-top:6px">critical patterns stored</p>
-    </div>
-    <div class="dash-card">
-      <h3>API Keys</h3>
-      <div class="big-num red">${secrets.length}</div>
-      <p style="font-size:11px;color:var(--dim);margin-top:6px">secured references (no plaintext)</p>
-    </div>
-    <div class="dash-card">
-      <h3>Tests</h3>
-      <div class="big-num green">460</div>
-      <p style="font-size:11px;color:var(--dim);margin-top:6px">passed / 36 API endpoints</p>
-    </div>
-  </div>
-
-  <div class="dash-grid">
-    <div class="dash-card" style="grid-column:span 2">
-      <h3>&#x1F3D7; Module Development Progress</h3>`;
-
-  modules.sort((a,b) => (moduleProgress[b.id]||0) - (moduleProgress[a.id]||0));
-  modules.forEach(m => {
-    const pct = moduleProgress[m.id] || 0;
-    const c = pct >= 60 ? 'var(--green)' : pct >= 30 ? 'var(--yellow)' : 'var(--red)';
-    const statusDot = m.blockers?.length ? 'var(--red)' : 'var(--green)';
-    html += `<div class="module-row">
-      <span class="status-dot" style="background:${statusDot};box-shadow:0 0 6px ${statusDot}"></span>
-      <span class="name">${m.name}</span>
-      <div class="bar"><div class="bar-fill" style="width:${pct}%;background:${c}"></div></div>
-      <span class="pct" style="color:${c}">${pct}%</span>
-    </div>`;
-  });
-  html += `</div>
-
-    <div class="dash-card">
-      <h3>&#x1F6A8; Error & Lesson Log</h3>`;
-  errors.forEach(e => {
-    const sev = e.priority === 'critical' ? ['CRITICAL','var(--red)'] : ['HIGH','var(--yellow)'];
-    html += `<div class="error-item">
-      <span class="severity" style="background:${sev[1]}22;color:${sev[1]}">${sev[0]}</span>
-      <span class="title" style="margin-left:8px">${e.name}</span>
-      <div class="desc">${e.description||''}</div>
-    </div>`;
-  });
-  html += `</div></div>
-
-  <div class="dash-grid">
-    <div class="dash-card" style="grid-column:span 2">
-      <h3>&#x1F512; API Keys & Secrets Registry</h3>`;
-  secrets.forEach(s => {
-    const state = s.current_state || 'configured';
-    const isActive = state.includes('活跃') || state.includes('Active');
-    const sc = isActive ? 'var(--green)' : 'var(--yellow)';
-    html += `<div class="secret-item">
-      <span class="icon">&#x1F511;</span>
-      <span class="name">${s.name}</span>
-      <span class="state" style="background:${sc}22;color:${sc}">${state.substring(0,30)}</span>
-    </div>`;
-  });
-  html += `</div>
-
-    <div class="dash-card">
-      <h3>&#x1F517; Most Connected Nodes</h3>`;
-  (allStats.most_connected||[]).forEach(mc => {
-    html += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
-      <span style="font-size:13px">${mc.name}</span>
-      <span style="color:var(--cyan);font-weight:700">${mc.connections}</span>
-    </div>`;
-  });
-  html += `</div></div>`;
-
-  document.getElementById('dashboard').innerHTML = html;
-}
-
-// ── 图例 ──
-function buildLegend(clusters) {
-  const c = document.getElementById('legend-items');
-  c.innerHTML = '';
-  Object.entries(clusters).sort((a,b)=>b[1]-a[1]).forEach(([cluster, cnt]) => {
-    const color = CLUSTER_COLORS[cluster] || '#888';
-    const d = document.createElement('div');
-    d.className = 'legend-item';
-    d.innerHTML = `<span class="color-dot" style="background:${color};box-shadow:0 0 8px ${color}"></span><span>${cluster}</span><span class="count">${cnt}</span>`;
-    d.addEventListener('click', () => toggleCluster(cluster));
-    c.appendChild(d);
-  });
-}
-
-let activeCluster = null;
-function toggleCluster(cluster) {
-  if (activeCluster === cluster) {
-    activeCluster = null;
-    document.querySelectorAll('.legend-item').forEach(el => el.classList.remove('dimmed'));
-    highlightNodes.clear();
-  } else {
-    activeCluster = cluster;
-    document.querySelectorAll('.legend-item').forEach(el => el.classList.toggle('dimmed', !el.textContent.includes(cluster)));
-    highlightNodes.clear();
-    graphData.nodes.forEach(n => { if (n.cluster === cluster) highlightNodes.add(n.id); });
-  }
-  refreshGraph();
-}
-
-// ── 搜索 ──
-document.getElementById('search-input').addEventListener('input', e => {
-  const q = e.target.value.toLowerCase().trim();
-  highlightNodes.clear(); highlightLinks.clear();
-  if (q) graphData.nodes.forEach(n => {
-    if (`${n.id} ${n.name} ${n.cluster} ${(n.keywords||[]).join(' ')} ${n.description||''}`.toLowerCase().includes(q))
-      highlightNodes.add(n.id);
-  });
-  refreshGraph();
-});
-
-// ── 路由 ──
-document.getElementById('route-btn').addEventListener('click', async () => {
-  const task = document.getElementById('route-input').value.trim();
-  if (!task) return;
-  const resp = await fetch(`${API}/api/route`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({task, max_nodes:10, include_edges:true}),
-  });
-  const result = await resp.json();
-  highlightNodes.clear(); highlightLinks.clear();
-  result.activated_nodes.forEach(n => highlightNodes.add(n.id));
-  const idSet = new Set(result.activated_nodes.map(n => n.id));
-  graphData.links.forEach(link => {
-    const s = typeof link.source === 'object' ? link.source.id : link.source;
-    const t = typeof link.target === 'object' ? link.target.id : link.target;
-    if (idSet.has(s) && idSet.has(t)) highlightLinks.add(link);
-  });
-  refreshGraph();
-  let html = `<div style="color:var(--green);margin-bottom:6px;font-weight:600">Activated ${result.activated_nodes.length}/${result.total_nodes}</div>`;
-  Object.entries(result.scores).sort((a,b)=>b[1]-a[1]).forEach(([id,score]) => {
-    const node = result.activated_nodes.find(n=>n.id===id);
-    html += `<div class="route-hit"><span>${id} ${node?node.name:''}</span><span class="score">${score.toFixed(1)}</span></div>`;
-  });
-  document.getElementById('route-result').innerHTML = html;
-});
-
-// ── 视图切换 ──
-document.querySelectorAll('.view-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    currentView = tab.dataset.view;
-    document.getElementById('dashboard').classList.toggle('visible', currentView === 'dashboard');
-    document.getElementById('graph-container').style.display = currentView === 'graph' ? 'block' : 'none';
-    document.getElementById('route-panel').style.display = currentView === 'graph' ? 'block' : 'none';
-    document.getElementById('legend').style.display = currentView === 'graph' ? 'block' : 'none';
-  });
-});
-
-// ── WebSocket ──
-function connectWS() {
-  const ws = new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws`);
-  ws.onmessage = evt => {
-    const msg = JSON.parse(evt.data);
-    if (['node_created','node_updated','node_deleted','edge_created','edge_deleted','graph_reloaded'].includes(msg.event)) {
-      Promise.all([fetch(`${API}/api/graph`).then(r=>r.json()), fetch(`${API}/api/stats`).then(r=>r.json())])
-        .then(([g,s]) => { graphData = g; allStats = s; Graph.graphData(g); updateTopbar(s); buildDashboard(); });
-    }
-  };
-  ws.onclose = () => setTimeout(connectWS, 3000);
-}
-
-// ── 视觉控制 ──
-document.getElementById('intf-toggle').addEventListener('change', e => {
-  showINTF = e.target.checked;
-  graphData.nodes.forEach(n => {
-    if (n.cluster === '接口契约') n._hidden = !showINTF;
-  });
-  if (Graph) {
-    Graph.nodeVisibility(n => !n._hidden);
-    Graph.linkVisibility(link => {
-      const s = typeof link.source === 'object' ? link.source : {id: link.source};
-      const t = typeof link.target === 'object' ? link.target : {id: link.target};
-      const sNode = graphData.nodes.find(n => n.id === (s.id || s));
-      const tNode = graphData.nodes.find(n => n.id === (t.id || t));
-      return !(sNode && sNode._hidden) && !(tNode && tNode._hidden);
-    });
-  }
-});
-
-document.getElementById('size-slider').addEventListener('input', e => {
-  nodeSizeMultiplier = parseFloat(e.target.value);
-  if (Graph) Graph.nodeVal(n => (PRIORITY_SIZE[n.priority] || 7) * 2 * nodeSizeMultiplier);
-});
-
-document.getElementById('bg-slider').addEventListener('input', e => {
-  bgBrightness = parseInt(e.target.value);
-  const hex = bgBrightness.toString(16).padStart(2,'0');
-  const bg = `#${hex}${hex}${Math.min(bgBrightness+6,255).toString(16).padStart(2,'0')}`;
-  if (Graph) Graph.backgroundColor(bg);
-});
-
-document.getElementById('dormant-toggle').addEventListener('change', e => {
-  const showDormant = e.target.checked;
-  graphData.nodes.forEach(n => {
-    if (n.status === 'dormant') n._hidden = !showDormant;
-  });
-  if (Graph) Graph.nodeVisibility(n => !n._hidden);
-});
-
-init();
-</script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>3CAN — Project Reality</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      .sr-only {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+      }
+      :root {
+        --bg: #061019;
+        --panel: rgba(12, 26, 37, 0.94);
+        --panel-solid: #0d1b27;
+        --panel-raised: #112331;
+        --border: rgba(159, 194, 203, 0.17);
+        --border-strong: rgba(159, 194, 203, 0.3);
+        --text: #eef7f5;
+        --muted: #90a7ae;
+        --quiet: #627983;
+        --teal: #4bd4b8;
+        --blue: #6aa9ff;
+        --amber: #f4bd67;
+        --red: #ff7e84;
+        --shadow: 0 22px 70px rgba(0, 0, 0, 0.3);
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter,
+          "Segoe UI",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        overflow: hidden;
+      }
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+      button {
+        color: inherit;
+      }
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible {
+        outline: 2px solid var(--teal);
+        outline-offset: 2px;
+      }
+      #topbar {
+        position: fixed;
+        inset: 0 0 auto;
+        height: 68px;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 0 22px;
+        background: rgba(6, 16, 25, 0.92);
+        border-bottom: 1px solid var(--border);
+        backdrop-filter: blur(20px);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        min-width: 238px;
+      }
+      .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border: 1px solid rgba(75, 212, 184, 0.4);
+        border-radius: 10px;
+        background: linear-gradient(
+          145deg,
+          rgba(75, 212, 184, 0.16),
+          rgba(106, 169, 255, 0.05)
+        );
+        color: var(--teal);
+        font-size: 12px;
+        font-weight: 900;
+        box-shadow: inset 0 0 18px rgba(75, 212, 184, 0.08);
+      }
+      .brand-name {
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+      }
+      .brand-sub {
+        display: block;
+        margin-top: 2px;
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+      .view-tabs {
+        display: flex;
+        padding: 3px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.025);
+      }
+      .view-tab {
+        border: 0;
+        border-radius: 9px;
+        padding: 7px 13px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: color 0.2s ease, background-color 0.2s ease;
+      }
+      .view-tab:hover {
+        color: var(--text);
+      }
+      .view-tab.active {
+        background: var(--panel-raised);
+        color: var(--text);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+      }
+      .topbar-stats {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .stat-pill {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.025);
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .stat-pill strong {
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--quiet);
+      }
+      .dot.ready {
+        background: var(--teal);
+        box-shadow: 0 0 10px rgba(75, 212, 184, 0.7);
+      }
+      .dot.attention {
+        background: var(--amber);
+      }
+      #search-box {
+        position: relative;
+        margin-left: auto;
+        max-width: 320px;
+        flex: 1;
+      }
+      #search-input {
+        width: 100%;
+        height: 36px;
+        padding: 0 14px 0 36px;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.035);
+        color: var(--text);
+        font-size: 12px;
+      }
+      #search-input::placeholder {
+        color: var(--quiet);
+      }
+      #search-icon {
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        translate: 0 -50%;
+        color: var(--quiet);
+        font-size: 13px;
+        pointer-events: none;
+      }
+      #refresh-btn {
+        width: 36px;
+        height: 36px;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.035);
+        color: var(--muted);
+        cursor: pointer;
+        transition: 0.2s ease;
+      }
+      #refresh-btn:hover {
+        color: var(--teal);
+        border-color: rgba(75, 212, 184, 0.45);
+      }
+      #refresh-btn[aria-busy="true"] {
+        animation: spin 0.8s linear infinite;
+      }
+      #dashboard {
+        position: fixed;
+        inset: 68px 0 0;
+        z-index: 85;
+        display: none;
+        overflow: auto;
+        background: radial-gradient(
+            circle at 18% -10%,
+            rgba(75, 212, 184, 0.09),
+            transparent 32%
+          ),
+          radial-gradient(
+            circle at 86% 0,
+            rgba(106, 169, 255, 0.09),
+            transparent 28%
+          ),
+          var(--bg);
+      }
+      #dashboard.visible {
+        display: block;
+      }
+      .overview-shell {
+        width: min(1440px, 100%);
+        margin: 0 auto;
+        padding: 38px 34px 56px;
+      }
+      .overview-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.7fr);
+        gap: 28px;
+        align-items: end;
+        padding: 30px;
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        background: linear-gradient(
+          135deg,
+          rgba(17, 35, 49, 0.92),
+          rgba(10, 24, 34, 0.78)
+        );
+        box-shadow: var(--shadow);
+      }
+      .eyebrow {
+        color: var(--teal);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+      .overview-hero h1 {
+        max-width: 760px;
+        margin-top: 12px;
+        font-size: clamp(28px, 3.2vw, 48px);
+        line-height: 1.08;
+        letter-spacing: -0.035em;
+      }
+      .overview-hero .lede {
+        max-width: 720px;
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.75;
+      }
+      .hero-status {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 18px;
+        border-left: 1px solid var(--border);
+      }
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 11px;
+        border-radius: 999px;
+        background: rgba(75, 212, 184, 0.09);
+        color: var(--teal);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .status-chip.warn {
+        background: rgba(244, 189, 103, 0.09);
+        color: var(--amber);
+      }
+      .hero-status strong {
+        font-size: 18px;
+      }
+      .hero-status p {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 3px;
+        color: var(--quiet);
+        font-size: 10px;
+      }
+      .hero-meta span {
+        padding: 5px 8px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+      }
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 12px;
+        margin: 18px 0;
+      }
+      .metric-card,
+      .dash-card {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 16px;
+      }
+      .metric-card {
+        min-height: 122px;
+        padding: 17px;
+      }
+      .metric-card .label,
+      .card-kicker {
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .metric-card .value {
+        margin-top: 13px;
+        font-size: 30px;
+        font-weight: 850;
+        letter-spacing: -0.04em;
+        font-variant-numeric: tabular-nums;
+      }
+      .metric-card .hint {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      .metric-card.accent .value {
+        color: var(--teal);
+      }
+      .metric-card.warn .value {
+        color: var(--amber);
+      }
+      .dashboard-grid {
+        display: grid;
+        grid-template-columns: 1.25fr 0.75fr;
+        gap: 16px;
+        margin-top: 16px;
+      }
+      .dash-card {
+        padding: 21px;
+        min-width: 0;
+      }
+      .dash-card h2 {
+        margin-top: 7px;
+        font-size: 18px;
+        letter-spacing: -0.015em;
+      }
+      .card-intro {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .cluster-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .cluster-row {
+        display: grid;
+        grid-template-columns: minmax(110px, 1fr) minmax(100px, 2fr) 48px;
+        gap: 12px;
+        align-items: center;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+      }
+      .cluster-row:hover .cluster-name {
+        color: var(--teal);
+      }
+      .cluster-name {
+        overflow: hidden;
+        color: var(--text);
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cluster-bar {
+        height: 6px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.055);
+        overflow: hidden;
+      }
+      .cluster-bar span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--teal), var(--blue));
+      }
+      .cluster-count {
+        text-align: right;
+        color: var(--muted);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .truth-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .truth-item {
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .truth-item strong {
+        display: block;
+        font-size: 12px;
+      }
+      .truth-item p {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      .signal-list,
+      .node-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .signal-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        font-size: 12px;
+      }
+      .signal-row span:first-child {
+        color: var(--muted);
+      }
+      .signal-row strong {
+        text-align: right;
+        font-weight: 700;
+      }
+      .node-action {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        padding: 11px;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.02);
+        text-align: left;
+        cursor: pointer;
+      }
+      .node-action:hover {
+        border-color: var(--border-strong);
+        background: rgba(255, 255, 255, 0.035);
+      }
+      .priority-mark {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--amber);
+      }
+      .priority-mark.critical {
+        background: var(--red);
+        box-shadow: 0 0 8px rgba(255, 126, 132, 0.5);
+      }
+      .node-copy {
+        min-width: 0;
+      }
+      .node-copy strong,
+      .node-copy span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .node-copy strong {
+        font-size: 12px;
+      }
+      .node-copy span {
+        margin-top: 3px;
+        color: var(--quiet);
+        font-size: 10px;
+      }
+      .node-arrow {
+        color: var(--quiet);
+        font-size: 14px;
+      }
+      .empty-state {
+        margin-top: 16px;
+        padding: 18px;
+        border: 1px dashed var(--border-strong);
+        border-radius: 12px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .boundary-note {
+        display: flex;
+        gap: 10px;
+        margin-top: 16px;
+        padding: 13px;
+        border-radius: 12px;
+        background: rgba(75, 212, 184, 0.055);
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.55;
+      }
+      .boundary-note strong {
+        color: var(--teal);
+      }
+      #graph-container {
+        position: fixed;
+        inset: 68px 0 0;
+        display: none;
+        background: var(--bg);
+      }
+      #graph-container.visible {
+        display: block;
+      }
+      .graph-message {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      #route-panel,
+      #legend,
+      #visual-controls {
+        position: fixed;
+        z-index: 80;
+        border: 1px solid var(--border);
+        border-radius: 15px;
+        background: var(--panel);
+        backdrop-filter: blur(18px);
+        box-shadow: var(--shadow);
+      }
+      #route-panel {
+        left: 18px;
+        top: 86px;
+        width: 350px;
+        padding: 16px;
+      }
+      #route-panel h2,
+      #legend h2,
+      #visual-controls h2 {
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      #route-input {
+        width: 100%;
+        min-height: 70px;
+        margin-top: 10px;
+        padding: 11px 12px;
+        resize: vertical;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.035);
+        color: var(--text);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      #route-btn {
+        width: 100%;
+        margin-top: 9px;
+        padding: 9px 12px;
+        border: 1px solid rgba(75, 212, 184, 0.38);
+        border-radius: 10px;
+        background: rgba(75, 212, 184, 0.08);
+        color: var(--teal);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+      }
+      #route-btn:hover {
+        background: rgba(75, 212, 184, 0.14);
+      }
+      #route-btn:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+      #route-result {
+        max-height: 210px;
+        margin-top: 10px;
+        overflow: auto;
+        font-size: 11px;
+      }
+      .route-summary {
+        margin-bottom: 7px;
+        color: var(--teal);
+        font-weight: 700;
+      }
+      .route-hit {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 7px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .route-hit span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .route-score {
+        color: var(--blue);
+        font-variant-numeric: tabular-nums;
+      }
+      #legend {
+        left: 18px;
+        bottom: 18px;
+        width: 215px;
+        max-height: 360px;
+        padding: 15px;
+        overflow: auto;
+      }
+      #legend-items {
+        display: grid;
+        gap: 7px;
+        margin-top: 10px;
+      }
+      .legend-item {
+        display: grid;
+        grid-template-columns: 10px minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .legend-item:hover {
+        color: var(--text);
+      }
+      .legend-item.dimmed {
+        opacity: 0.25;
+      }
+      .color-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+      }
+      .legend-count {
+        color: var(--quiet);
+        font-variant-numeric: tabular-nums;
+      }
+      #visual-controls {
+        right: 18px;
+        bottom: 18px;
+        width: 215px;
+        padding: 15px;
+      }
+      .control-row {
+        margin-top: 12px;
+      }
+      .control-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .control-label input {
+        accent-color: var(--teal);
+      }
+      .range-label {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 6px;
+        color: var(--quiet);
+        font-size: 10px;
+      }
+      input[type="range"] {
+        width: 100%;
+        accent-color: var(--teal);
+      }
+      #panel {
+        position: fixed;
+        right: -500px;
+        top: 68px;
+        bottom: 0;
+        width: min(490px, 100vw);
+        z-index: 95;
+        padding: 26px;
+        overflow: auto;
+        border-left: 1px solid var(--border);
+        background: rgba(8, 20, 29, 0.97);
+        backdrop-filter: blur(22px);
+        transition: right 0.28s ease;
+        box-shadow: var(--shadow);
+      }
+      #panel.open {
+        right: 0;
+      }
+      #panel-close {
+        position: absolute;
+        right: 16px;
+        top: 14px;
+        width: 34px;
+        height: 34px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 20px;
+        cursor: pointer;
+      }
+      .panel-header {
+        padding-right: 35px;
+      }
+      .node-badge {
+        display: inline-block;
+        padding: 5px 8px;
+        border-radius: 7px;
+        font-size: 10px;
+        font-weight: 800;
+        overflow-wrap: anywhere;
+      }
+      .panel-header h2 {
+        margin-top: 11px;
+        font-size: 21px;
+        line-height: 1.28;
+      }
+      .panel-section {
+        margin-top: 22px;
+      }
+      .panel-section h3 {
+        margin-bottom: 8px;
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+      .panel-section p,
+      .panel-section li {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.68;
+        overflow-wrap: anywhere;
+      }
+      .panel-section ul {
+        padding-left: 18px;
+      }
+      .tag {
+        display: inline-block;
+        margin: 2px;
+        padding: 4px 8px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        color: var(--blue);
+        font-size: 10px;
+      }
+      .status-active {
+        color: var(--teal);
+      }
+      .status-blocked {
+        color: var(--red);
+      }
+      .status-dormant {
+        color: var(--amber);
+      }
+      .status-deprecated,
+      .status-archived {
+        color: var(--quiet);
+      }
+      #app-status {
+        position: fixed;
+        left: 50%;
+        bottom: 18px;
+        z-index: 120;
+        translate: -50% 0;
+        max-width: min(520px, calc(100vw - 32px));
+        padding: 9px 13px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel-solid);
+        color: var(--muted);
+        font-size: 11px;
+        box-shadow: var(--shadow);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s;
+      }
+      #app-status.show {
+        opacity: 1;
+      }
+      @keyframes spin {
+        to {
+          rotate: 360deg;
+        }
+      }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(144, 167, 174, 0.25);
+        border-radius: 6px;
+      }
+      @media (max-width: 1120px) {
+        .topbar-stats .stat-pill:nth-child(n + 4) {
+          display: none;
+        }
+        .metric-grid {
+          grid-template-columns: repeat(3, 1fr);
+        }
+        .overview-hero {
+          grid-template-columns: 1fr;
+        }
+        .hero-status {
+          border-left: 0;
+          border-top: 1px solid var(--border);
+        }
+        .dashboard-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      @media (max-width: 760px) {
+        #topbar {
+          height: auto;
+          min-height: 68px;
+          padding: 9px 12px;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .brand {
+          min-width: 0;
+          flex: 1;
+        }
+        .brand-sub,
+        .topbar-stats {
+          display: none;
+        }
+        .view-tabs {
+          order: 3;
+          width: 100%;
+        }
+        .view-tab {
+          flex: 1;
+        }
+        #search-box {
+          order: 4;
+          display: none;
+          flex-basis: calc(100% - 46px);
+          max-width: none;
+        }
+        #dashboard,
+        #graph-container {
+          top: 116px;
+        }
+        .overview-shell {
+          padding: 20px 14px 40px;
+        }
+        .overview-hero {
+          padding: 22px;
+        }
+        .metric-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+        .truth-grid {
+          grid-template-columns: 1fr;
+        }
+        .dash-card {
+          padding: 17px;
+        }
+        #route-panel {
+          left: 12px;
+          right: 12px;
+          top: 128px;
+          width: auto;
+        }
+        #legend {
+          display: none !important;
+        }
+        #visual-controls {
+          right: 12px;
+          bottom: 12px;
+          width: 195px;
+        }
+        #panel {
+          top: 116px;
+        }
+      }
+      @media (max-width: 460px) {
+        .metric-grid {
+          grid-template-columns: 1fr;
+        }
+        .overview-hero h1 {
+          font-size: 29px;
+        }
+        .cluster-row {
+          grid-template-columns: minmax(90px, 1fr) minmax(70px, 1.2fr) 42px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.001ms !important;
+          transition-duration: 0.001ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body data-view="overview">
+    <header id="topbar">
+      <div class="brand" aria-label="3CAN Project Reality">
+        <div class="brand-mark">3C</div>
+        <div>
+          <div class="brand-name">3CAN</div>
+          <span class="brand-sub">Project Reality Substrate</span>
+        </div>
+      </div>
+      <nav class="view-tabs" aria-label="主视图">
+        <button
+          class="view-tab active"
+          type="button"
+          data-view="overview"
+          aria-pressed="true"
+        >
+          项目概览</button
+        ><button
+          class="view-tab"
+          type="button"
+          data-view="graph"
+          aria-pressed="false"
+        >
+          语义图谱
+        </button>
+      </nav>
+      <div class="topbar-stats" aria-label="图谱实时统计">
+        <div class="stat-pill">
+          <span id="readiness-dot" class="dot"></span
+          ><strong id="stat-ready">读取中</strong>
+        </div>
+        <div class="stat-pill"><strong id="stat-nodes">—</strong> 节点</div>
+        <div class="stat-pill"><strong id="stat-edges">—</strong> 关系</div>
+        <div class="stat-pill">
+          <span class="dot attention"></span
+          ><strong id="stat-attention">—</strong> Blocked
+        </div>
+      </div>
+      <div id="search-box">
+        <span id="search-icon" aria-hidden="true">⌕</span
+        ><label class="sr-only" for="search-input">搜索图谱节点</label
+        ><input
+          id="search-input"
+          type="search"
+          autocomplete="off"
+          placeholder="搜索名称、关键词或节点 ID"
+        />
+      </div>
+      <button
+        id="refresh-btn"
+        type="button"
+        aria-label="刷新实时数据"
+        title="刷新实时数据"
+      >
+        ↻
+      </button>
+    </header>
+    <main id="dashboard" class="visible">
+      <div class="overview-shell">
+        <section class="overview-hero" aria-labelledby="overview-title">
+          <div>
+            <p class="eyebrow">
+              Local-first · Evidence-bounded · Human-centered
+            </p>
+            <h1 id="overview-title">
+              让 Agent 找到项目事实，也看见事实的边界。
+            </h1>
+            <p class="lede">
+              3CAN 保存跨 Session
+              值得保留的架构、决策、接口、错误经验和交接语义。精确代码仍由 Git
+              负责，运行结果仍由 CI、Runtime 与 Provider 回执证明。
+            </p>
+          </div>
+          <div class="hero-status" id="hero-status">
+            <span class="status-chip warn">正在读取</span
+            ><strong>连接本机 3CAN</strong>
+            <p>
+              概览只展示实时 API 可以证明的状态，不用硬编码进度或测试数字填空。
+            </p>
+          </div>
+        </section>
+        <div id="dashboard-content"></div>
+      </div>
+    </main>
+    <section id="graph-container" aria-label="3CAN 三维语义图谱">
+      <div class="graph-message">切换到图谱时加载 3D 视图</div>
+    </section>
+    <aside id="route-panel" hidden>
+      <h2>Semantic Route</h2>
+      <label class="sr-only" for="route-input">输入任务描述以路由相关知识</label
+      ><textarea
+        id="route-input"
+        placeholder="输入任务摘要，激活相关项目子图。&#10;例如：准备 3CAN 公开视频并核对 benchmark 证据"
+      ></textarea
+      ><button id="route-btn" type="button">路由相关知识</button>
+      <p class="card-intro">
+        任务描述会进入本机 route buffer，其中前 60 字写入
+        activity；不要输入密钥、账号或私密正文。
+      </p>
+      <div id="route-result" aria-live="polite"></div>
+    </aside>
+    <aside id="legend" hidden>
+      <h2>Knowledge Clusters</h2>
+      <div id="legend-items"></div>
+    </aside>
+    <aside id="visual-controls" hidden>
+      <h2>Graph Controls</h2>
+      <p id="graph-scope" role="status" aria-live="polite"></p>
+      <div class="control-row">
+        <label class="control-label"><input type="checkbox" id="focus-toggle" disabled /> 只看所选节点及关系</label>
+      </div>
+      <div class="control-row"><button id="graph-fit" class="node-action" type="button">适配可见图谱</button> <button id="graph-reset" class="node-action" type="button">清除选择</button></div>
+      <div class="control-row">
+        <label class="control-label"
+          ><input type="checkbox" id="intf-toggle" checked />
+          显示接口契约</label
+        >
+      </div>
+      <div class="control-row">
+        <div class="range-label">
+          <label for="size-slider">节点尺寸</label
+          ><span id="size-value">1.0×</span>
+        </div>
+        <input
+          type="range"
+          id="size-slider"
+          min="0.5"
+          max="2.5"
+          step="0.1"
+          value="1"
+        />
+      </div>
+      <div class="control-row">
+        <label class="control-label"
+          ><input type="checkbox" id="dormant-toggle" checked /> 显示
+          dormant</label
+        >
+      </div>
+    </aside>
+    <aside id="panel" aria-hidden="true" aria-label="节点详情" inert>
+      <button id="panel-close" type="button" aria-label="关闭节点详情">
+        ×
+      </button>
+      <div id="panel-content"></div>
+    </aside>
+    <div id="app-status" role="status" aria-live="polite"></div>
+    <script>
+      const API = window.location.origin;
+      const CLUSTER_COLORS = {
+        数据基础设施: "#4bd4b8",
+        架构设计: "#ff8b83",
+        工具链: "#62c9c2",
+        业务逻辑: "#f4bd67",
+        前端UI: "#6aa9ff",
+        运营知识: "#8ec9aa",
+        密钥配置: "#ff7e84",
+        会话记录: "#7e8fb6",
+        系统元节点: "#dbe8e5",
+        产品与工艺: "#ff8b83",
+        战略决策: "#dc7d78",
+        Agent协作: "#57d98d",
+        训练与模型: "#e8ae79",
+        反馈与规则: "#98bedb",
+        外部引用: "#e6cd70",
+        错误与教训: "#ff7e84",
+        ErrorKnowledge: "#ff7e84",
+        项目模块: "#4bd4b8",
+        接口契约: "#949bd2",
+        项目交接: "#ed9b55",
+        项目文档: "#b5a0ff",
+        项目活动: "#64d6b6",
+        用户画像: "#efb85d",
+        "3CAN引擎": "#4bd4b8",
+        "3CAN Engine": "#4bd4b8",
+        "3CAN harness engineering": "#6aa9ff",
+        skills: "#b5a0ff",
+      };
+      const PRIORITY_SIZE = { critical: 14, high: 10, medium: 7, low: 4 },
+        PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+      const UI_AGENT_ID = "3can-frontend",
+        UI_SESSION_ID = `ui-${
+          globalThis.crypto?.randomUUID?.() ||
+          `${Date.now()}-${Math.random().toString(16).slice(2)}`
+        }`,
+        REDUCED_MOTION = window.matchMedia(
+          "(prefers-reduced-motion: reduce)",
+        ).matches;
+      let graphData = { nodes: [], links: [] },
+        allStats = {},
+        Graph = null,
+        graphLoaded = false,
+        graphLoadPromise = null,
+        graphDependencyPromise = null,
+        highlightNodes = new Set(),
+        highlightLinks = new Set(),
+        activeCluster = null,
+        showINTF = true,
+        showDormant = true,
+        focusSelection = false,
+        nodeSizeMultiplier = 1,
+        statusTimer = null,
+        panelReturnFocus = null;
+      function escapeHtml(value) {
+        return String(value ?? "").replace(
+          /[&<>'"]/g,
+          (char) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              "'": "&#39;",
+              '"': "&quot;",
+            })[char],
+        );
+      }
+      function asNumber(value) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      function formatNumber(value) {
+        if (value === null || value === undefined || value === "") return "—";
+        const parsed = Number(value);
+        return Number.isFinite(parsed)
+          ? new Intl.NumberFormat("zh-CN").format(parsed)
+          : "—";
+      }
+      function shortHash(value) {
+        const text = String(value || "");
+        return text ? `${text.slice(0, 8)}…${text.slice(-6)}` : "—";
+      }
+      function formatDate(value) {
+        if (!value) return "时间未知";
+        const date = new Date(value);
+        return Number.isNaN(date.getTime())
+          ? String(value)
+          : new Intl.DateTimeFormat("zh-CN", {
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+            }).format(date);
+      }
+      function showStatus(message) {
+        const el = document.getElementById("app-status");
+        el.textContent = message;
+        el.classList.add("show");
+        clearTimeout(statusTimer);
+        statusTimer = setTimeout(() => el.classList.remove("show"), 3200);
+      }
+      async function fetchJson(path, options) {
+        const response = await fetch(`${API}${path}`, options);
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_) {}
+        if (!response.ok) {
+          const error = new Error(`${path} returned HTTP ${response.status}`);
+          error.status = response.status;
+          error.payload = payload;
+          throw error;
+        }
+        return payload;
+      }
+      async function init() {
+        bindEvents();
+        await refreshData(false);
+        window.setInterval(refreshStatsOnly, 60000);
+      }
+      async function refreshData(announce = true) {
+        const button = document.getElementById("refresh-btn");
+        button.setAttribute("aria-busy", "true");
+        try {
+          const [stats, graph] = await Promise.all([
+            fetchJson("/api/stats"),
+            graphLoaded ? fetchJson("/api/graph") : Promise.resolve(null),
+          ]);
+          if (graph) applyGraphData(graph);
+          allStats = stats || {};
+          updateTopbar();
+          buildLegend();
+          buildDashboard();
+          if (announce)
+            showStatus(
+              graphLoaded
+                ? "已刷新实时图谱与运行状态"
+                : "已刷新实时运行状态；完整图谱仍未载入",
+            );
+        } catch (error) {
+          renderUnavailable(error);
+        } finally {
+          button.setAttribute("aria-busy", "false");
+        }
+      }
+      async function refreshStatsOnly() {
+        try {
+          allStats = await fetchJson("/api/stats");
+          updateTopbar();
+          buildDashboard();
+        } catch (error) {
+          markStatsStale(error);
+        }
+      }
+      function applyGraphData(graph) {
+        graphData = {
+          nodes: Array.isArray(graph?.nodes) ? graph.nodes : [],
+          links: Array.isArray(graph?.links) ? graph.links : [],
+        };
+        graphLoaded = true;
+        const ids = new Set(graphData.nodes.map(node => node.id));
+        highlightNodes = new Set([...highlightNodes].filter(id => ids.has(id)));
+        highlightLinks = new Set(graphData.links.filter(link =>
+          linkIds(link).every(id => highlightNodes.has(id))));
+        if (Graph) {
+          Graph.graphData(graphData);
+          refreshGraph();
+        }
+      }
+      async function ensureGraphData() {
+        if (graphLoaded) return graphData;
+        if (graphLoadPromise) return graphLoadPromise;
+        graphLoadPromise = fetchJson("/api/graph")
+          .then((graph) => {
+            applyGraphData(graph);
+            buildDashboard();
+            return graphData;
+          })
+          .finally(() => {
+            graphLoadPromise = null;
+          });
+        return graphLoadPromise;
+      }
+      function markStatsStale(error) {
+        document.getElementById("stat-ready").textContent = "Stale";
+        document.getElementById("readiness-dot").className = "dot attention";
+        document.getElementById("hero-status").innerHTML =
+          `<span class="status-chip warn">STALE</span><strong>自动刷新失败</strong><p>下面保留的是上次成功快照，不代表当前就绪状态。安全的本地工作可以继续。</p><div class="hero-meta"><span>${escapeHtml(error.message || error)}</span></div>`;
+      }
+      function renderUnavailable(error) {
+        document.getElementById("stat-ready").textContent = "不可用";
+        document.getElementById("readiness-dot").className = "dot attention";
+        document.getElementById("hero-status").innerHTML =
+          '<span class="status-chip warn">UNAVAILABLE</span><strong>无法读取本机 3CAN</strong><p>安全的本地工作可以继续；概览不会用旧的硬编码值伪装成实时状态。</p>';
+        document.getElementById("dashboard-content").innerHTML =
+          `<div class="empty-state">${escapeHtml(error.message || error)}</div>`;
+        showStatus("3CAN 实时数据不可用");
+      }
+      function readinessView(readiness) {
+        const cache = readiness.cache || {},
+          productionReady = readiness.production_ready === true,
+          developmentReady = readiness.development_ready === true,
+          deepRequired =
+            cache.deep_required === true ||
+            cache.verification_state === "deep_required" ||
+            readiness.verification_state === "deep_required";
+        if (productionReady)
+          return {
+            top: "Production",
+            label: "Production ready",
+            className: "",
+            dot: "ready",
+            message: "生产深度证据已验证。",
+          };
+        if (developmentReady)
+          return {
+            top: "Development",
+            label: "Development ready",
+            className: "",
+            dot: "ready",
+            message: "当前仅证明开发候选就绪，不等于生产上线。",
+          };
+        if (deepRequired)
+          return {
+            top: "Deep check",
+            label: "需要深度核验",
+            className: "warn",
+            dot: "attention",
+            message:
+              "当前浅层状态没有可复用的已验证深度证据；这不等于 Runtime 已故障。",
+          };
+        return {
+          top: "Not ready",
+          label: "Readiness 未通过",
+          className: "warn",
+          dot: "attention",
+          message: "就绪证据不完整；不要把 liveness 当成 readiness。",
+        };
+      }
+      function updateTopbar() {
+        const view = readinessView(allStats.readiness || {});
+        document.getElementById("stat-ready").textContent = view.top;
+        document.getElementById("readiness-dot").className = `dot ${view.dot}`;
+        document.getElementById("stat-nodes").textContent = formatNumber(
+          allStats.total_nodes,
+        );
+        document.getElementById("stat-edges").textContent = formatNumber(
+          allStats.total_edges,
+        );
+        document.getElementById("stat-attention").textContent = formatNumber(
+          allStats.blocked_nodes,
+        );
+      }
+      function buildDashboard() {
+        const readiness = allStats.readiness || {},
+          reality = allStats.effective_project_reality || {},
+          embedding = allStats.embedding || {},
+          semanticQuality = reality.semantic_quality || {},
+          readinessState = readinessView(readiness),
+          profile = readiness.profile_id || "profile unavailable",
+          identity = allStats.runtime_identity || {};
+        document.getElementById("hero-status").innerHTML =
+          `<span class="status-chip ${readinessState.className}"><span class="dot ${readinessState.dot}"></span>${escapeHtml(readinessState.label)}</span><strong>${escapeHtml(readiness.mode || "unknown")} mode</strong><p>${escapeHtml(readinessState.message)}</p><div class="hero-meta"><span>更新 ${escapeHtml(formatDate(allStats.last_updated))}</span><span>${escapeHtml(profile)}</span><span>runtime ${escapeHtml(shortHash(identity.startup_nonce_sha256))}</span></div>`;
+        const clusters = Object.entries(allStats.clusters || {})
+            .sort((a, b) => asNumber(b[1]) - asNumber(a[1]))
+            .slice(0, 9),
+          maxCluster = Math.max(
+            ...clusters.map(([, count]) => asNumber(count)),
+            1,
+          ),
+          clusterRows = clusters
+            .map(
+              ([name, count]) =>
+                `<button class="cluster-row" type="button" data-cluster="${escapeHtml(name)}" title="在图谱中查看 ${escapeHtml(name)}"><span class="cluster-name">${escapeHtml(name)}</span><span class="cluster-bar"><span style="width:${Math.max(4, (asNumber(count) / maxCluster) * 100).toFixed(1)}%"></span></span><span class="cluster-count">${formatNumber(count)}</span></button>`,
+            )
+            .join("");
+        const attentionNodes = graphLoaded
+            ? graphData.nodes
+                .filter(
+                  (node) =>
+                    node.status === "blocked" ||
+                    node.priority === "critical" ||
+                    String(node.id || "").startsWith("ERR-"),
+                )
+                .sort(
+                  (a, b) =>
+                    (PRIORITY_ORDER[a.priority] ?? 9) -
+                      (PRIORITY_ORDER[b.priority] ?? 9) ||
+                    String(b.updated_at || "").localeCompare(
+                      String(a.updated_at || ""),
+                    ),
+                )
+                .slice(0, 6)
+            : [],
+          attentionRows = !graphLoaded
+            ? '<button class="node-action" id="load-attention" type="button"><span class="priority-mark"></span><span class="node-copy"><strong>按需读取注意项</strong><span>首屏只读取 /api/stats；点击后才载入完整图谱</span></span><span class="node-arrow">→</span></button>'
+            : attentionNodes
+                .map(
+                  (node) =>
+                    `<button class="node-action" type="button" data-node-id="${escapeHtml(node.id)}"><span class="priority-mark ${node.priority === "critical" ? "critical" : ""}"></span><span class="node-copy"><strong>${escapeHtml(node.name || node.id)}</strong><span>${escapeHtml(node.id)} · ${escapeHtml(node.status || "unknown")}</span></span><span class="node-arrow">→</span></button>`,
+                )
+                .join("") ||
+              '<div class="empty-state">当前图谱没有返回 blocked、critical 或 ERR 注意项。</div>';
+        const connected =
+          (allStats.most_connected || [])
+            .slice(0, 5)
+            .map(
+              (node) =>
+                `<button class="node-action" type="button" data-node-id="${escapeHtml(node.id)}"><span class="priority-mark"></span><span class="node-copy"><strong>${escapeHtml(node.name || node.id)}</strong><span>${escapeHtml(node.id)}</span></span><span class="node-arrow">${formatNumber(node.connections)}</span></button>`,
+            )
+            .join("") || '<div class="empty-state">暂无连接度数据。</div>';
+        document.getElementById("dashboard-content").innerHTML =
+          `<section class="metric-grid" aria-label="核心实时指标"><article class="metric-card accent"><div class="label">Valid nodes</div><div class="value">${formatNumber(allStats.total_nodes)}</div><div class="hint">来自当前 /api/stats，不是发布文档快照</div></article><article class="metric-card"><div class="label">Relations</div><div class="value">${formatNumber(allStats.total_edges)}</div><div class="hint">关系数量不等于语义质量</div></article><article class="metric-card"><div class="label">Hot route eligible</div><div class="value">${formatNumber(reality.hot_route_eligible_node_count)}</div><div class="hint">当前可进入热路径的候选节点</div></article><article class="metric-card"><div class="label">Durable current</div><div class="value">${formatNumber(reality.durable_current_candidate_count)}</div><div class="hint">耐久当前事实候选，不替代 Git</div></article><article class="metric-card ${asNumber(allStats.blocked_nodes) > 0 ? "warn" : ""}"><div class="label">Blocked</div><div class="value">${formatNumber(allStats.blocked_nodes)}</div><div class="hint">只显示事实状态，不自动扩大为全局阻塞</div></article></section>
+<section class="dashboard-grid"><article class="dash-card"><div class="card-kicker">Graph composition</div><h2>项目知识分布</h2><p class="card-intro">点击任一集群进入图谱。这里只展示最大的九类，避免用整张图制造信息噪声。</p><div class="cluster-list">${clusterRows}</div></article><article class="dash-card"><div class="card-kicker">Semantic engine</div><h2>检索与证据状态</h2><div class="signal-list"><div class="signal-row"><span>Dense retrieval</span><strong>${embedding.semantic_dense_active === true ? "active" : "unavailable"}</strong></div><div class="signal-row"><span>Embedding backend</span><strong>${escapeHtml(embedding.requested_backend || "—")}</strong></div><div class="signal-row"><span>Rows × dimension</span><strong>${formatNumber(embedding.row_count)} × ${formatNumber(embedding.dimension)}</strong></div><div class="signal-row"><span>Cache state</span><strong>${escapeHtml(embedding.cache_state || "—")}</strong></div><div class="signal-row"><span>Semantic quality</span><strong>${escapeHtml(semanticQuality.status || "unverified")}</strong></div></div><div class="boundary-note"><span>i</span><span><strong>读法：</strong>缓存健康与结构完整不能证明某次 route 一定正确；真实查询仍需任务级核验。</span></div></article></section>
+<section class="dashboard-grid"><article class="dash-card"><div class="card-kicker">Authority map</div><h2>三层真相，不互相冒充</h2><div class="truth-grid"><div class="truth-item"><strong>Git</strong><p>精确源码、分支、提交、diff 与 PR。</p></div><div class="truth-item"><strong>Runtime / CI / Provider</strong><p>构建、执行、外部平台与交付回执。</p></div><div class="truth-item"><strong>3CAN</strong><p>为受控工作流提供项目语义、适用历史和协作材料；不是权限系统。</p></div></div><div class="signal-list"><div class="signal-row"><span>Session handoffs</span><strong>${formatNumber(reality.session_handoff_count)}</strong></div><div class="signal-row"><span>Historical archive</span><strong>${formatNumber(reality.historical_archive_node_count)}</strong></div><div class="signal-row"><span>Hot / non-hot relations</span><strong>${formatNumber(reality.hot_relation_count)} / ${formatNumber(reality.non_hot_relation_count)}</strong></div></div></article><article class="dash-card"><div class="card-kicker">Privacy boundary</div><h2>概览默认最小披露</h2><p class="card-intro">密钥引用、私有网络拓扑和完整错误正文不在概览中展开。原始 API 当前没有认证或 RBAC；只能限制在 localhost，或放在外层访问控制之后。</p><div class="boundary-note"><span>✓</span><span><strong>最小外连：</strong>业务数据只读当前实例；完整图谱仅在用户显式操作后载入，3D 视图再按需加载固定版本外部依赖并通过 SRI 校验。没有分析 SDK、遥测服务或第二份状态库。</span></div></article></section>
+<section class="dashboard-grid"><article class="dash-card"><div class="card-kicker">Attention, not alarm</div><h2>有限注意队列</h2><p class="card-intro">完整图谱默认不进入浏览器；显式加载后最多显示六项 blocked、critical 或 ERR 节点。历史错误不会仅因存在就阻塞所有任务。</p><div class="node-list">${attentionRows}</div></article><article class="dash-card"><div class="card-kicker">Graph anchors</div><h2>连接度最高的节点</h2><p class="card-intro">连接度只帮助发现图谱锚点，不代表节点天然更真实或更重要。</p><div class="node-list">${connected}</div></article></section>`;
+        bindDashboardActions();
+      }
+      function bindDashboardActions() {
+        document.querySelectorAll("[data-cluster]").forEach((button) =>
+          button.addEventListener("click", () =>
+            switchView("graph").then((ready) => {
+              if (ready) toggleCluster(button.dataset.cluster);
+            }),
+          ),
+        );
+        document
+          .querySelectorAll("[data-node-id]")
+          .forEach((button) =>
+            button.addEventListener("click", () =>
+              showNodeInGraph(button.dataset.nodeId, button),
+            ),
+          );
+        document
+          .getElementById("load-attention")
+          ?.addEventListener("click", async () => {
+            try {
+              await ensureGraphData();
+              showStatus("已按需载入有限注意项");
+            } catch (error) {
+              showStatus(`图谱读取失败：${error.message || error}`);
+            }
+          });
+      }
+      function loadGraphDependency() {
+        if (typeof ForceGraph3D === "function") return Promise.resolve();
+        if (graphDependencyPromise) return graphDependencyPromise;
+        graphDependencyPromise = new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src =
+            "https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js";
+          script.async = true;
+          script.crossOrigin = "anonymous";
+          script.integrity =
+            "sha384-GNPicn8pBA2/PGSyPTpxIlPurgLUYcNYJ2zskIq782dE9+gp5E32WSyuxZqA7J+u";
+          script.onload = resolve;
+          script.onerror = () => {
+            graphDependencyPromise = null;
+            reject(new Error("3D graph dependency unavailable"));
+          };
+          document.head.appendChild(script);
+        });
+        return graphDependencyPromise;
+      }
+      function initGraph() {
+        const container = document.getElementById("graph-container");
+        if (Graph) {
+          Graph.width(container.clientWidth).height(container.clientHeight);
+          Graph.resumeAnimation();
+          return;
+        }
+        if (typeof ForceGraph3D !== "function") {
+          container.innerHTML =
+            '<div class="graph-message">3D 图谱依赖未加载。项目概览与 API 状态仍可使用。</div>';
+          return;
+        }
+        container.innerHTML = "";
+        Graph = ForceGraph3D()(container)
+          .graphData(graphData)
+          .backgroundColor("#061019")
+          .showNavInfo(false)
+          .nodeVal(
+            (node) =>
+              (PRIORITY_SIZE[node.priority] || 7) * 1.8 * nodeSizeMultiplier,
+          )
+          .nodeColor((node) =>
+            highlightNodes.size && !highlightNodes.has(node.id)
+              ? "#172633"
+              : CLUSTER_COLORS[node.cluster] || "#8aa0aa",
+          )
+          .nodeOpacity(0.94)
+          .nodeResolution(20)
+          .nodeLabel((node) => {
+            const color = CLUSTER_COLORS[node.cluster] || "#8aa0aa";
+            return `<div style="max-width:330px;padding:11px 13px;border:1px solid ${color}55;border-radius:10px;background:rgba(6,16,25,.96);color:#eef7f5;font:12px/1.5 Segoe UI,sans-serif"><strong style="display:block;margin-bottom:4px;color:${color};font-size:13px">${escapeHtml(node.name || node.id)}</strong><span style="color:#90a7ae">${escapeHtml(node.id)} · ${escapeHtml(node.cluster || "—")} · ${escapeHtml(node.status || "—")}</span></div>`;
+          })
+          .linkColor((link) =>
+            highlightLinks.size && !highlightLinks.has(link)
+              ? "rgba(255,255,255,.025)"
+              : link.type === "requires"
+                ? "rgba(255,126,132,.55)"
+                : link.type === "validates"
+                  ? "rgba(244,189,103,.55)"
+                  : "rgba(75,212,184,.28)",
+          )
+          .linkWidth((link) => (highlightLinks.has(link) ? 2.2 : 0.35))
+          .linkOpacity(0.65)
+          .linkDirectionalArrowLength(4)
+          .linkDirectionalArrowRelPos(1)
+          .linkDirectionalParticles((link) =>
+            !REDUCED_MOTION && highlightLinks.has(link) ? 4 : 0,
+          )
+          .linkDirectionalParticleWidth(2)
+          .linkDirectionalParticleColor(() => "#4bd4b8")
+          .onNodeClick(onNodeClick)
+          .onNodeHover((node) => {
+            document.body.style.cursor = node ? "pointer" : "default";
+          })
+          .onBackgroundClick(() => {
+            highlightNodes.clear();
+            highlightLinks.clear();
+            closePanel();
+            refreshGraph();
+          })
+          .d3AlphaDecay(0.02)
+          .d3VelocityDecay(0.28)
+          .warmupTicks(120)
+          .cooldownTicks(180);
+        refreshGraph();
+        setTimeout(
+          () =>
+            Graph &&
+            Graph.width(container.clientWidth).height(container.clientHeight),
+          100,
+        );
+      }
+      function refreshGraph() {
+        if (!Graph) return;
+        const focusToggle = document.getElementById("focus-toggle");
+        focusToggle.disabled = highlightNodes.size === 0;
+        if (!highlightNodes.size) focusSelection = false;
+        focusToggle.checked = focusSelection;
+        const visibleIds = new Set(graphData.nodes.filter((node) =>
+          (showINTF || node.cluster !== "接口契约") &&
+          (showDormant || node.status !== "dormant") &&
+          (!focusSelection || highlightNodes.has(node.id))
+        ).map((node) => node.id));
+        const visibleLinks = graphData.links.filter((link) =>
+          linkIds(link).every((id) => visibleIds.has(id))
+        );
+        document.getElementById("graph-scope").textContent =
+          `可见 ${visibleIds.size}/${graphData.nodes.length} 节点 · ${visibleLinks.length}/${graphData.links.length} 关系 · 选中 ${highlightNodes.size}`;
+        Graph.nodeVisibility((node) => visibleIds.has(node.id))
+          .linkVisibility((link) => linkIds(link).every((id) => visibleIds.has(id)));
+        Graph.nodeColor(Graph.nodeColor())
+          .linkColor(Graph.linkColor())
+          .linkWidth(Graph.linkWidth())
+          .linkDirectionalParticles(Graph.linkDirectionalParticles());
+      }
+      function linkIds(link) {
+        return [
+          typeof link.source === "object" ? link.source.id : link.source,
+          typeof link.target === "object" ? link.target.id : link.target,
+        ];
+      }
+      function fitVisibleGraph() {
+        if (!Graph) return;
+        const visible = graphData.nodes.filter(Graph.nodeVisibility());
+        if (visible.length === 1) {
+          const node = visible[0];
+          Graph.cameraPosition({ x: node.x || 0, y: node.y || 0, z: (node.z || 0) + 130 }, node, REDUCED_MOTION ? 0 : 450);
+        } else if (visible.length) {
+          Graph.zoomToFit(REDUCED_MOTION ? 0 : 450, 70, Graph.nodeVisibility());
+        }
+      }
+      function onNodeClick(node, returnFocus = null) {
+        if (!node) return;
+        highlightNodes.clear();
+        highlightLinks.clear();
+        highlightNodes.add(node.id);
+        graphData.links.forEach((link) => {
+          const [source, target] = linkIds(link);
+          if (source === node.id || target === node.id) {
+            highlightLinks.add(link);
+            highlightNodes.add(source);
+            highlightNodes.add(target);
+          }
+        });
+        refreshGraph();
+        openPanel(node, returnFocus);
+        const distance = 130,
+          magnitude = Math.hypot(node.x || 0, node.y || 0, node.z || 0) || 1,
+          ratio = 1 + distance / magnitude;
+        Graph.cameraPosition(
+          {
+            x: (node.x || 0) * ratio,
+            y: (node.y || 0) * ratio,
+            z: (node.z || 0) * ratio,
+          },
+          node,
+          REDUCED_MOTION ? 0 : 1000,
+        );
+      }
+      async function showNodeInGraph(nodeId, returnFocus = null) {
+        const ready = await switchView("graph");
+        if (!ready) return;
+        const node = graphData.nodes.find((item) => item.id === nodeId);
+        if (!node) return;
+        onNodeClick(node, returnFocus);
+      }
+      function openPanel(node, returnFocus = null) {
+        const color = CLUSTER_COLORS[node.cluster] || "#8aa0aa",
+          tags = (node.tech_stack || [])
+            .map((item) => `<span class="tag">${escapeHtml(item)}</span>`)
+            .join(""),
+          keywords = (node.keywords || node.activation_keywords || [])
+            .slice(0, 16)
+            .map((item) => `<span class="tag">${escapeHtml(item)}</span>`)
+            .join(""),
+          edges = graphData.links
+            .filter((link) => {
+              const [source, target] = linkIds(link);
+              return source === node.id || target === node.id;
+            })
+            .slice(0, 30),
+          edgeRows = edges
+            .map((edge) => {
+              const [source, target] = linkIds(edge),
+                other = source === node.id ? target : source;
+              return `<li>${source === node.id ? "→" : "←"} <strong>${escapeHtml(other)}</strong> [${escapeHtml(edge.type || "related")}]</li>`;
+            })
+            .join("");
+        let html = `<div class="panel-header"><span class="node-badge" style="color:${color};border:1px solid ${color}55;background:${color}14">${escapeHtml(node.id)}</span><h2>${escapeHtml(node.name || node.id)}</h2></div><div class="panel-section"><h3>Status</h3><p><span class="status-${escapeHtml(node.status || "unknown")}">${escapeHtml(String(node.status || "unknown").toUpperCase())}</span> · ${escapeHtml(node.cluster || "—")} · ${escapeHtml(node.type || "—")} · ${escapeHtml(node.priority || "—")}</p></div>`;
+        if (node.description)
+          html += `<div class="panel-section"><h3>Description</h3><p>${escapeHtml(node.description)}</p></div>`;
+        if (node.current_state)
+          html += `<div class="panel-section"><h3>Current state</h3><p>${escapeHtml(node.current_state)}</p></div>`;
+        if (tags)
+          html += `<div class="panel-section"><h3>Tech stack</h3>${tags}</div>`;
+        if (keywords)
+          html += `<div class="panel-section"><h3>Activation keywords</h3>${keywords}</div>`;
+        if (node.notes)
+          html += `<div class="panel-section"><h3>Notes preview</h3><p>${escapeHtml(String(node.notes).slice(0, 700))}</p></div>`;
+        if (edgeRows)
+          html += `<div class="panel-section"><h3>Connections (${edges.length}${edges.length === 30 ? "+" : ""})</h3><ul>${edgeRows}</ul></div>`;
+        html += `<div class="panel-section"><h3>Provenance</h3><p>Updated ${escapeHtml(node.updated_at || "N/A")} · By ${escapeHtml(node.updated_by || node.primary_author || "N/A")}</p></div>`;
+        const panel = document.getElementById("panel");
+        panelReturnFocus = returnFocus || document.activeElement;
+        document.getElementById("panel-content").innerHTML = html;
+        panel.inert = false;
+        panel.classList.add("open");
+        panel.setAttribute("aria-hidden", "false");
+        document.getElementById("panel-close").focus();
+      }
+      function closePanel() {
+        const panel = document.getElementById("panel");
+        panel.classList.remove("open");
+        panel.setAttribute("aria-hidden", "true");
+        panel.inert = true;
+        const target =
+          panelReturnFocus?.isConnected &&
+          panelReturnFocus.offsetParent !== null
+            ? panelReturnFocus
+            : document.querySelector('.view-tab[aria-pressed="true"]');
+        panelReturnFocus = null;
+        target?.focus();
+      }
+      function buildLegend() {
+        const container = document.getElementById("legend-items");
+        container.innerHTML = "";
+        Object.entries(allStats.clusters || {})
+          .sort((a, b) => asNumber(b[1]) - asNumber(a[1]))
+          .forEach(([cluster, count]) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "legend-item";
+            button.dataset.cluster = cluster;
+            const color = CLUSTER_COLORS[cluster] || "#8aa0aa";
+            button.innerHTML = `<span class="color-dot" style="background:${color}"></span><span>${escapeHtml(cluster)}</span><span class="legend-count">${formatNumber(count)}</span>`;
+            button.addEventListener("click", () => toggleCluster(cluster));
+            container.appendChild(button);
+          });
+      }
+      function toggleCluster(cluster) {
+        activeCluster = activeCluster === cluster ? null : cluster;
+        highlightNodes.clear();
+        highlightLinks.clear();
+        if (activeCluster)
+          graphData.nodes.forEach((node) => {
+            if (node.cluster === activeCluster) highlightNodes.add(node.id);
+          });
+        document
+          .querySelectorAll(".legend-item")
+          .forEach((item) =>
+            item.classList.toggle(
+              "dimmed",
+              Boolean(activeCluster) && item.dataset.cluster !== activeCluster,
+            ),
+          );
+        refreshGraph();
+      }
+      async function switchView(view) {
+        const graphView = view === "graph",
+          container = document.getElementById("graph-container");
+        document.body.dataset.view = view;
+        document
+          .getElementById("dashboard")
+          .classList.toggle("visible", !graphView);
+        container.classList.toggle("visible", graphView);
+        ["route-panel", "legend", "visual-controls"].forEach(
+          (id) => (document.getElementById(id).hidden = !graphView),
+        );
+        document.querySelectorAll(".view-tab").forEach((tab) => {
+          const active = tab.dataset.view === view;
+          tab.classList.toggle("active", active);
+          tab.setAttribute("aria-pressed", String(active));
+        });
+        if (graphView) {
+          if (!Graph) container.innerHTML =
+            '<div class="graph-message">正在加载 3D 图谱…</div>';
+          try {
+            await ensureGraphData();
+            try {
+              await loadGraphDependency();
+            } catch (_) {}
+            initGraph();
+            return Boolean(Graph);
+          } catch (error) {
+            container.innerHTML = `<div class="graph-message">${escapeHtml(error.message || error)}</div>`;
+            showStatus("图谱数据不可用；实时概览仍可继续使用");
+            return false;
+          }
+        }
+        Graph?.pauseAnimation();
+        closePanel();
+        return true;
+      }
+      async function runRoute(confirmLowConfidence = false) {
+        const input = document.getElementById("route-input"),
+          button = document.getElementById("route-btn"),
+          output = document.getElementById("route-result"),
+          task = input.value.trim();
+        if (!task) {
+          output.textContent = "请先输入任务描述。";
+          return;
+        }
+        button.disabled = true;
+        output.textContent = "正在路由…";
+        try {
+          const result = await fetchJson("/api/route", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                task,
+                max_nodes: 10,
+                include_edges: true,
+                mode: "slim",
+                agent_id: UI_AGENT_ID,
+                session_instance_id: UI_SESSION_ID,
+                confirm_low_confidence: confirmLowConfidence,
+              }),
+            }),
+            nodes = Array.isArray(result.nodes)
+              ? result.nodes
+              : Array.isArray(result.activated_nodes)
+                ? result.activated_nodes
+                : [];
+          highlightNodes.clear();
+          highlightLinks.clear();
+          nodes.forEach((node) => highlightNodes.add(node.id));
+          const idSet = new Set(nodes.map((node) => node.id));
+          graphData.links.forEach((link) => {
+            const [source, target] = linkIds(link);
+            if (idSet.has(source) && idSet.has(target))
+              highlightLinks.add(link);
+          });
+          refreshGraph();
+          const scores = result.scores || {};
+          output.innerHTML =
+            `<div class="route-summary">${nodes.length} 个节点 · confidence ${escapeHtml(result.confidence || "unavailable")}</div>` +
+            nodes
+              .map(
+                (node) =>
+                  `<div class="route-hit"><span>${escapeHtml(node.name || node.id)}</span><span class="route-score">${asNumber(scores[node.id]).toFixed(3)}</span></div>`,
+              )
+              .join("");
+        } catch (error) {
+          const detail = error.payload?.detail || {};
+          if (
+            error.status === 428 &&
+            detail.error === "low_confidence_requires_confirmation"
+          ) {
+            output.innerHTML = `<div class="empty-state"><strong>LOW CONFIDENCE</strong><br>${escapeHtml(detail.fallback_hint || "建议改写查询，或显式接受本次降级结果。")}<br><button id="confirm-low-confidence" class="node-action" type="button">我已看到警告，仍要读取</button></div>`;
+            document
+              .getElementById("confirm-low-confidence")
+              .addEventListener("click", () => runRoute(true));
+          } else {
+            output.innerHTML = `<div class="empty-state">${escapeHtml(error.message || error)}</div>`;
+          }
+        } finally {
+          button.disabled = false;
+        }
+      }
+      function bindEvents() {
+        document
+          .querySelectorAll(".view-tab")
+          .forEach((tab) =>
+            tab.addEventListener("click", () => switchView(tab.dataset.view)),
+          );
+        document
+          .getElementById("refresh-btn")
+          .addEventListener("click", () => refreshData(true));
+        document.getElementById("panel-close").addEventListener("click", () => {
+          highlightNodes.clear();
+          highlightLinks.clear();
+          closePanel();
+          refreshGraph();
+        });
+        document
+          .getElementById("route-btn")
+          .addEventListener("click", () => runRoute(false));
+        document
+          .getElementById("route-input")
+          .addEventListener("keydown", (event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === "Enter")
+              runRoute(false);
+          });
+        document
+          .getElementById("search-input")
+          .addEventListener("input", async (event) => {
+            const query = event.target.value.toLowerCase().trim();
+            if (query && !(await switchView("graph"))) return;
+            if (document.getElementById("search-input").value.toLowerCase().trim() !== query) return;
+            activeCluster = null;
+            highlightNodes.clear();
+            highlightLinks.clear();
+            if (query)
+              graphData.nodes.forEach((node) => {
+                const haystack =
+                  `${node.id || ""} ${node.name || ""} ${node.cluster || ""} ${(node.activation_keywords || node.keywords || []).join(" ")} ${node.description || ""}`.toLowerCase();
+                if (haystack.includes(query)) highlightNodes.add(node.id);
+              });
+            refreshGraph();
+            if (query && !highlightNodes.size) showStatus("没有匹配节点；可修改关键词或使用语义路由");
+          });
+        document
+          .getElementById("intf-toggle")
+          .addEventListener("change", (event) => {
+            showINTF = event.target.checked;
+            refreshGraph();
+          });
+        document
+          .getElementById("size-slider")
+          .addEventListener("input", (event) => {
+            nodeSizeMultiplier = Number(event.target.value);
+            document.getElementById("size-value").textContent =
+              `${nodeSizeMultiplier.toFixed(1)}×`;
+            if (Graph)
+              Graph.nodeVal(
+                (node) =>
+                  (PRIORITY_SIZE[node.priority] || 7) *
+                  1.8 *
+                  nodeSizeMultiplier,
+              );
+          });
+        document
+          .getElementById("dormant-toggle")
+          .addEventListener("change", (event) => {
+            showDormant = event.target.checked;
+            refreshGraph();
+          });
+        document.getElementById("focus-toggle").addEventListener("change", (event) => {
+          focusSelection = event.target.checked;
+          refreshGraph();
+          fitVisibleGraph();
+        });
+        document.getElementById("graph-fit").addEventListener("click", fitVisibleGraph);
+        document.getElementById("graph-reset").addEventListener("click", () => {
+          activeCluster = null;
+          highlightNodes.clear(); highlightLinks.clear();
+          document.getElementById("search-input").value = "";
+          document.querySelectorAll(".legend-item").forEach((item) => item.classList.remove("dimmed"));
+          closePanel(); refreshGraph();
+          fitVisibleGraph();
+        });
+        document.addEventListener("keydown", (event) => {
+          if (
+            event.key === "Escape" &&
+            document.getElementById("panel").classList.contains("open")
+          )
+            closePanel();
+        });
+        window.addEventListener("resize", () => {
+          const container = document.getElementById("graph-container");
+          if (Graph && container.classList.contains("visible"))
+            Graph.width(container.clientWidth).height(container.clientHeight);
+        });
+      }
+      init();
+    </script>
+  </body>
 </html>

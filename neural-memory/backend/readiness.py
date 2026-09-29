@@ -113,7 +113,8 @@ def _normalized_json_value(value: Any) -> Any:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
-            value = model_dump(mode="json")
+            # The model's JSON serializer already normalizes nested values.
+            return model_dump(mode="json")
         except TypeError:
             value = model_dump()
     if isinstance(value, Mapping):

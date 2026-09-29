@@ -24,11 +24,12 @@
 
 ---
 
-第一次使用只需记住三件事：
+第一次使用只需记住四件事：
 
 1. 3CAN 是本机服务，不是必须单独打开的“主管理聊天 Session”；
 2. 新用户优先使用独立项目目录、独立图谱和示例端口 `9711`；
-3. 3CAN 离线时，Agent 应明确报告 `UNAVAILABLE`，但安全的本地 Git、编码、构建和离线测试仍可继续，不能伪造 route、ticket 或 writeback 成功。
+3. 普通开发按“理解 → 编辑 → 测试 → Git → 交付”推进，不要求每次编辑前调用 3CAN；
+4. 3CAN 离线时，Agent 应明确报告 `UNAVAILABLE`，但安全的本地 Git、编码、构建和离线测试仍可继续，不能伪造 route、ticket 或 writeback 成功。
 
 ## 0. 引擎就位: liveness 硬前提 (§0)
 
@@ -241,11 +242,11 @@ POST /api/route           ~300-500 tokens (slim mode 返 top-5 节点摘要)
 
 | 能力 | 说明 |
 |---|---|
-| Route Ticket Gate | 动手前必须先 route 拿 ticket, ticket 包含相关 ERR / INTF / API_USAGE 提醒, agent 必读 |
-| PostToolUse 强制写回 | 改完文件自动写进 activity_log, 失败落 `~/.claude/logs/3can-writeback-fail.jsonl` |
-| 内容审查 Stage 2 | LLM 读 agent 即将写的内容, 判 4 类问题 (数据时效 / 推脱归因 / 作弊提议 / 未查 ERR) |
+| Route / Ticket | route 是按需读取；ticket 只用于项目明确声明的受保护写入或签名证据，不是普通编辑前提 |
+| Semantic closeout | 完成有意义模块后可 `AUTO_CLOSEOUT`；用户也可随时 `OWNER_REQUESTED` 写回，不为每个工具调用建节点 |
+| 内容审查 Stage 2 | 可选 LLM 审查高风险内容；不是日常本地开发的同步阻塞器 |
 | Sentinel bootstrap | 紧急 bypass 机制, 文档化在 DEPLOYMENT.md §1.7 |
-| 全审计 | 所有 gate 决策写 `~/.claude/logs/3can-gate.jsonl`, 可追溯 |
+| 审计 | 已启用的 gate 和写回保留 typed receipt；未启用的 hook 不伪造执行记录 |
 
 ### 第四层: LLM 多角色 (BYOK, 每点可关, 可自由调配)
 
@@ -267,11 +268,11 @@ LLM 接入地图详见 `LLM_POLICY.md`: retrieval models / tokenizer budget / ge
 
 ### 第五层 (隐式): 工程纪律 / harness engineering
 
-3CAN 的 Route Ticket Gate + PostToolUse 强制写回 + 内容审查 Stage 2, **本质上是在做** "harness engineering" — 2026 年 Anthropic / OpenAI / Stripe / Shopify 等公开讨论的方向. 它的核心想法是: **模型本身是智能, 但让它在真实系统里稳定工作, 需要外部 harness 提供 routing / safety / writeback / audit**.
+3CAN 的可选 Harness 层只收敛**可验证的进展**：Codex 原生 Hook 可以在上下文压缩后重新注入当前目标与验收条件，在停止前检查一份与当前 Git/Worktree 绑定的本地证据收据。它不管理模型的思考，不解析 Session JSONL，也不要求每次编辑、测试或提交都访问 3CAN。
 
 **我们不把这个当身份标签**, 不标榜"harness-first" 或"next-gen platform". 只说: 如果你关心工程层面让 agent **更可控、更可审计、更少重复错误**, 3CAN 的这些机制对齐主流趋势.
 
-这一层可以**完全关掉** (不装 hooks), 3CAN 就退回单纯的记忆 + 检索服务. 要不要 harness 层, 看你项目需要.
+这一层可以**完全关掉** (不装 hooks), 3CAN 就退回单纯的记忆 + 检索服务。启用时也只应选择项目真正需要的 bounded hook；日常开发仍然是理解、编辑、测试和 Git 检查点。完整契约见 `docs/CODEX_CONVERGENCE_HOOK.md`。
 
 ---
 
@@ -401,8 +402,8 @@ agent: (内部调 POST /api/nodes 建 DEC-*)
        "已建节点 DEC-benchmark-3-layer-..., 关键词 '三层评分 substrate harness memory 门槛制'"
 
 你: "这个坑以后别再犯了, 沉淀一下"
-agent: (内部调 POST /api/nodes 建 ERR-*)
-       "已建 ERR-..., current_state 写了 '避免方式'. 以后相关操作前会 route 到它."
+agent: (OWNER_REQUESTED: 记录 occurrence、修复与验证引用)
+       "已记录本次证据；只有兼容的确定性重复错误才提升为 ErrorCase，不为每次失败新建节点。"
 ```
 
 ### 想直接操作引擎
@@ -417,13 +418,14 @@ agent: 调 /api/health/scan + /api/audit/verify, 返回孤立率 / 零激活率 
 
 ### 进阶 (当 agent 自己开始熟练 3CAN)
 
-一段时间后, **agent 会自发地**在你没明说的情况下 route / writeback:
-- 你说"改 schemas.py 加个字段", agent 先自动 route 相关 INTF 节点看现状, 改完后自动 update INTF
+一段时间后，agent 可以在需要项目历史时自发 route，但耐久 writeback 仍只有两个默认触发器：
+- 你说"改 schemas.py 加个字段"，agent 直接开发；如果接口现状不清楚则按需 route，模块验证完成后才 `AUTO_CLOSEOUT`
 - 你问一个一年前的决定, agent 先 route 再答, 不再凭 context 猜
 - 你问“上次 benchmark 使用哪个 fixture”，agent 先 route 到对应
   Session 与 ErrorCase，再基于冻结 receipt 回答
+- 你在任意时间说“把目前结论写回”，agent 走 `OWNER_REQUESTED`
 
-**这才是 3CAN 的完全态**: 你和 agent 的正常对话, 背后是结构化的图谱积累.
+**这才是 3CAN 的完全态**：开发速度接近没有 3CAN，只有真正有耐久价值的项目意义在收尾或用户要求时进入图谱。
 
 ---
 
@@ -500,14 +502,11 @@ agent: 跑 project_bootstrapper 针对性扫 handoffs 目录 → 建 DEC-* / SES
 
 ### 已有的 Claude Code hooks
 
-不冲突. 我们的 hooks (在 `examples/claude-code-hooks/`) 是**额外**的, 你可以:
-- 全加 (推荐, 拿完整 gate + writeback 闭环)
-- 部分加 (只加 cold-start, 不加 Pre/PostToolUse)
-- 不加 (3CAN 引擎照样工作, 只是失去 harness 层, agent 要靠自觉)
+不冲突。`examples/claude-code-hooks/` 和 Codex Project Kit 的 Hook 都是可选适配器。只启用能够说明明确风险、输入和退出条件的 Hook；不要为了“完整”把所有门禁叠加到开发热路径。不装 Hook 时 3CAN 引擎仍可正常提供记忆与检索。
 
 ### 已有 `.claude/rules/*.md`
 
-完全正交. 那是你给 agent 的全局规则, 3CAN 只管知识图谱的存取. 在你的 rules 里加一段"新 session 先 briefing" 就够.
+完全正交. 那是你给 agent 的全局规则, 3CAN 只管知识图谱的存取。需要自动定向时，可让当前 agent execution 首次按需调用 briefing；无需另开 3CAN Session，直接 route 和满足身份、来源门禁的 writeback 都合法。
 
 ---
 
@@ -519,7 +518,7 @@ agent: 跑 project_bootstrapper 针对性扫 handoffs 目录 → 建 DEC-* / SES
 - ✅ 多 agent 注册 + 事件日志 + hash chain 审计
 - ✅ INTF 契约节点 + DEC/SES/ERR/FEE 专类分层
 - ✅ 生命周期衰减 + 复活
-- ✅ 可选 PreToolUse Route Ticket Gate + PostToolUse writeback
+- ✅ 可选的受保护动作 ticket + `AUTO_CLOSEOUT` / `OWNER_REQUESTED` writeback
 - ✅ LLM 多角色增强地图 (BYOK; 具体 shipped / partial / planned 以 LLM_POLICY.md 为准)
 - ✅ 蓝绿热部署
 - ✅ 纯 HTTP, 任意 agent 可接 (不绑 Claude / OpenAI)
@@ -591,12 +590,9 @@ v0.2 支持多个 Agent/Session 并发连接同一个明确管理的本地实例
 
 ### Q10. 可以不用你的 hooks 吗?
 
-完全可以. hooks 只是**让 3CAN 更深地嵌入 agent 工作流**, 不装的话 3CAN 照样工作, 只是:
-- agent 不会被 gate 拦 (要靠自觉调 `/api/route`)
-- writeback 不自动, 全靠 agent 记得
-- Observer 不触发 (Ka 的纠错信号不自动沉淀为 PROPOSED 节点)
+完全可以。Hooks 是可选的收敛/硬化层，不是 3CAN 运行前提。普通开发不要求每个 Prompt、工具、测试或 Commit 调用 3CAN；有意义的模块收尾才可使用 `AUTO_CLOSEOUT`，用户明确要求时使用 `OWNER_REQUESTED`。3CAN 不可用时如实报告 `UNAVAILABLE`，不阻断安全的本地开发。
 
-hooks 是"硬化"层, 可选.
+Codex Project Kit 还提供一个不联网的原生收敛 Hook：它在压缩后恢复小型目标契约，要求每条验收条件显式绑定证据，并用当前 Git/Worktree 收据区分 `CANDIDATE_READY` 与真正的用户接受。只有所有绑定证据通过的 `CONVERGED` 才可产生 `AUTO_CLOSEOUT` 资格；启用、信任和全局推广都应由用户单独 review。
 
 ### Q11. 是否必须单独开一个 3CAN 管理 Session?
 
@@ -609,7 +605,7 @@ hooks 是"硬化"层, 可选.
 | 词 | 人话 |
 |---|---|
 | substrate | 底座. 3CAN 是 "给 agent 共享项目知识的底座", 不是做记忆的工具 |
-| harness | 运行时约束. 比如"动手前必须先查 ERR", 这是 harness. hook 是 harness 的一种实现 |
+| harness | 运行时约束. 比如“发布前必须有签名证据”，这是 harness；普通代码编辑不需要默认加门 |
 | BYOK | Bring Your Own Key, 自备 API key. 3CAN 不替你付费, 你用哪个 LLM 自己给 key |
 | INTF | interface 的缩写. 3CAN 里特指接口契约节点 (API schema / 函数签名 / DB 表结构) |
 | ERR / DEC / SES / FEE | 节点前缀. ERR=错误教训 / DEC=决策 / SES=会话 / FEE=反馈规则 |

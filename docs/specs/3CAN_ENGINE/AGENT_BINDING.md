@@ -2,19 +2,21 @@
 
 > Agent (Claude Code / Codex / Gemini CLI / Cursor / 自写 agent) 接入 3CAN 的标准规范. 与 [PROTOCOL.yaml](./PROTOCOL.yaml) + [CONTRACTS.md](./CONTRACTS.md) 配套.
 
-## 1. 最小可用接入 (3 步)
+## 1. 最小可用接入
 
 ```
-Step 1: agent 启动时 POST /api/agents/checkin
-Step 2: 每次 query 走 POST /api/route 或 GET /api/route/simple
-Step 3: 阶段成果走 POST /api/writeback 或 /api/nodes
+Step 1: 每次 query 走 POST /api/route 或 GET /api/route/simple
+Step 2: 有意义的阶段成果走 POST /api/writeback 或 /api/nodes
 ```
 
-3 步齐了, agent 就接入了。
+调用时携带唯一 AgentId；写入再携带该操作要求的项目、工作树、来源与版本
+上下文即可。无需另开 3CAN ChatGPT/Codex Session，也不要求先 check-in 或
+briefing。若写操作要求 route/ticket，仍须先完成既有门禁；省略 check-in 不会
+省略写入门禁。`agents/checkin` 只是需要 Agent heartbeat/briefing 投影时的可选能力。
 
 ## 2. 完整接入 (8 个环节)
 
-### 2.1 Agent 注册 (一次性 + 每次 session 复检)
+### 2.1 Agent 注册 (可选 heartbeat/briefing 投影)
 
 ```http
 POST /api/agents/checkin
@@ -31,7 +33,7 @@ POST /api/agents/checkin
 
 **规则**:
 - `agent_id` 全局唯一. 冲突时旧记录被覆盖 (建议不同 agent 不同 id 前缀: opus-xxx / codex-xxx / gemini-xxx)
-- 每次新 session 应重新 checkin 更新 `current_task`
+- 仅在使用 Agent heartbeat/briefing 投影时，按需 checkin 更新 `current_task`
 - `last_checkin` 由 3CAN 自动记录, 是判断 "agent 是否活跃" 的依据
 
 ### 2.2 冷启动 briefing (可选但强推荐)
@@ -46,7 +48,7 @@ GET /api/briefing
 }
 ```
 
-Agent 新 session 第一次用 3CAN 时调一次, ~400 token 拿全局, 省下自己 4-5 次 route 查。
+需要全局概览时可在当前 agent execution 中调一次；直接 route/writeback 不依赖它。
 
 ### 2.3 Route 查询 (主流量)
 

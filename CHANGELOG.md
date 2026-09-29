@@ -11,6 +11,167 @@ The implementation and migration tooling below are staged and locally tested.
 They are not yet tagged or published as a release, and this changelog does not
 claim that any private production graph has been migrated.
 
+### 2026-08-23 Codex convergence hook
+
+- Hardened the packaged RuntimeHook launch path before public dogfood: POSIX and
+  Windows now resolve a working Python 3 outside the current worktree, inactive
+  non-SessionStart events skip the Python/Git hot path, a native Windows preflight
+  also avoids a PowerShell cold start on that path, and interleaved Git or prompt
+  boundaries no longer make an unchanged completed plan look new. Public dogfood
+  evidence no longer carries a local Codex thread identifier.
+- Packaged RuntimeHook as a repository Marketplace Plugin with its Skill,
+  controller, and native intent/boundary Hooks. Git HEAD changes and completed
+  plan stages now create one coalesced semantic review debt; a new Owner prompt
+  automatically closes the prior reviewed conversation episode, while internal
+  semantic-only stages use the same generic checkpoint. Session/user context
+  recalls Intent, and Stop requests at most one continuation while review is
+  due. Installation no longer requires copying the project kit into every
+  repository. The first activation adds only the dedicated state path to the
+  repository-local Git exclude; an
+  inactive Plugin emits only the stateless SessionStart 3CAN fast path, including
+  outside Git; other semantic events remain silent. This package is offline and
+  does not require or restart the 3CAN Runtime.
+- Added Windows `py.exe -3` discovery and typed launcher failures so an installed
+  Python 3 environment cannot silently disable all RuntimeHook events.
+- Added the optional `3CAN RuntimeHook` Skill and one local control adapter.
+  Natural-language or implicit activation records one ignored semantic state:
+  Owner Intent, the Agent-selected light/medium/max review timing and reason,
+  optional episode, and semantic review result/reference. It does not create a
+  Task Hook, selector, proof lifecycle, candidate-freshness path, or project
+  evidence decision; those remain independently owned by the convergence engine
+  and Git. Final semantic `PASS` now records only the reviewed clean Git HEAD;
+  a later commit or dirty edit makes that review stale without adding artifact
+  hashing or another candidate kernel. Owner off retains the state as
+  `disabled_by_owner` and cannot bypass another gate.
+- Kept `/3CAN` as an unimplemented target shorthand because Codex exposes a
+  fixed native slash-command set. The supported explicit entry is
+  `$3can-runtimehook` (or `/skills`), with implicit Chinese/English aliases; no
+  slash parser, daemon, network call, graph dependency, or global enablement
+  was added.
+- Added one standard-library, project-local convergence helper that records a
+  small goal/acceptance contract and current Git/workspace-bound evidence
+  receipt. Native `SessionStart(compact)` restores the accepted boundary after
+  context compaction; `Stop` requests at most one bounded continuation when
+  evidence is missing or stale.
+- Added optional project-declared `PreToolUse` guards for high-cost operations.
+  No domain action is hard-coded, command checks run without a shell, and
+  captured command output is represented only by byte count and SHA-256.
+- Removed convergence from the default per-tool Hook path and narrowed the PR
+  adapter matcher. The existing strict Task Oracle remains unchanged and
+  independently runnable.
+- Added a design-only adaptive review proposal that keeps Git-frozen candidates,
+  current evidence, honest typed outcomes, and criterion-level strict proof
+  while moving any future Lite experiment outside the existing strict path.
+  Global enablement remains blocked pending adversarial equivalence and real
+  task cost evidence.
+- Added clean-clone execution of the exact installed `Stop` command for both a
+  stale-candidate block and a current `CONVERGED` allow on Linux and Windows.
+- Tightened the Lite design so stable Acceptance IDs map to criterion evidence
+  and the Final Gate re-resolves current non-Git artifacts against their frozen
+  manifest identity.
+- Kept ordinary development free of per-tool 3CAN calls. The hook makes no
+  network call, does not parse Codex transcripts, and only marks 3CAN writeback
+  eligible at `AUTO_CLOSEOUT` after every acceptance condition has passing
+  bound evidence; `CANDIDATE_READY` and Owner-requested writeback remain
+  separate.
+- Removed the broad research prompt/edit/stop gate from the default hook set.
+  Research remains an explicit skill for current, uncertain, or failure-driven
+  investigation instead of a universal development prerequisite.
+- Kept candidate readiness distinct from Owner acceptance, merge, deployment,
+  and publication. Invalid hook state fails open as typed `UNAVAILABLE`, and a
+  second Stop pass requires an honest `PARTIAL` report rather than looping.
+- Bound every acceptance condition to named final evidence, made incomplete and
+  candidate Stop outcomes request an explicit report, applied asymmetric
+  fail-open behavior at Stop, and rejected dirty submodules under the narrow
+  `current_repository_only` scope.
+- Added an installed-project smoke that executes the exact Windows or POSIX
+  `SessionStart` command from `hooks.json`, rather than proving only that the
+  referenced script file exists.
+- Added a versioned, content-addressed Task Hook layer without adding another
+  native lifecycle hook or runtime. Run bindings, current candidate identity,
+  evaluator version/kind, and external proof receipts now form one freshness
+  chain; old candidate or revision evidence cannot unlock convergence.
+- Classified hardcoding through undeclared mutable decisions and hidden
+  fallbacks rather than constant grep or domain branches. Repeatable Task Hooks
+  remain parameterized across worktrees and require reproduced receipt evidence
+  plus explicit review before promotion.
+- Added explicit proposed/superseded/retired lifecycle states and retained
+  closeout receipts. SessionStart restores an active selector at startup,
+  resume, clear, and compaction; local receipt files remain unsigned coordination
+  evidence rather than authentication.
+- Rejected large generic artifacts as unverifiable instead of trusting
+  size/mtime. Large outputs use a content-addressed manifest or project-owned
+  command provider, while external reviewer receipt changes participate in
+  current-evidence and verification-race checks.
+- Closed lifecycle laundering gaps: same-revision semantic re-pinning is
+  rejected, closeout recomputes the current candidate and proof sources, and
+  promotion references must resolve to retained self-validating receipts.
+- Added one deterministic reusable-family registry selector for later
+  worktrees. Repeatable command adapters receive only declared bindings through
+  a stable environment contract; embedded run values and undeclared fallbacks
+  remain typed failures. No prompt classifier, second runtime, or LLM hot path
+  was added.
+- Hardened the reusable path after adversarial review: native `SessionStart`
+  can materialize an exact registry selection from explicit launcher intent;
+  repeatable same-revision meaning is checked against bounded tracked Git
+  lineage even when a prior local receipt is absent; final CLI verification
+  exits nonzero until the requested stage genuinely converges.
+- Replaced current-value substring guessing with a structural command-adapter
+  boundary, bound singular external-receipt criterion IDs, added aggregate
+  native read budgets, recaptured the complete control plane before allowing a
+  converged Stop, and enabled valid closeout of later `REUSABLE_ACTIVE` runs.
+- Bound repeatable activation to the current Git `HEAD` meaning and exact
+  registry value, distinguished reviewed invariant launcher flags from mutable
+  run arguments, capped proof and generated control files, and added a terminal
+  full Stop recapture plus exact native environment-selection coverage for
+  startup, resume, clear, and compaction.
+- Bracketed every verify/status/record/Stop/closeout Candidate Provider call
+  with post-provider data-plane fingerprints and a closing control-plane read,
+  made oversized generated receipts atomically replace prior success with typed
+  `UNAVAILABLE`, and kept 128-family native selection bounded by validating only
+  the explicitly selected family. Complete registry
+  validation remains an explicit offline command.
+
+### 2026-08-23 ErrorKnowledge consolidation candidate
+
+- Changed legacy rollback from whole-snapshot overwrite to a receipt-bound
+  three-way delta replay. Post-apply node and edge additions, updates, and
+  deletions survive rollback; stale or ambiguous baselines fail closed.
+- Added a reviewed real-query ErrorKnowledge runner with fixed recall,
+  pollution, ordinary-route false-positive, and latency gates. Internal query
+  text stays outside the release and results remain typed.
+- Added deterministic ErrorFamily candidate, decision, activation, and
+  rollback manifests. The sidecar never merges ErrorCase nodes, inherits
+  solutions, or accepts semantic similarity as identity.
+- Limited exact alias promotion to explicit operational-error queries and
+  unique reviewer-supplied aliases. Proposed aliases remain sparse evidence;
+  ambiguous aliases receive no promotion.
+- Kept ErrorFamily aliases out of dense embedding source text, so a governance
+  revision does not force a whole-graph embedding rebuild.
+- Made ErrorFamily activation and rollback replay-safe across process loss
+  between the atomic sidecar swap and completed receipt publication.
+- Clarified the default development contract: ordinary Git/code/test work has
+  zero forced 3CAN calls; durable writeback defaults to `AUTO_CLOSEOUT` or
+  explicit `OWNER_REQUESTED`. Typed 3CAN convergence states do not block safe
+  local development.
+- Recorded a production-derived isolated candidate with recall and isolation
+  gates passing. It remains `VALIDATING`, is not live-deployed, and still
+  requires a comparable HTTP latency run and maintainer review.
+
+### 2026-09-03 project-reality frontend overview
+
+- Replaced the legacy hard-coded dashboard with a live, privacy-bounded project
+  overview backed by the existing graph and stats APIs. The overview separates
+  Git, execution receipts, and 3CAN project meaning, and limits attention items
+  instead of expanding the complete error or secret registries.
+- Distinguished production, development, deep-recheck-required, and unavailable
+  states without treating liveness as readiness. The graph remains an on-demand
+  view, and the route panel now accepts the current `3can.route-response/v1`
+  `nodes` field while retaining compatibility with the older field name.
+- Removed the broken WebSocket reconnect loop and added fixed-interval polling,
+  responsive layouts, accessible controls, escaped graph content, and a usable
+  overview fallback when the optional 3D dependency is unavailable.
+
 ### 2026-08-20 portable public-release packaging
 
 - Reworked the repository landing page into a Chinese-first OPC guide while

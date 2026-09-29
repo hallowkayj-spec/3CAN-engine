@@ -302,26 +302,13 @@ def _hook_json(data: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     if str(data.get("hook_event_name") or "") != "PreToolUse":
         return 0, {"continue": True}
 
-    tool_name = str(data.get("tool_name") or "")
     tool_input = data.get("tool_input") or {}
     if isinstance(tool_input, dict):
         command = str(tool_input.get("command") or tool_input)
     else:
         command = str(tool_input)
 
-    connector_pr = tool_name.endswith("_create_pull_request") or "_create_pull_request" in tool_name
     gh_pr_create = bool(re.search(r"\bgh\s+pr\s+create\b", command))
-    git_push = bool(re.search(r"\bgit\s+push\b", command))
-
-    if connector_pr:
-        return 2, {
-            "decision": "block",
-            "reason": (
-                "3CAN PR harness: GitHub connector PR creation has repeatedly returned 404 for this private repo. "
-                "Use local git push plus scripts/3can_pr_harness.py create-pr with approval-id. "
-                f"Related ERR node: {ERROR_NODE_ID}."
-            ),
-        }
 
     if gh_pr_create and shutil.which("gh") is None:
         return 2, {
@@ -330,15 +317,6 @@ def _hook_json(data: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                 "3CAN PR harness: gh CLI is not installed. Use scripts/3can_pr_harness.py create-pr, "
                 "which uses GITHUB_TOKEN/GH_TOKEN or git credential-manager in memory."
             ),
-        }
-
-    if git_push:
-        return 0, {
-            "systemMessage": (
-                "3CAN PR harness: after push, create the PR locally with "
-                "scripts/3can_pr_harness.py create-pr --approval-id <approval> --title \"...\" --body-file <file>. "
-                "Do not fall back to only giving a manual link unless local REST creation fails."
-            )
         }
 
     return 0, {"continue": True}

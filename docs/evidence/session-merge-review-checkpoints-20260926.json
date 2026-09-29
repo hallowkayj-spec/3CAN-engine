@@ -1,0 +1,26 @@
+{
+  "schema": "3can.checkpoints/v1",
+  "final_checkpoint": "delivery",
+  "checkpoints": [
+    {
+      "id": "review",
+      "title": "累计变更审查、反例验证与实际重载",
+      "criteria": ["REVIEW", "LIVE"],
+      "parameters": ["source_head", "findings", "tests"],
+      "rubric": ["无真实检查依据或存在未处理阻断", "部分证据仍不足", "已审边界与验证证据一致，未验证部分明确保留"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    },
+    {
+      "id": "delivery",
+      "title": "远端合并、当前CI与交付范围核对",
+      "criteria": ["REVIEW", "SHIP", "LIVE"],
+      "parameters": ["merged_head", "ci", "runtime_changed"],
+      "rubric": ["声明与远端或本机实际状态冲突", "交付存在未完成项", "合并和验证范围准确，未冒称全部业务已验收"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    }
+  ]
+}

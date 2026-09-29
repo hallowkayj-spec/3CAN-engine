@@ -1,0 +1,9 @@
+{
+  "schema":"3can.checkpoints/v1",
+  "final_checkpoint":"delivery",
+  "checkpoints":[
+    {"id":"architecture","title":"全局入口与每会话状态归属：核对本机版本原生契约","criteria":["G01","G02"],"parameters":["native_child_identity_verified","new_services","implementation_complete"],"rubric":["没有根因或原生契约依据","设计部分适用但隔离与初始化边界不清","当前设计有版本匹配源码与反例依据，状态隔离和必经初始化明确，未冒充实现完成"],"minimum_score":1.5,"minimum_confidence":0.65,"minimum_probability":0.7},
+    {"id":"implementation","title":"会话隔离、自动登记、非Git与迁移反例验证","criteria":["G01","G02","G03"],"parameters":["tests_passed","tests_failed","native_event_verified"],"rubric":["核心契约失败或串任务状态","部分实现通过但仍有未解释失败","本地验收与关键反例通过，源码和模拟Hook与实际宿主验证有明确边界"],"minimum_score":1.5,"minimum_confidence":0.65,"minimum_probability":0.7},
+    {"id":"delivery","title":"正式插件安装、真实入口与回写核验","criteria":["G01","G02","G03"],"parameters":["tests_passed","installed_files_verified","native_event_verified","peer_state_preserved"],"rubric":["未验证却声称全局完成","包或宿主验证仍有缺口并如实报告","已安装精确候选且当前原生入口及隔离有实证，未验证宿主类型明确，旧记录及独立门禁保留"],"minimum_score":1.5,"minimum_confidence":0.65,"minimum_probability":0.7}
+  ]
+}
