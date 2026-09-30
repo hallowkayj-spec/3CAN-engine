@@ -1742,6 +1742,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.root is None:
         args.root = _native_worktree(str(Path.cwd())) or Path.cwd()
     try:
+        args.root = _repository_root(args.root)
         scope = None
         _scope_path(args.session_id)  # All task state operations require a native identity.
         if args.command != "bind-scope" and args.session_id and _scope_path(args.session_id).exists():

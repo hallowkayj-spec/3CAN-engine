@@ -1,6 +1,8 @@
 """Automatic semantic writeback: real client identity + bounded transport fixtures."""
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,6 +145,62 @@ def test_review_cli_automatically_delivers_without_writeback_command(lane, monke
     assert code == 0 and result["result"] == "PARTIAL"
     assert result["writeback"]["status"] == "WRITTEN_AND_READBACK_VERIFIED"
     assert list((controller._session_dir(_session_id(lane.root))).glob("runtimehook_delta_*.json"))
+
+
+@pytest.mark.parametrize("root_arg", ["absolute", ".", "child/.."])
+def test_connect_cli_resolves_root_before_loading_own_state(lane, monkeypatch, capsys, root_arg):
+    controller = hook_tests.controller
+    _activate(lane.root)
+    (lane.root / "child").mkdir()
+    monkeypatch.chdir(lane.root)
+    monkeypatch.setattr(wb, "config", lambda: lane.settings)
+    root_arg = str(lane.root) if root_arg == "absolute" else root_arg
+    base = ["--root", root_arg, "--native-cwd", str(lane.root),
+            "--session-id", _session_id(lane.root)]
+    assert controller.main(base + ["status"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "active"
+    code = controller.main(base + ["connect", "--agent-id", "fixture-agent",
+        "--workorder-id", "fixture-workorder", "--node-id", "DOC-fixture",
+        "--reference", "test:observed-physical-workspace"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    assert result["status"] == "CONNECTED_LOCALLY"
+    assert result["writeback"]["status"] == "WRITTEN_AND_READBACK_VERIFIED"
+    assert result["knowledge"]["workspace_id"] == lane.binding["workspace_id"]
+    assert result["native_scope"]["worktree"] == str(lane.root)
+    # Exercise the shared mutating-command precheck in a real isolated CLI process.
+    completed = subprocess.run([sys.executable, str(hook_tests.shared.PLUGIN_CLI), *base,
+        "error", "--id", "fixture-relative-root", "--state", "observed",
+        "--summary", "Fixture only", "--reference", "test:isolated-cli"],
+        cwd=lane.root, capture_output=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout.decode("utf-8")
+    assert json.loads(completed.stdout.decode("utf-8"))["status"] == "ERROR_OBSERVATION"
+
+
+def test_connect_cli_foreign_root_still_refuses_before_any_write(lane, monkeypatch, capsys, tmp_path):
+    controller = hook_tests.controller
+    _activate(lane.root)
+    sid = _session_id(lane.root)
+    state_path = controller._session_dir(sid) / "state.json"
+    before = state_path.read_bytes()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    monkeypatch.setattr(wb, "config", lambda: lane.settings)
+    code = controller.main(["--root", str(foreign), "--native-cwd", str(lane.root),
+        "--session-id", sid, "connect", "--agent-id", "fixture-agent",
+        "--workorder-id", "fixture-workorder", "--node-id", "DOC-fixture",
+        "--reference", "test:foreign-workspace-counterexample"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 2 and "CONTEXT_MISMATCH" in result["error"]
+    assert not lane.calls and state_path.read_bytes() == before
+    completed = subprocess.run([sys.executable, str(hook_tests.shared.PLUGIN_CLI),
+        "--root", str(foreign), "--native-cwd", str(lane.root), "--session-id", sid,
+        "error", "--id", "fixture-foreign-root", "--state", "observed",
+        "--summary", "Fixture only", "--reference", "test:isolated-cli"],
+        capture_output=True, timeout=30)
+    assert completed.returncode == 2
+    assert "CONTEXT_MISMATCH" in json.loads(completed.stdout.decode("utf-8"))["error"]
+    assert state_path.read_bytes() == before
 
 
 def test_native_hooks_never_deliver(lane, monkeypatch, capsys):
