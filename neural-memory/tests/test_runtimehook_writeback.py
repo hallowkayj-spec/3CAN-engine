@@ -110,6 +110,53 @@ def test_scope_change_and_secrets_do_not_upload(lane):
     assert not lane.calls
 
 
+@pytest.mark.parametrize("field", ["summary", "reference", "next_objective", "error_id"])
+@pytest.mark.parametrize("text", [
+    "output/disk-recovery-evidence-v2.json",
+    "runtime-task-temporary-credential-cleanup",
+])
+def test_identifier_suffix_is_not_a_secret_token(lane, field, text):
+    if field == "error_id":
+        lane.event.update(event="error", error={"id": text, "state": "observed"})
+    else:
+        lane.event[field] = text
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == "WRITTEN_AND_READBACK_VERIFIED"
+    assert lane.node["content"]["notes"].startswith("existing evidence")
+    actual = result["packet"]["error"]["id"] if field == "error_id" else result["packet"][field]
+    assert actual == text
+
+
+@pytest.mark.parametrize("prefix", [
+    "", " ", "'", '"', "/", "\\", ":", "_", "中文", "\n",
+    pytest.param("\u0130", id="unicode-I-dot"),
+    pytest.param("\u0131", id="unicode-dotless-I"),
+    pytest.param("\u017f", id="unicode-long-s"),
+    pytest.param("\u212a", id="unicode-kelvin"),
+])
+@pytest.mark.parametrize("kind", ["sk", "uppercase_sk", "vck", "private_key"])
+def test_secret_tokens_at_boundaries_never_reach_transport(lane, prefix, kind):
+    if kind == "private_key":
+        token = "-----BEGIN PRIVATE KEY-----"
+    else:
+        token = {"sk": "sk-", "uppercase_sk": "SK-", "vck": "vck_"}[kind] + "x" * 12
+    lane.event["summary"] = prefix + token
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["error_code"] == "WRITEBACK_SECRET_REJECTED"
+    assert not lane.calls
+
+
+@pytest.mark.parametrize("field", ["reference", "next_objective", "error_id"])
+def test_secret_guard_still_covers_other_packet_fields(lane, field):
+    text = "sk-" + "x" * 12
+    if field == "error_id":
+        lane.event.update(event="error", error={"id": text, "state": "observed"})
+    else:
+        lane.event[field] = text
+    assert wb.deliver(lane.settings, lane.root, lane.binding, lane.event)["error_code"] == "WRITEBACK_SECRET_REJECTED"
+    assert not lane.calls
+
+
 @pytest.mark.parametrize("failure", ["conflict", "zero_effect", "readback", "offline"])
 def test_failed_write_is_typed_kept_for_retry_and_not_a_local_gate(lane, monkeypatch, failure):
     def request(base, path, **kwargs):

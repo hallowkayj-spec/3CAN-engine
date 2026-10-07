@@ -71,7 +71,8 @@ def _safe_text(client, text, limit):
         raise WritebackError("WRITEBACK_TEXT_INVALID")
     # Reuse the client sanitizer; omit credentials and private home paths.
     text = client._redact_sensitive_text(text)
-    if re.search(r"(?i)(?:sk-[A-Za-z0-9_-]{12,}|vck_[A-Za-z0-9_-]{12,}|-----BEGIN .*PRIVATE KEY)", text):
+    # Keep Chinese-adjacent keys detectable; exclude ASCII word suffixes.
+    if re.search(r"(?i)(?:(?<!(?-i:[A-Za-z0-9]))sk-[A-Za-z0-9_-]{12,}|vck_[A-Za-z0-9_-]{12,}|-----BEGIN .*PRIVATE KEY)", text):
         raise WritebackError("WRITEBACK_SECRET_REJECTED")
     return text
 
