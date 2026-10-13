@@ -81,6 +81,8 @@ error --id <同一ID> --state resolution_claimed --summary "修复、验证结�
 预算在请求前耗尽时，两项时间均为 0，表示该请求未执行。旧错误码不变；未知传输原因仍为 transport。
 urllib socket 超时及 OS/DNS 调度不是严格进程墙钟 SLA；扩大深检单次预算不代表故障已恢复或历史事件已重放。
 节点 notes 超过 256 KiB 时要求治理归纳，绝不截断旧证据。
+维护使用[同项目 notes 维护](notes-maintenance.md)的显式 prepare/review/ticket/apply；
+完整原历史保存在可精确 GET 的 archived 节点，新客户端据完整 packet 去重，旧客户端冲突不会重复追加。
 
 本地交付与回写分别报告；`UNAVAILABLE/CONFLICT` 不阻塞安全开发，治理票据门禁保持原样。
 回滚移除本机 writeback 配置并恢复已保存插件版本，保留回执和远端历史。无需重启 9700/9711。

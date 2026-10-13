@@ -967,6 +967,96 @@ def _auto_writeback(args, output):
     return receipt
 
 
+def notes_compaction(args: argparse.Namespace) -> dict[str, Any]:
+    """Explicit maintenance, never an automatic capacity fallback."""
+    adapter = writeback_adapter.notes_adapter
+    root = _repository_root(args.root)
+    state = _load_state(root, args.session_id)
+    if not state or state["status"] != "active" or not state.get("knowledge"):
+        raise RuntimeHookError("KNOWLEDGE_BINDING_REQUIRED：维护使用当前任务自己的connect绑定")
+    target, observed = _check_scope({"cwd": str(args.native_cwd), "session_id": args.session_id})
+    if target != root or observed.get("activation_id") != state["activation_id"] or state["knowledge"].get("session_id") != args.session_id:
+        raise RuntimeHookError("CONTEXT_MISMATCH：不代其他任务维护")
+    binding = state["knowledge"]
+    settings = writeback_adapter.config()
+    if not settings:
+        raise RuntimeHookError("WRITEBACK_CONFIG_REQUIRED")
+    client = writeback_adapter._client(settings, root)
+    identity = writeback_adapter.context(client, root)
+    if any(binding.get(k) != v for k, v in identity.items()):
+        raise RuntimeHookError("PROJECT_WORKSPACE_CHANGED")
+    url = writeback_adapter.urlparse(settings["base_url"])
+    if url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"} or url.username or url.password or url.query or url.fragment or url.path:
+        raise RuntimeHookError("LOCAL_3CAN_URL_REQUIRED")
+    selector = checkpoints.read_json(Path(settings["selector_path"]))
+    engine, graph = Path(selector["engine_root"]), Path(selector["graph_root"])
+    if client._project_identity_gate(settings["base_url"], {"selected": str(engine)}, require_configured=True)["status"] != "pass":
+        raise RuntimeHookError("PROJECT_IDENTITY_MISMATCH")
+    deadline = time.monotonic() + 90
+    receipt_path = _session_dir(args.session_id) / ("notes-maintenance-" + str(time.time_ns()) + ".json")
+    receipt = {"status": "UNAVAILABLE", "binding": binding, "apply": args.apply, "requests": []}
+    verified_runtime = False
+    def request(path, *, payload=None, method="GET", timeout=8):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise adapter.NotesError("NOTES_MAINTENANCE_DEADLINE")
+        attempt = {"method": method, "path": path, "ok": None}
+        receipt["requests"].append(attempt)
+        checkpoints.save(receipt_path, receipt)
+        ok, result = client._try_json_request(settings["base_url"], path, payload=payload, method=method, timeout=min(timeout, remaining))
+        attempt["ok"] = bool(ok)
+        if not ok:
+            status_code = result.get("http_status") if isinstance(result, dict) else None
+            if status_code == 404 and method == "GET" and path.startswith("/api/nodes/SES-RHARCH-"):
+                return None
+            raise adapter.NotesError("CONFLICT" if status_code == 409 else f"HTTP_{status_code}" if status_code else "NOTES_MAINTENANCE_REQUEST_UNAVAILABLE")
+        return result
+    try:
+        stats = request("/api/stats", timeout=4)
+        valid, warning = client._validate_stats(stats, min_nodes=0, expected_engine_root=engine, expected_graph_root=graph)
+        if not valid and warning and warning.get("kind") == "production_not_ready":
+            stats = request("/api/stats?deep=true", timeout=30)
+            valid, _ = client._validate_stats(stats, min_nodes=0, expected_engine_root=engine, expected_graph_root=graph)
+        if not valid:
+            raise RuntimeHookError("RUNTIME_IDENTITY_OR_READINESS_UNVERIFIED")
+        verified_runtime = True
+        plan_path = args.plan.resolve()
+        if not plan_path.is_relative_to(root):
+            raise RuntimeHookError("NOTES_PLAN_OUTSIDE_WORKSPACE")
+        if args.apply:
+            if not args.ticket_id:
+                raise RuntimeHookError("NOTES_TICKET_REQUIRED")
+            plan = checkpoints.read_json(plan_path, 2 * 1024 * 1024)
+            receipt.update(adapter.apply(plan, binding, plan_path, args.ticket_id, request))
+        else:
+            if not args.summary_file or not args.summary_file.resolve().is_relative_to(root) or not args.summary_file.is_file() or args.summary_file.stat().st_size > 8000:
+                raise RuntimeHookError("NOTES_SUMMARY_FILE_REQUIRED")
+            if plan_path.exists():
+                raise RuntimeHookError("NOTES_PLAN_EXISTS：保留既有计划，刷新时使用新的精确文件")
+            summary = writeback_adapter._safe_text(client, args.summary_file.read_text(encoding="utf-8"), 2000)
+            node = request("/api/nodes/" + writeback_adapter.quote(binding["node_id"], safe=""))
+            plan = adapter.prepare(node, binding, summary)
+            text = json.dumps(plan, ensure_ascii=False, indent=2)
+            if len(text.encode("utf-8")) > 2 * 1024 * 1024:
+                raise RuntimeHookError("NOTES_PLAN_TOO_LARGE")
+            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            with plan_path.open("x", encoding="utf-8") as stream:
+                stream.write(text)
+            receipt.update(status="PREPARED_READ_ONLY", plan_sha256=plan["plan_sha256"],
+                archive_id=plan["archive"]["id"], before_bytes=plan["before_bytes"], after_bytes=plan["after_bytes"],
+                expected_updated_at=node["updated_at"], plan_path=str(plan_path))
+        return {"ok": True, **{k: v for k, v in receipt.items() if k not in {"binding", "requests", "apply"}}, "receipt_path": str(receipt_path)}
+    except (RuntimeHookError, adapter.NotesError, KeyError, TypeError, ValueError, OSError) as exc:
+        code = str(exc) if isinstance(exc, (RuntimeHookError, adapter.NotesError)) else "NOTES_MAINTENANCE_CONTEXT_UNAVAILABLE"
+        receipt.update(status="CONFLICT" if code == "CONFLICT" else "UNAVAILABLE", error_code=code)
+        if verified_runtime and (code.startswith(("HTTP_", "ARCHIVE_")) or code in {"CONFLICT", "NOTES_MAINTENANCE_REQUEST_UNAVAILABLE", "NOTES_APPLIED_READBACK_MISMATCH"}):
+            receipt["issue_intake"] = writeback_adapter.issue_observed(client, settings["base_url"], binding, code,
+                operation="runtimehook_notes_compaction", evidence_ref=receipt.get("plan_sha256"))
+        raise
+    finally:
+        checkpoints.save(receipt_path, receipt)
+
+
 def _review_checkpoint(args, root, state, reference):
     """The existing review path owns mandatory invocation, never a second Hook."""
     if not checkpoints.required():
@@ -1715,6 +1805,11 @@ def build_parser() -> argparse.ArgumentParser:
     checkpoint.add_argument("--packet", type=Path, help="实际参数、声明和脱敏证据片段。")
 
     sub.add_parser("status", help="查看当前本地 RuntimeHook 状态。")
+    compact = sub.add_parser("notes-compact", help="显式同项目知识维护；默认只生成计划，Apply须精确新票据。")
+    compact.add_argument("--plan", type=Path, required=True)
+    compact.add_argument("--summary-file", type=Path)
+    compact.add_argument("--apply", action="store_true")
+    compact.add_argument("--ticket-id", default="")
     judge = sub.add_parser("assess", help="可选 Jev 片段复核；不改语义状态，不是 Stop 门禁。")
     judge.add_argument("--packet", type=Path)
     judge.add_argument("--mode", choices=["off", "observe", "advisory"], default="observe")
@@ -1788,6 +1883,8 @@ def main(argv: list[str] | None = None) -> int:
             output = record_checkpoint(args)
         elif args.command == "status":
             output = status(args)
+        elif args.command == "notes-compact":
+            output = notes_compaction(args)
         elif args.command == "assess":
             output = assess(args)
         else:
@@ -1800,7 +1897,7 @@ def main(argv: list[str] | None = None) -> int:
             except (ValueError, OSError, subprocess.SubprocessError):
                 output["writeback"] = {"status": "UNAVAILABLE", "error_code": "WRITEBACK_CONTEXT_UNAVAILABLE", "local_work_blocked": False}
         exit_code = 0 if output.get("ok", True) else 2
-    except (RuntimeHookError, writeback_adapter.WritebackError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeHookError, writeback_adapter.WritebackError, writeback_adapter.notes_adapter.NotesError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         output = {"ok": False, "status": "UNAVAILABLE", "error": str(exc)}
         exit_code = 2
     print(json.dumps(output, ensure_ascii=False, indent=2))

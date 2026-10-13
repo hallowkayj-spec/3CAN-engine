@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 import runtimehook_checkpoints as cp
+import runtimehook_notes as notes_adapter
 
 
 class WritebackError(ValueError):
@@ -75,6 +76,19 @@ def _safe_text(client, text, limit):
     if re.search(r"(?i)(?:(?<!(?-i:[A-Za-z0-9]))sk-[A-Za-z0-9_-]{12,}|vck_[A-Za-z0-9_-]{12,}|-----BEGIN .*PRIVATE KEY)", text):
         raise WritebackError("WRITEBACK_SECRET_REJECTED")
     return text
+
+
+def issue_observed(client, base, binding, code, *, operation, evidence_ref=None):
+    """One sanitized observation; a reporting failure never recurses."""
+    try:
+        ok, result = client._try_json_request(base, "/api/activity/log", method="POST", timeout=1, payload={
+            "agent_id": binding["agent_id"], "action": "3can_issue_observed", "detail": code,
+            "affected_nodes": ["DOC-3can-issue-intake-v1"],
+            "meta": {**binding, "category": "writeback", "severity": "warning", "error_code": code,
+                     "evidence_ref": evidence_ref, "operation": operation}})
+        return "RECORDED" if ok and isinstance(result, dict) and result.get("self_hash") else "UNAVAILABLE"
+    except (KeyError, TypeError, ValueError, OSError):
+        return "UNAVAILABLE"
 
 
 def deliver(settings, root, binding, event):
@@ -162,10 +176,14 @@ def deliver(settings, root, binding, event):
         extra = (node.get("content") or {}).get("extra") or {}
         if any(extra.get(k) != identity[k] for k in ("project_id", "project_namespace")):
             raise WritebackError("NODE_PROJECT_BINDING_UNVERIFIED")
+        if extra.get("runtimehook_archive"):
+            raise WritebackError("WRITEBACK_ARCHIVE_IMMUTABLE")
+        notes_adapter.references(node)
         notes = node.get("content", {}).get("notes") or ""
         if marker in notes:
             if entry.strip() not in notes:
-                raise WritebackError("DELTA_MARKER_CONFLICT")
+                if not notes_adapter.archived_entry(request, node, marker, entry):
+                    raise WritebackError("DELTA_MARKER_CONFLICT")
             receipt["status"] = "ALREADY_RECORDED"
             return receipt
         if len((notes + entry).encode("utf-8")) > 256 * 1024:
@@ -189,16 +207,11 @@ def deliver(settings, root, binding, event):
         receipt.update(status="WRITTEN_AND_READBACK_VERIFIED", updated_at=readback.get("updated_at"))
     except (KeyError, TypeError, ValueError, OSError) as exc:
         # Do not echo provider bodies, local paths or arbitrary exception text.
-        code = str(exc) if isinstance(exc, WritebackError) else "WRITEBACK_CONTEXT_UNAVAILABLE"
+        code = str(exc) if isinstance(exc, (WritebackError, notes_adapter.NotesError)) else "WRITEBACK_CONTEXT_UNAVAILABLE"
         receipt.update(status="CONFLICT" if code == "CONFLICT" else "UNAVAILABLE", error_code=code)
-        if verified_runtime and code.startswith(("HTTP_", "CONFLICT", "WRITEBACK_")):
-            # One sanitized observation; its own failure never recurses.
-            ok, result = client._try_json_request(base, "/api/activity/log", method="POST", timeout=1, payload={
-                "agent_id": binding["agent_id"], "action": "3can_issue_observed", "detail": code,
-                "affected_nodes": ["DOC-3can-issue-intake-v1"],
-                "meta": {**binding, "category": "writeback", "severity": "warning", "error_code": code,
-                         "evidence_ref": receipt.get("event_id"), "operation": "runtimehook_auto_writeback"}})
-            receipt["issue_intake"] = "RECORDED" if ok and isinstance(result, dict) and result.get("self_hash") else "UNAVAILABLE"
+        if verified_runtime and (code.startswith(("HTTP_", "CONFLICT", "WRITEBACK_", "ARCHIVE_")) or code == "KNOWLEDGE_NODE_COMPACTION_REQUIRED"):
+            receipt["issue_intake"] = issue_observed(client, base, binding, code,
+                operation="runtimehook_auto_writeback", evidence_ref=receipt.get("event_id"))
     finally:
         receipt["elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
     return receipt

@@ -17,7 +17,7 @@ POLICY_SCHEMA = "3can.runtimehook-policy/v1"
 MAX_BYTES = 64 * 1024
 
 
-def read_json(path, limit=MAX_BYTES):
+def read_bytes(path, limit=MAX_BYTES):
     path = Path(path)
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or path.is_symlink()
@@ -27,6 +27,11 @@ def read_json(path, limit=MAX_BYTES):
         raw = handle.read(limit + 1)
     if len(raw) > limit:
         raise jev.JevError("CHECKPOINT_TOO_LARGE")
+    return raw
+
+
+def read_json(path, limit=MAX_BYTES):
+    raw = read_bytes(path, limit)
     try:
         return json.loads(raw.decode("utf-8-sig"))
     except (ValueError, UnicodeError):
