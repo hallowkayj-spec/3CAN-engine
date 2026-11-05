@@ -83,6 +83,73 @@ def test_onboarding_registers_actual_agent_not_new_graph_node(lane):
     assert not any(path == "/api/nodes" for path, _ in lane.calls)
 
 
+@pytest.mark.parametrize("shape", ["flat", "nested", "both"])
+def test_node_project_formats_preserve_metadata_and_execution_workspace(lane, shape):
+    project = {"project_id": "fixture", "project_namespace": "fixture"}
+    extra = dict(project) if shape != "nested" else {}
+    if shape != "flat":
+        extra["project_identity"] = {**project, "workspace_id": "previous-writer-workspace"}
+    lane.node["content"]["extra"] = copy.deepcopy(extra)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == "WRITTEN_AND_READBACK_VERIFIED"
+    assert result["packet"]["workspace_id"] == lane.binding["workspace_id"]
+    assert lane.node["content"]["extra"] == extra
+    assert lane.node["content"]["notes"].startswith("existing evidence")
+    assert wb.deliver(lane.settings, lane.root, lane.binding, lane.event)["status"] == "ALREADY_RECORDED"
+    assert [path for path, _ in lane.calls].count("/api/writeback") == 1
+
+
+@pytest.mark.parametrize("extra", [
+    {},
+    {"project_id": "fixture"},
+    {"project_identity": {}},
+    {"project_identity": {"project_id": "fixture"}},
+    {"project_id": "fixture", "project_identity": {"project_namespace": "fixture"}},
+    {"project_identity": {"project_id": "foreign", "project_namespace": "fixture"}},
+    {"project_identity": {"project_id": "fixture", "project_namespace": "foreign"}},
+    {"project_id": "fixture", "project_namespace": "fixture", "project_identity": None},
+    {"project_id": "fixture", "project_namespace": "fixture", "project_identity": []},
+    {"project_id": "fixture", "project_namespace": "fixture", "project_identity": "fixture"},
+    {"project_id": "fixture", "project_namespace": "fixture", "project_identity": {"project_id": "fixture"}},
+    {"project_id": "fixture", "project_namespace": "fixture", "project_identity": {"project_id": "foreign", "project_namespace": "fixture"}},
+    {"project_id": "foreign", "project_namespace": "fixture", "project_identity": {"project_id": "fixture", "project_namespace": "fixture"}},
+    {"project_identity": {"project_id": "", "project_namespace": "fixture"}},
+    {"project_identity": {"project_id": 1, "project_namespace": "fixture"}},
+])
+def test_node_project_ambiguity_never_checks_in_or_writes(lane, extra):
+    lane.event["event"] = "onboarding"
+    lane.node["content"]["extra"] = extra
+    before = copy.deepcopy(lane.node)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["error_code"] == "NODE_PROJECT_BINDING_UNVERIFIED"
+    assert lane.node == before
+    assert not any(payload for _, payload in lane.calls)
+
+
+@pytest.mark.parametrize("phase", ["initial", "readback"])
+@pytest.mark.parametrize("tamper", ["node_id", "project"])
+def test_exact_node_binding_is_required_before_and_after_write(lane, monkeypatch, phase, tamper):
+    reads = 0
+
+    def request(base, path, **kwargs):
+        nonlocal reads
+        ok, data = lane.request(base, path, **kwargs)
+        if path.startswith("/api/nodes/"):
+            reads += 1
+            if reads == (1 if phase == "initial" else 2):
+                if tamper == "node_id":
+                    data["id"] = "DOC-foreign"
+                else:
+                    data["content"]["extra"]["project_id"] = "foreign"
+        return ok, data
+
+    monkeypatch.setattr(lane.client, "_try_json_request", request)
+    result = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
+    assert result["status"] == "UNAVAILABLE"
+    assert result["error_code"] == ("NOTES_NODE_MISMATCH" if tamper == "node_id" else "NODE_PROJECT_BINDING_UNVERIFIED")
+    assert [path for path, _ in lane.calls].count("/api/writeback") == (phase == "readback")
+
+
 @pytest.mark.parametrize("state", ["observed", "investigating", "mitigated", "resolution_claimed"])
 def test_error_progress_keeps_case_reference_without_fake_resolution(lane, state):
     lane.event.update(event="error", error={"id": "ERR-existing-case", "state": state})
@@ -277,10 +344,12 @@ def test_connect_configuration_failure_is_typed(lane, monkeypatch, capsys):
     assert not lane.calls
 
 
-def test_real_graph_persistence_and_canonical_writeback(lane, graph_runtime, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("nested", [False, True])
+def test_real_graph_persistence_and_canonical_writeback(lane, graph_runtime, monkeypatch, nested):  # noqa: F811
     module, engine, graph_dir = graph_runtime
+    project = {"project_id": "fixture", "project_namespace": "fixture"}
     engine.create_node(module.NodeCreate(id="DOC-fixture", name="Fixture module", cluster="fixture",
-        content=module.NodeContent(notes="previous evidence", extra={"project_id": "fixture", "project_namespace": "fixture"})))
+        content=module.NodeContent(notes="previous evidence", extra={"project_identity": project} if nested else project)))
     def request(base, path, *, payload=None, **kwargs):
         if path == "/api/nodes/DOC-fixture":
             return True, engine.nodes["DOC-fixture"].model_dump(mode="json")

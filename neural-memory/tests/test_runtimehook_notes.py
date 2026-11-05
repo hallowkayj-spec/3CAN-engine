@@ -23,8 +23,10 @@ isolated_scope_cache = writeback_tests.isolated_scope_cache
 graph_runtime = graph_tests.graph_runtime
 
 
-@pytest.fixture
-def archived_lane(lane, monkeypatch):
+@pytest.fixture(params=["flat", "nested"])
+def archived_lane(lane, monkeypatch, request):
+    if request.param == "nested":
+        lane.node["content"]["extra"] = {"project_identity": lane.node["content"]["extra"]}
     first = wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
     snapshot = copy.deepcopy(lane.node)
     marker = first["event_id"]
@@ -82,7 +84,7 @@ def test_old_delta_reads_original_archive_without_append(archived_lane):
 
 
 @pytest.mark.parametrize(
-    "tamper", ["notes", "snapshot", "project", "source", "status", "reference"]
+    "tamper", ["notes", "snapshot", "project", "project_nested", "source", "status", "reference"]
 )
 def test_archived_marker_never_accepts_tampered_or_foreign_history(
     archived_lane, tamper
@@ -96,6 +98,10 @@ def test_archived_marker_never_accepts_tampered_or_foreign_history(
         )
     elif tamper == "project":
         archive["content"]["extra"]["project_namespace"] = "foreign"
+    elif tamper == "project_nested":
+        archive["content"]["extra"]["project_identity"] = {
+            "project_id": "foreign", "project_namespace": "fixture"
+        }
     elif tamper == "source":
         archive["content"]["extra"]["runtimehook_archive"]["source_node_id"] = (
             "DOC-other"
@@ -120,9 +126,11 @@ def test_new_delta_appends_to_active_notes_without_scanning_archives(archived_la
     assert lane.node["content"]["extra"]["runtimehook_notes_archives"]["archives"]
 
 
-@pytest.fixture
-def maintenance(lane, tmp_path):
+@pytest.fixture(params=["flat", "nested"])
+def maintenance(lane, tmp_path, request):
     notes = importlib.import_module("runtimehook_notes")
+    if request.param == "nested":
+        lane.node["content"]["extra"] = {"project_identity": lane.node["content"]["extra"]}
     wb.deliver(lane.settings, lane.root, lane.binding, lane.event)
     original = copy.deepcopy(lane.node)
     plan = notes.prepare(
@@ -225,7 +233,9 @@ def test_same_scope_apply_archives_before_cas_and_preserves_metadata(maintenance
     result = notes.apply(plan, lane.binding, path, "rt-maintenance", request)
     assert result["status"] == "COMPACTED_AND_READBACK_VERIFIED"
     active = nodes[original["id"]]
-    assert active["content"]["extra"]["project_id"] == "fixture"
+    assert {
+        k: v for k, v in active["content"]["extra"].items() if k != notes.MANIFEST_KEY
+    } == original["content"]["extra"]
     assert notes.restore_snapshot(nodes[plan["archive"]["id"]]) == original
     assert nodes[plan["archive"]["id"]]["status"] == "archived"
     assert active["content"]["extra"]["runtimehook_notes_archives"]["archives"]
@@ -481,9 +491,9 @@ def test_real_graph_generic_apis_preserve_archives_and_readback(
         )["status"]
         == "archived"
     )
-    assert (
-        engine.get_node(original["id"]).content.extra["project_namespace"] == "fixture"
-    )
+    active_extra = engine.get_node(original["id"]).content.extra
+    for key in ("project_id", "project_namespace", "project_identity"):
+        assert active_extra.get(key) == actual["content"]["extra"].get(key)
     route = engine.route(
         module.RoutingRequest(
             task="runtimehook notes archive",

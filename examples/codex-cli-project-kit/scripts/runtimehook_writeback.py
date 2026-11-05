@@ -173,9 +173,8 @@ def deliver(settings, root, binding, event):
         verified_runtime = True
         node_path = "/api/nodes/" + quote(binding["node_id"], safe="")
         node = request(node_path, phase="node_read")
-        extra = (node.get("content") or {}).get("extra") or {}
-        if any(extra.get(k) != identity[k] for k in ("project_id", "project_namespace")):
-            raise WritebackError("NODE_PROJECT_BINDING_UNVERIFIED")
+        notes_adapter.identity(node, binding)
+        extra = node["content"]["extra"]
         if extra.get("runtimehook_archive"):
             raise WritebackError("WRITEBACK_ARCHIVE_IMMUTABLE")
         notes_adapter.references(node)
@@ -202,6 +201,7 @@ def deliver(settings, root, binding, event):
         if result.get("count") != 1 or result.get("updated") != [binding["node_id"]]:
             raise WritebackError("WRITEBACK_EFFECT_NOT_CONFIRMED")
         readback = request(node_path, phase="readback")
+        notes_adapter.identity(readback, binding)
         if entry.strip() not in (readback.get("content", {}).get("notes") or ""):
             raise WritebackError("WRITEBACK_READBACK_MISMATCH")
         receipt.update(status="WRITTEN_AND_READBACK_VERIFIED", updated_at=readback.get("updated_at"))

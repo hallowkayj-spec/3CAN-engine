@@ -48,6 +48,33 @@ def semantic_content(content):
     return value
 
 
+def project_identity(extra: dict) -> dict[str, str]:
+    """Accept complete, agreeing declarations; never merge or normalize them."""
+    code = "NODE_PROJECT_BINDING_UNVERIFIED"
+    keys = ("project_id", "project_namespace")
+    require(isinstance(extra, dict), code)
+    declarations = [extra] if any(k in extra for k in keys) else []
+    if "project_identity" in extra:
+        declarations.append(extra["project_identity"])
+    require(declarations, code)
+    result = {}
+    for declared in declarations:
+        require(
+            isinstance(declared, dict)
+            and all(
+                isinstance(declared.get(k), str)
+                and declared[k]
+                and declared[k].strip() == declared[k]
+                for k in keys
+            ),
+            code,
+        )
+        pair = {k: declared[k] for k in keys}
+        require(not result or result == pair, code)
+        result = pair
+    return result
+
+
 def identity(node, binding):
     require(
         isinstance(node, dict) and node.get("id") == binding["node_id"],
@@ -60,7 +87,8 @@ def identity(node, binding):
     )
     extra = node["content"]["extra"]
     require(
-        all(extra.get(k) == binding[k] for k in ("project_id", "project_namespace")),
+        project_identity(extra)
+        == {k: binding[k] for k in ("project_id", "project_namespace")},
         "NODE_PROJECT_BINDING_UNVERIFIED",
     )
 
@@ -131,15 +159,13 @@ def validate_archive(archive, ref, source):
     require(cp.digest(restored) == ref["snapshot_sha256"], "ARCHIVE_SNAPSHOT_MISMATCH")
     binding = {
         "node_id": source["id"],
-        **{
-            k: source["content"]["extra"][k]
-            for k in ("project_id", "project_namespace")
-        },
+        **project_identity(source["content"]["extra"]),
     }
     identity(restored, binding)
     extra = archive["content"]["extra"]
     require(
-        all(extra.get(k) == binding[k] for k in ("project_id", "project_namespace")),
+        project_identity(extra)
+        == {k: binding[k] for k in ("project_id", "project_namespace")},
         "ARCHIVE_PROJECT_MISMATCH",
     )
     return restored

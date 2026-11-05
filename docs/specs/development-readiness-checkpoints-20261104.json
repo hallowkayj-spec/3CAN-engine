@@ -1,0 +1,26 @@
+{
+  "schema": "3can.checkpoints/v1",
+  "final_checkpoint": "binding-delivery",
+  "checkpoints": [
+    {
+      "id": "binding-contract",
+      "title": "项目身份契约、根因与三项目目标",
+      "criteria": ["B01"],
+      "parameters": ["red_failed", "red_errors", "red_passed", "new_dependencies"],
+      "rubric": ["缺少实际契约或目标/归属依据", "已定位但仍有关键契约或范围歧义", "实际证据支持当前诊断、最小方案、项目目标与责任边界"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    },
+    {
+      "id": "binding-delivery",
+      "title": "身份隔离、历史恢复、集成与源码交付",
+      "criteria": ["B02", "B03", "B04"],
+      "parameters": ["passed", "failed", "mirrors_equal", "source_only"],
+      "rubric": ["实际结果违背验收或缺少关键证据", "有实现依据但仍有未解决验证缺口", "证据覆盖本次源码候选验收且安装/发布/客户验收边界清楚"],
+      "minimum_score": 1.5,
+      "minimum_confidence": 0.65,
+      "minimum_probability": 0.7
+    }
+  ]
+}
