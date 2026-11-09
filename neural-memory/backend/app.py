@@ -17,6 +17,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -94,6 +95,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 engine: GraphEngine | None = None
 token_usage_store: TokenUsageStore | None = None
+_token_usage_store_lock = threading.Lock()
 token_usage_import_task: asyncio.Task | None = None
 
 _LOCAL_BROWSER_ORIGIN_RE = re.compile(
@@ -148,8 +150,9 @@ def _websocket_token_allowed(ws: WebSocket) -> bool:
 def _get_token_usage_store() -> TokenUsageStore:
     """Initialize the local ledger lazily, never as an import side effect."""
     global token_usage_store
-    if token_usage_store is None:
-        token_usage_store = TokenUsageStore(GRAPH_DIR / "token_usage.sqlite3")
+    with _token_usage_store_lock:
+        if token_usage_store is None:
+            token_usage_store = TokenUsageStore(GRAPH_DIR / "token_usage.sqlite3")
     return token_usage_store
 
 
@@ -297,9 +300,10 @@ async def _token_usage_auto_import_loop() -> None:
         token_usage_import_state["last_run_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
         try:
             result = await asyncio.to_thread(
-                _get_token_usage_store().import_codex_status_events,
-                max_files=int(token_usage_import_state["max_files"]),
-                max_events=int(token_usage_import_state["max_events"]),
+                lambda: _get_token_usage_store().import_codex_status_events(
+                    max_files=int(token_usage_import_state["max_files"]),
+                    max_events=int(token_usage_import_state["max_events"]),
+                ),
             )
             token_usage_import_state.update({
                 "last_ok": bool(result.get("ok")),
@@ -600,9 +604,11 @@ async def get_embedding_status(deep: bool = False):
 
 
 # ── Token usage / cost metering ──
+# Synchronous routes use FastAPI's worker pool; SQLite and session-file scans
+# must not stall the event loop that serves liveness and unrelated clients.
 
 @app.post("/api/token-usage/events")
-async def record_token_usage_event(payload: dict):
+def record_token_usage_event(payload: dict):
     """Record one LLM usage event.
 
     Prefer provider-returned usage fields. Prompt/completion text should not be
@@ -616,7 +622,7 @@ async def record_token_usage_event(payload: dict):
 
 
 @app.get("/api/token-usage/summary")
-async def get_token_usage_summary(
+def get_token_usage_summary(
     group_by: str | None = Query(None, description="provider|model|agent_id|session_id|task_id|usage_source|status"),
     provider: str | None = Query(None),
     model: str | None = Query(None),
@@ -638,33 +644,33 @@ async def get_token_usage_summary(
 
 
 @app.get("/api/token-usage/health")
-async def get_token_usage_health():
+def get_token_usage_health():
     health = _get_token_usage_store().health()
     health["auto_importer"] = token_usage_import_state
     return sanitize_public_payload(health)
 
 
 @app.get("/api/token-usage/status")
-async def get_token_usage_status():
+def get_token_usage_status():
     return _get_token_usage_store().integration_status()
 
 
 @app.get("/api/token-usage/overview")
-async def get_token_usage_overview(
+def get_token_usage_overview(
     limit: int = Query(12, ge=1, le=50),
 ):
     return _get_token_usage_store().overview(limit=limit)
 
 
 @app.get("/api/token-usage/impact")
-async def get_token_usage_impact(
+def get_token_usage_impact(
     limit: int = Query(12, ge=1, le=50),
 ):
     return _get_token_usage_store().impact(limit=limit)
 
 
 @app.get("/api/token-usage/codex-status")
-async def get_codex_status_snapshot(
+def get_codex_status_snapshot(
     max_files: int = Query(1, ge=1, le=10),
     max_events: int = Query(20, ge=1, le=5000),
 ):
@@ -673,7 +679,7 @@ async def get_codex_status_snapshot(
 
 
 @app.post("/api/token-usage/import/codex-status")
-async def import_codex_status_usage(
+def import_codex_status_usage(
     max_files: int = Query(1, ge=1, le=10),
     max_events: int = Query(5000, ge=1, le=20000),
 ):
@@ -685,7 +691,7 @@ async def import_codex_status_usage(
 
 
 @app.post("/api/token-usage/estimate")
-async def estimate_token_usage(payload: dict):
+def estimate_token_usage(payload: dict):
     return estimate_tokens_for_payload(payload)
 
 
