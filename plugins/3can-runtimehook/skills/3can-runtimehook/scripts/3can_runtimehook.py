@@ -974,7 +974,11 @@ def _auto_writeback(args, output):
     if state["knowledge"].get("session_id") != args.session_id:
         raise RuntimeHookError("CONTEXT_MISMATCH：回写绑定属于另一个任务")
     if args.command == "error" and ((args.scope == "temporary") != bool(state.get("temporary_task"))):
-        raise RuntimeHookError("REVIEW_SCOPE_MISMATCH：错误记录必须关联当前目标")
+        return {"status": "UNAVAILABLE", "error_code": "REVIEW_SCOPE_MISMATCH",
+                "component": "3can-runtimehook", "operation": "error", "local_work_blocked": False,
+                "expected_scope": "temporary" if state.get("temporary_task") else "main",
+                "requested_scope": args.scope,
+                "message": "错误记录必须关联当前目标；核实后显式传入对应 --scope，未发起回写。"}
     intent = state.get("temporary_task") or state["run_intent"]
     event = {"event": "onboarding" if args.command == "connect" else "error" if args.command == "error" else "milestone",
              "session_id": args.session_id, "activation_id": state["activation_id"],

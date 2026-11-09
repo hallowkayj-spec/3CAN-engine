@@ -159,6 +159,39 @@ def test_error_progress_keeps_case_reference_without_fake_resolution(lane, state
     assert all(path != "/api/activity/done" for path, _ in lane.calls)
 
 
+@pytest.mark.parametrize("temporary", [False, True])
+def test_error_scope_refusal_preserves_specific_reason_without_delivery(
+    lane, monkeypatch, capsys, temporary,
+):
+    controller = hook_tests.controller
+    _activate(lane.root)
+    sid = _session_id(lane.root)
+    base = ["--root", str(lane.root), "--native-cwd", str(lane.root), "--session-id", sid]
+    if temporary:
+        assert controller.main(base + ["task", "--kind", "temporary", "--goal", "Fixture repair",
+            "--acceptance", "T01=Observed fixture result", "--reference", "test:temporary",
+            "--resume-objective", "Continue original fixture"]) == 0
+        capsys.readouterr()
+    state = controller._load_state(lane.root, sid)
+    state["knowledge"] = {**lane.binding, "session_id": sid}
+    controller._write_state(lane.root, state, sid)
+    state_path = controller._session_dir(sid) / "state.json"
+    scope_path = controller._scope_path(sid)
+    before = (state_path.read_bytes(), scope_path.read_bytes())
+    monkeypatch.setattr(wb, "config", lambda: lane.settings)
+    assert controller.main(base + ["error", "--scope", "main" if temporary else "temporary",
+        "--id", "fixture-scope", "--state", "observed", "--summary", "Fixture failure",
+        "--reference", "test:wrong-semantic-scope"]) == 0
+    receipt = json.loads(capsys.readouterr().out)["writeback"]
+    assert receipt["status"] == "UNAVAILABLE"
+    assert receipt["error_code"] == "REVIEW_SCOPE_MISMATCH"
+    assert receipt["local_work_blocked"] is False
+    assert receipt["expected_scope"] == ("temporary" if temporary else "main")
+    assert receipt["requested_scope"] == ("main" if temporary else "temporary")
+    assert not lane.calls
+    assert (state_path.read_bytes(), scope_path.read_bytes()) == before
+
+
 def test_unverified_resolution_and_foreign_nodes_never_write(lane):
     lane.event.update(event="error", error={"id": "ERR-existing-case", "state": "resolved"})
     assert wb.deliver(lane.settings, lane.root, lane.binding, lane.event)["status"] == "UNAVAILABLE"
