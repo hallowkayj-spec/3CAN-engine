@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -85,9 +86,9 @@ class RuntimeHookError(ValueError):
                 "native_host": ("verify_host_binding",
                     "核实实际宿主目录；仅宿主锚点变化且开发目标未变时，由当前任务 bind-scope 更新观察关系。"),
                 "workspace": ("workspace_migration_required",
-                    "目标工作区已变化；bind-scope 不迁移已初始化状态，保留原记录并核实工作区迁移。"),
+                    "目标工作区已变化；核实同项目迁移后使用 migrate-workspace prepare/apply，保留原记录与回滚计划。"),
                 "state_workspace": ("workspace_migration_required",
-                    "同一任务的状态仍属于原工作区；不得覆盖或重新初始化来掩盖迁移，先保留并核实原记录。"),
+                    "同一任务状态仍属于原工作区；使用显式 migrate-workspace，不覆盖或重新初始化原目标。"),
                 "workspace_marker": ("verify_workspace_identity",
                     "核实工作区 Git 标记的真实变化及归属；不得自动覆盖已登记身份。"),
             }[context["mismatch"]]
@@ -272,6 +273,37 @@ def _session_dir(session_id: str) -> Path:
 
 def _state_root(root: Path, session_id: str, *, create: bool) -> Path | None:
     return _managed_directory(_session_dir(session_id), create=create)
+
+
+@contextmanager
+def _session_lock(session_id: str):
+    """One native task writer; OS releases the lock if a process exits."""
+    path = _scope_path(session_id).parent.parent / "locks" / (_scope_path(session_id).stem + ".lock")
+    _managed_directory(path.parent, create=True)
+    if os.path.lexists(path) and (_is_redirect(path) or not path.is_file()):
+        raise RuntimeHookError("SESSION_LOCK_NOT_DIRECT_FILE")
+    with path.open("a+b") as handle:
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeHookError("SESSION_BUSY：当前任务正在记录状态；保留现场，不并发覆盖") from exc
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _managed_directory(directory: Path, *, create: bool) -> Path | None:
@@ -1497,6 +1529,231 @@ def bind_scope(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _migration_common_dir(root: Path) -> Path:
+    if not os.path.lexists(root / ".git"):
+        raise RuntimeHookError("MIGRATION_GIT_WORKSPACE_REQUIRED")
+    result = _git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if result.returncode != 0:
+        raise RuntimeHookError("MIGRATION_REPOSITORY_UNVERIFIED")
+    return Path(result.stdout.strip()).resolve(strict=True)
+
+
+def _migration_snapshot(args, subject: str, target: Path, native_cwd: Path,
+                        reference: str, created_at: str) -> dict[str, Any]:
+    binding = _read_scope(subject)
+    source = _repository_root(Path(binding["worktree"]))
+    target = _repository_root(target)
+    state = _load_state(source, subject)
+    if (not state or state["status"] != "active" or binding["schema"] != SCOPE_SCHEMA
+            or state["activation_id"] != binding.get("activation_id")):
+        raise RuntimeHookError("MIGRATION_OWNER_OR_ACTIVATION_MISMATCH")
+    _check_scope({"cwd": binding["native_cwd"], "session_id": subject})
+    if source == target:
+        raise RuntimeHookError("MIGRATION_WORKSPACE_UNCHANGED：仅宿主锚点改变时使用 bind-scope")
+    if _native_worktree(str(native_cwd)) != target:
+        raise RuntimeHookError("MIGRATION_NATIVE_TARGET_MISMATCH")
+    common = _migration_common_dir(source)
+    if common != _migration_common_dir(target):
+        raise RuntimeHookError("MIGRATION_REPOSITORY_MISMATCH")
+    settings = writeback_adapter.config()
+    if not settings:
+        raise RuntimeHookError("MIGRATION_CANONICAL_CLIENT_REQUIRED")
+    old_identity = writeback_adapter.context(writeback_adapter._client(settings, source), source)
+    new_identity = writeback_adapter.context(writeback_adapter._client(settings, target), target)
+    if any(old_identity[key] != new_identity[key] for key in ("project_id", "project_namespace")):
+        raise RuntimeHookError("MIGRATION_PROJECT_MISMATCH")
+    knowledge = state.get("knowledge")
+    if knowledge and (knowledge.get("session_id") != subject
+                      or any(knowledge.get(key) != value for key, value in old_identity.items())):
+        raise RuntimeHookError("MIGRATION_KNOWLEDGE_OWNER_MISMATCH")
+    moved = _mark_boundary(state, kind="stage", label="工作区已显式迁移；复核当前 Owner Intent、Workorder 与验收",
+                           observed_git_head=_git_head(target))
+    moved.update(workspace=str(target), workspace_kind="git")
+    if knowledge:
+        moved["knowledge"] = {**knowledge, **new_identity}
+    _context(_validate_state(moved))
+    observed = _scope_observation(target, native_cwd, subject, reference, state["activation_id"])
+    observed["observed_at"] = created_at
+    before = {
+        "state": checkpoints.read_bytes(_session_dir(subject) / "state.json", MAX_STATE_BYTES).decode("utf-8"),
+        "scope": checkpoints.read_bytes(_scope_path(subject), 8192).decode("utf-8"),
+    }
+    after = {"state": json.dumps(moved, ensure_ascii=False, indent=2) + "\n",
+             "scope": json.dumps(observed, ensure_ascii=False, separators=(",", ":")) + "\n"}
+    if len(after["state"].encode()) > MAX_STATE_BYTES or len(after["scope"].encode()) > 8192:
+        raise RuntimeHookError("MIGRATION_STATE_TOO_LARGE")
+    return {"schema": "3can.workspace-migration/v1", "actor_session_id": args.session_id,
+            "actor_workspace": str(args.root), "target_session_id": subject,
+            "activation_id": state["activation_id"], "source_workspace": str(source),
+            "target_workspace": str(target), "target_native_cwd": str(native_cwd.resolve(strict=True)),
+            "common_git_dir": str(common), "source_marker": _scope_marker(source),
+            "target_marker": _scope_marker(target), "source_identity": old_identity,
+            "target_identity": new_identity, "created_at": created_at, "reference": reference,
+            "before": before, "after": after}
+
+
+def _migration_replace(path: Path, raw: bytes) -> None:
+    """Preserve exact bytes for transaction rollback, including old formatting."""
+    _managed_directory(path.parent, create=False)
+    if os.path.lexists(path):
+        checkpoints.read_bytes(path, 512 * 1024)
+    descriptor, temporary = tempfile.mkstemp(prefix=".migration-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _migration_idle_observation(args, plan) -> None:
+    if plan["target_session_id"] == args.session_id:
+        allowed = {Path(plan["target_workspace"])}
+        if args.rollback:
+            allowed.add(Path(plan["source_workspace"]))
+        if args.native_cwd is None or _native_worktree(str(args.native_cwd)) not in allowed:
+            raise RuntimeHookError("MIGRATION_NATIVE_TARGET_MISMATCH")
+        return
+    if args.observation is None:
+        raise RuntimeHookError("MIGRATION_FRESH_IDLE_OBSERVATION_REQUIRED")
+    observed = checkpoints.read_json(args.observation, 16 * 1024)
+    try:
+        age = time.time() - float(observed["observed_at_epoch"])
+        response = observed["response"]
+        valid = (observed["source"] == "mcp__codex_app.read_thread" and 0 <= age <= 120
+                 and response["thread"]["id"] == plan["target_session_id"]
+                 and Path(response["thread"]["cwd"]).resolve(strict=True) == Path(plan["target_native_cwd"])
+                 and not response["thread"]["status"].get("activeFlags")
+                 and response["turns"][0]["status"] == "completed")
+    except (KeyError, TypeError, ValueError, IndexError):
+        valid = False
+    if not valid:
+        raise RuntimeHookError("MIGRATION_TARGET_NOT_VERIFIED_IDLE")
+
+
+def migrate_workspace(args: argparse.Namespace) -> dict[str, Any]:
+    """Explicit bounded maintenance, never a native-event auto-adoption path."""
+    if args.native_cwd is None or not args.native_cwd.is_absolute():
+        raise RuntimeHookError("MIGRATION_ACTOR_NATIVE_CWD_REQUIRED")
+    if args.target_session_id and args.target_session_id != args.session_id:
+        actor = _load_state(args.root, args.session_id)
+        if actor is None or actor["status"] != "active":
+            raise RuntimeHookError("MIGRATION_ACTOR_INITIALIZATION_REQUIRED")
+    directory = _state_root(args.root, args.session_id, create=False)
+    if directory is None or args.plan.parent.resolve() != directory.resolve():
+        raise RuntimeHookError("MIGRATION_PLAN_MUST_BELONG_TO_ACTOR")
+    if not re.fullmatch(r"workspace-migration-[A-Za-z0-9._-]+\.json", args.plan.name):
+        raise RuntimeHookError("MIGRATION_PLAN_NAME_INVALID")
+    preparing = not args.apply and not args.rollback
+    if preparing:
+        if os.path.lexists(args.plan):
+            raise RuntimeHookError("MIGRATION_PLAN_EXISTS：保留旧计划，用新文件记录新的观察")
+        if args.to is None or args.target_native_cwd is None:
+            raise RuntimeHookError("MIGRATION_TARGET_REQUIRED")
+        subject = args.target_session_id or args.session_id
+    else:
+        plan = checkpoints.read_json(args.plan, 512 * 1024)
+        if (not isinstance(plan, dict) or plan.get("schema") != "3can.workspace-migration/v1"
+                or plan.get("actor_session_id") != args.session_id
+                or (plan.get("actor_workspace") != str(args.root) and not (
+                    args.rollback and plan.get("target_session_id") == args.session_id
+                    and plan.get("source_workspace") == str(args.root)))
+                or plan.get("target_session_id") != (args.target_session_id or args.session_id)):
+            raise RuntimeHookError("MIGRATION_PLAN_ACTOR_OR_TARGET_MISMATCH")
+        if (any(not isinstance(plan.get(key), str) or not plan[key] for key in
+                ("created_at", "source_workspace", "target_workspace", "target_native_cwd", "common_git_dir", "activation_id", "reference"))
+                or any(not isinstance(plan.get(side + "_marker"), list)
+                       or len(plan[side + "_marker"]) not in {2, 4}
+                       or any(type(value) is not int for value in plan[side + "_marker"])
+                       or not isinstance(plan.get(side + "_identity"), dict) for side in ("source", "target"))
+                or any(not isinstance(plan.get(stage), dict) or set(plan[stage]) != {"state", "scope"}
+                       or any(not isinstance(raw, str) for raw in plan[stage].values()) for stage in ("before", "after"))):
+            raise RuntimeHookError("MIGRATION_PLAN_INVALID")
+        subject = plan["target_session_id"]
+    # The operator keeps its own lock and identity; a peer is an explicit subject.
+    with _session_lock(subject) if subject != args.session_id else nullcontext():
+        if preparing:
+            plan = _migration_snapshot(args, subject, args.to, args.target_native_cwd,
+                                       _text(args.reference, label="Owner/host migration reference"),
+                                       datetime.now(timezone.utc).isoformat())
+            _migration_replace(args.plan, (json.dumps(plan, ensure_ascii=False, indent=2) + "\n").encode())
+            return {"ok": True, "status": "MIGRATION_PREPARED", "plan": str(args.plan),
+                    "plan_sha256": hashlib.sha256(args.plan.read_bytes()).hexdigest(),
+                    "target_session_id": subject, "source_workspace": plan["source_workspace"],
+                    "target_workspace": plan["target_workspace"], "semantic_state_changed": False}
+        _migration_idle_observation(args, plan)
+        if any(_scope_marker(Path(plan[side + "_workspace"])) != plan[side + "_marker"]
+               for side in ("source", "target")):
+            raise RuntimeHookError("MIGRATION_WORKSPACE_IDENTITY_CHANGED")
+        paths = {"state": _session_dir(subject) / "state.json", "scope": _scope_path(subject)}
+        current = {name: checkpoints.read_bytes(path, MAX_STATE_BYTES).decode("utf-8") for name, path in paths.items()}
+        receipt_path = args.plan.with_name(args.plan.stem + ".receipt.json")
+        plan_sha256 = hashlib.sha256(args.plan.read_bytes()).hexdigest()
+        if args.rollback:
+            recorded = checkpoints.read_json(receipt_path)
+            if (recorded.get("plan_sha256") != plan_sha256
+                    or recorded.get("actor_session_id") != args.session_id
+                    or recorded.get("target_session_id") != subject):
+                raise RuntimeHookError("MIGRATION_ROLLBACK_RECEIPT_MISMATCH")
+            # Check both before writing either; never overwrite later task work.
+            if any(current[name] not in {plan["before"][name], plan["after"][name]} for name in paths):
+                raise RuntimeHookError("MIGRATION_ROLLBACK_CONFLICT：任务已有其他变化，未覆盖")
+            for name, path in paths.items():
+                if current[name] != plan["before"][name]:
+                    _migration_replace(path, plan["before"][name].encode())
+            if any(path.read_bytes() != plan["before"][name].encode() for name, path in paths.items()):
+                raise RuntimeHookError("MIGRATION_ROLLBACK_READBACK_MISMATCH")
+            result = "MIGRATION_ROLLED_BACK"
+        elif current == plan["after"]:
+            result = "MIGRATION_ALREADY_APPLIED"
+        else:
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(plan["created_at"])).total_seconds()
+            except (ValueError, TypeError):
+                raise RuntimeHookError("MIGRATION_PLAN_INVALID_TIME") from None
+            if not 0 <= age <= 300:
+                raise RuntimeHookError("MIGRATION_PLAN_EXPIRED：重新核实尚未执行的迁移")
+            if current != plan["before"]:
+                raise RuntimeHookError("MIGRATION_STATE_CONFLICT：状态已变化，未覆盖")
+            expected = _migration_snapshot(args, subject, Path(plan["target_workspace"]),
+                                           Path(plan["target_native_cwd"]), plan["reference"], plan["created_at"])
+            if expected != plan:
+                raise RuntimeHookError("MIGRATION_PLAN_CHANGED：身份、目录或计划内容不匹配")
+            pending = {"status": "MIGRATION_APPLYING", "actor_session_id": args.session_id,
+                       "target_session_id": subject, "plan_sha256": plan_sha256}
+            _migration_replace(receipt_path, (json.dumps(pending, indent=2) + "\n").encode())
+            try:
+                for name, path in paths.items():
+                    _migration_replace(path, plan["after"][name].encode())
+                if any(checkpoints.read_bytes(path, MAX_STATE_BYTES).decode("utf-8") != plan["after"][name]
+                       for name, path in paths.items()):
+                    raise RuntimeHookError("MIGRATION_READBACK_MISMATCH")
+            except (OSError, RuntimeHookError, checkpoints.jev.JevError) as exc:
+                observed = {name: checkpoints.read_bytes(path, MAX_STATE_BYTES).decode("utf-8") for name, path in paths.items()}
+                if any(observed[name] not in {plan["before"][name], plan["after"][name]} for name in paths):
+                    raise RuntimeHookError("MIGRATION_RECOVERY_REQUIRED：保留计划，不覆盖未知变化") from exc
+                for name, path in paths.items():
+                    if observed[name] != plan["before"][name]:
+                        _migration_replace(path, plan["before"][name].encode())
+                if any(path.read_bytes() != plan["before"][name].encode() for name, path in paths.items()):
+                    raise RuntimeHookError("MIGRATION_ROLLBACK_READBACK_MISMATCH") from exc
+                pending.update(status="MIGRATION_APPLY_FAILED_ROLLED_BACK", failure_type=type(exc).__name__)
+                _migration_replace(receipt_path, (json.dumps(pending, indent=2) + "\n").encode())
+                raise RuntimeHookError("MIGRATION_APPLY_FAILED_ROLLED_BACK：原始字节已恢复，计划保留") from exc
+            result = "MIGRATION_APPLIED"
+        receipt = {"ok": True, "status": result, "actor_session_id": args.session_id,
+                   "target_session_id": subject, "activation_id": plan["activation_id"],
+                   "plan": str(args.plan), "plan_sha256": plan_sha256,
+                   "file_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()},
+                   "history_files_rewritten": False, "graph_write_performed": False,
+                   "observed_at": datetime.now(timezone.utc).isoformat()}
+        _migration_replace(receipt_path, (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode())
+        return receipt
+
+
 def _native_session_id(payload: dict[str, Any]) -> str:
     """Installed Codex supplies the actual child thread ID as agent_id."""
     child = payload.get("agent_id")
@@ -1581,6 +1838,16 @@ def hook(args: argparse.Namespace) -> int:
         event = payload.get("hook_event_name")
         if event not in {"SessionStart", "SubagentStart", "UserPromptSubmit", "PostToolUse", "Stop", "SubagentStop"}:
             return 0
+        session_id = _native_session_id(payload)
+        with _session_lock(session_id):
+            return _hook_event(args, {**payload, "session_id": session_id})
+    except (RuntimeHookError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
+        return _hook_error(str(exc))
+
+
+def _hook_event(args: argparse.Namespace, payload: dict[str, Any]) -> int:
+    try:
+        event = payload["hook_event_name"]
         is_session_start = event == "SubagentStart" or (event == "SessionStart" and payload.get("source") in {
             "startup", "resume", "clear", "compact",
         })
@@ -1792,6 +2059,17 @@ def build_parser() -> argparse.ArgumentParser:
     binding.add_argument("--knowledge-worktree", type=Path)
     binding.add_argument("--knowledge-reference", default="")
 
+    migration = sub.add_parser("migrate-workspace", help="显式同项目工作区迁移；默认准备，保留原始字节与历史。")
+    migration.add_argument("--plan", type=Path, required=True)
+    migration.add_argument("--to", type=Path)
+    migration.add_argument("--target-native-cwd", type=Path)
+    migration.add_argument("--target-session-id", default="", help="治理维护的明确目标；操作者仍用自己的全局 session-id。")
+    migration.add_argument("--reference", default="")
+    migration.add_argument("--observation", type=Path, help="跨任务 apply/rollback 前的最新原生空闲/cwd观察。")
+    migration_action = migration.add_mutually_exclusive_group()
+    migration_action.add_argument("--apply", action="store_true")
+    migration_action.add_argument("--rollback", action="store_true")
+
     on = sub.add_parser("on", help="记录当前主目标 RUN_INTENT。")
     on.add_argument("--goal", required=True)
     on.add_argument("--acceptance", action="append", default=[])
@@ -1873,13 +2151,24 @@ def main(argv: list[str] | None = None) -> int:
                 "--native-cwd 仅用于本地命令；原生 Hook 使用输入中的 cwd"
             )
         return hook(args)
+    try:
+        with _session_lock(args.session_id):
+            return _local_command(args)
+    except (RuntimeHookError, OSError) as exc:
+        print(json.dumps({"ok": False, "status": "UNAVAILABLE", "error": str(exc)}, ensure_ascii=False))
+        return 2
+
+
+def _local_command(args: argparse.Namespace) -> int:
     if args.root is None:
         args.root = _native_worktree(str(Path.cwd())) or Path.cwd()
     try:
         args.root = _repository_root(args.root)
         scope = None
+        own_migration = (args.command == "migrate-workspace"
+                         and args.target_session_id in {"", args.session_id})
         _scope_path(args.session_id)  # All task state operations require a native identity.
-        if args.command != "bind-scope" and args.session_id and _scope_path(args.session_id).exists():
+        if args.command != "bind-scope" and not own_migration and args.session_id and _scope_path(args.session_id).exists():
             binding = _read_scope(args.session_id)
             if Path(binding["worktree"]) != args.root.resolve():
                 raise RuntimeHookError(
@@ -1897,7 +2186,7 @@ def main(argv: list[str] | None = None) -> int:
                 existing = _load_state(args.root, args.session_id)
                 if existing and existing["activation_id"] != binding.get("activation_id"):
                     raise RuntimeHookError("SCOPE_STALE：绑定或修改语义状态前请先核实当前任务")
-        if args.native_cwd is not None and args.command != "bind-scope":
+        if args.native_cwd is not None and args.command != "bind-scope" and not own_migration:
             if not args.native_cwd.is_absolute():
                 raise RuntimeHookError("实际观察的原生 cwd 必须是绝对路径")
             if args.session_id and _scope_path(args.session_id).exists():
@@ -1909,6 +2198,8 @@ def main(argv: list[str] | None = None) -> int:
             scope = {"status": "MATCH", "worktree": str(root)}
         if args.command == "bind-scope":
             output = bind_scope(args)
+        elif args.command == "migrate-workspace":
+            output = migrate_workspace(args)
         elif args.command == "on":
             output = activate(args)
             if args.native_cwd is not None and args.session_id:

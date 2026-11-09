@@ -84,6 +84,55 @@ writer context, then record that task's observed host/target relationship:
 An initialized task remains bound to its verified workspace. This command does
 not move an existing task's state or silently retarget its intent.
 
+### Explicit workspace migration
+
+When the Owner authorizes a real development-workspace move, use the same
+controller's `migrate-workspace`. This supports two existing Git worktrees with
+the same Git common directory and verified project/namespace through the
+configured canonical client. A host-anchor-only change still uses `bind-scope`.
+Cross-project, missing-source and unverified non-Git migrations are refused;
+do not reset the task or create a replacement identity to hide a mismatch.
+
+Prepare a plan named `workspace-migration-<name>.json` inside the actual
+operator's `CODEX_HOME/runtimehook/sessions/<sha256(operator-task-id)>/`:
+
+```text
+<controller + actual operator root/native-cwd/session-id> migrate-workspace --plan <absolute-plan-path> --to <verified-new-root> --target-native-cwd <observed-target-cwd> --reference <Owner-and-host-evidence>
+<same controller and operator identity> migrate-workspace --plan <absolute-plan-path> --apply
+<same controller and operator identity> migrate-workspace --plan <absolute-plan-path> --rollback
+```
+
+For the task's own move, use its observed new root/native cwd and retain its
+session ID. For explicitly Owner-authorized governance maintenance of another
+task, add `--target-session-id <subject-id>` to each command; the global
+`--session-id` always remains the actual operator. Never adopt the subject's
+activation as the operator's working state. Before peer apply or rollback,
+read its current native status using `read_thread`, confirm the latest turn is
+completed and the cwd matches, and confirm no old controller invocation is
+still running. Pass `--observation <file>` with a bounded JSON receipt:
+`{"source":"mcp__codex_app.read_thread","observed_at_epoch":<UTC Unix seconds>,"response":{"thread":{"id":...,"cwd":...,"status":{"activeFlags":[]}},"turns":[{"status":"completed"}]}}`.
+This is a recent operator observation and audit assertion, not cryptographic
+authentication or a replacement for direct Owner authority.
+
+Prepare preserves state and records exact before/after bytes locally. Apply
+requires a fresh plan (five minutes), unchanged state/scope, matching project,
+Git identity and native observation (two minutes). Native callbacks and CLI
+commands use a per-task OS file lock; contention is typed `SESSION_BUSY`, not a
+retry loop. Older installed versions do not participate in this lock, so peer
+maintenance must occur while that task and its old controller calls are idle.
+
+Migration preserves activation, main/temporary Intent, checkpoint files and
+historical receipts. It updates the verified workspace in the scope/state and
+existing knowledge binding, adds a pending review boundary, and never carries
+old PASS forward. It does not move source files, host chats, or session JSONL,
+replay old packets, or perform a graph write. The task must then check current
+Intent/Workorder and run its own bounded checkpoint/review/writeback.
+
+Keep the plan and receipt private: they contain exact original task state.
+Rollback verifies the recorded plan hash and refuses later task changes; it
+restores only original state/scope bytes and does not move the host chat.
+An interrupted transaction retains both byte sets for explicit recovery.
+
 Do not adopt an existing activation solely because its directory matches. A
 new task always initializes its own intent, even when the target has legacy
 state. Native callbacks neither parse transcripts nor contact 9700. Scope

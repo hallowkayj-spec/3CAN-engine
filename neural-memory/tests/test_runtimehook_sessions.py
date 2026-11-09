@@ -326,3 +326,245 @@ def test_foreign_state_identity_is_not_exposed_as_workspace_recovery(lane, plain
     assert "foreign-private-workspace" not in json.dumps(result)
     assert "Foreign private intent" not in json.dumps(result)
     assert state_path.read_bytes() == before
+
+
+@pytest.fixture
+def migration_lane(lane, plain_repo, tmp_path, monkeypatch, capsys):
+    """Synthetic shared-repository identity; live linked-worktree CLI is checked separately."""
+    source, target = plain_repo, tmp_path / "new-workspace"
+    target.mkdir()
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    for root in (source, target):
+        (root / ".agents").mkdir()
+        (root / ".agents/project.json").write_text(json.dumps({
+            "schema_version": 1, "project_id": "fixture", "project_namespace": "fixture",
+            "project_root": ".", "git_repository": "example.invalid/fixture/repo"}), encoding="utf-8")
+        shared._git(root, "remote", "add", "origin", "https://example.invalid/fixture/repo.git")
+    shared._git(target, "config", "user.email", "test@example.invalid")
+    shared._git(target, "config", "user.name", "Migration Fixture")
+    shared._git(target, "add", ".agents/project.json")
+    shared._git(target, "commit", "-qm", "fixture")
+    settings = {"client_path": str(shared.PROJECT_KIT_CLI.with_name("3can_codex.py")),
+                "selector_path": str(tmp_path / "unused-selector.json"), "base_url": "http://127.0.0.1:9700"}
+    monkeypatch.setattr(lane.writeback_adapter, "config", lambda: settings)
+    original_common = lane._migration_common_dir
+    monkeypatch.setattr(lane, "_migration_common_dir", lambda root: original_common(source))
+    sid = "migration-fixture"
+    activate(source, sid, "Original retained goal")
+    state = lane._load_state(source, sid)
+    state["temporary_task"] = {"goal": "Retain temporary work", "acceptance": [{"id": "T01", "text": "Keep evidence"}],
+                               "reference": "fixture", "resume_objective": "Return to original"}
+    state["knowledge"] = {**lane.writeback_adapter.connection(settings, source, agent_id="fixture-agent",
+                          workorder_id="fixture-workorder", node_id="DOC-fixture"), "session_id": sid}
+    state["semantic_review"] = {"stage": "episode", "result": "PASS", "reference": "old-proof",
+                                "reviewed_git_head": None, "jev_request_sha256": "old-opinion"}
+    lane._write_state(source, state, sid)
+    history = lane._session_dir(sid) / "checkpoint.temporary.old.json"
+    history.write_bytes(b'{"retained":"historical evidence"}\n')
+    plan = lane._session_dir(sid) / "workspace-migration-fixture.json"
+
+    def invoke(*arguments, expected=0):
+        code = lane.main(["--root", str(target), "--native-cwd", str(target), "--session-id", sid,
+                          "migrate-workspace", "--plan", str(plan), *arguments])
+        result = json.loads(capsys.readouterr().out)
+        assert code == expected, result
+        return result
+    capsys.readouterr()
+    return SimpleNamespace(controller=lane, source=source, target=target, sid=sid, state=state,
+                           plan=plan, history=history, invoke=invoke, original_common=original_common)
+
+
+def prepare_migration(fixture):
+    return fixture.invoke("--to", str(fixture.target), "--target-native-cwd", str(fixture.target),
+                          "--reference", "fixture:explicit-owner-migration")
+
+
+def test_workspace_migration_preserves_identity_history_and_invalidates_review(migration_lane):
+    f = migration_lane
+    paths = [f.controller._session_dir(f.sid) / "state.json", f.controller._scope_path(f.sid), f.history]
+    before = [path.read_bytes() for path in paths]
+    assert prepare_migration(f)["status"] == "MIGRATION_PREPARED"
+    assert [path.read_bytes() for path in paths] == before
+    result = f.invoke("--apply")
+    assert result["status"] == "MIGRATION_APPLIED" and result["graph_write_performed"] is False
+    moved = f.controller._load_state(f.target, f.sid)
+    for name in ("activation_id", "run_intent", "temporary_task"):
+        assert moved[name] == f.state[name]
+    assert moved["knowledge"]["workspace_id"] != f.state["knowledge"]["workspace_id"]
+    for name in ("agent_id", "workorder_id", "node_id", "session_id"):
+        assert moved["knowledge"][name] == f.state["knowledge"][name]
+    assert moved["semantic_review"]["result"] == "PENDING"
+    assert moved["boundary"]["sequence"] == f.state["boundary"]["sequence"] + 1
+    assert f.controller._check_scope({"cwd": str(f.target), "session_id": f.sid})[0] == f.target
+    assert f.history.read_bytes() == before[2]
+    after = [path.read_bytes() for path in paths]
+    assert f.invoke("--apply")["status"] == "MIGRATION_ALREADY_APPLIED"
+    assert [path.read_bytes() for path in paths] == after
+    assert f.invoke("--rollback")["status"] == "MIGRATION_ROLLED_BACK"
+    assert [path.read_bytes() for path in paths] == before
+
+
+@pytest.mark.parametrize("change", ["state", "plan", "project", "repository", "expired"])
+def test_workspace_migration_refuses_stale_or_foreign_inputs(migration_lane, monkeypatch, change):
+    f = migration_lane
+    prepare_migration(f)
+    if change == "state":
+        state = f.controller._load_state(f.source, f.sid)
+        state["current_episode"] = "New actual work"
+        f.controller._write_state(f.source, state, f.sid)
+    elif change in {"plan", "expired"}:
+        plan = json.loads(f.plan.read_text(encoding="utf-8"))
+        if change == "plan":
+            plan["after"]["state"] = plan["after"]["state"].replace("Original retained goal", "Replaced goal")
+        else:
+            plan["created_at"] = "2020-01-01T00:00:00+00:00"
+        f.plan.write_text(json.dumps(plan), encoding="utf-8")
+    elif change == "project":
+        capsule = f.target / ".agents/project.json"
+        value = json.loads(capsule.read_text())
+        value["project_namespace"] = "foreign"
+        capsule.write_text(json.dumps(value))
+    else:
+        monkeypatch.setattr(f.controller, "_migration_common_dir", f.original_common)
+    paths = [f.controller._session_dir(f.sid) / "state.json", f.controller._scope_path(f.sid), f.history]
+    before = [path.read_bytes() for path in paths]
+    result = f.invoke("--apply", expected=2)
+    assert "MIGRATION_" in result["error"]
+    assert [path.read_bytes() for path in paths] == before
+
+
+def test_workspace_migration_second_write_failure_restores_exact_bytes(migration_lane, monkeypatch):
+    f = migration_lane
+    prepare_migration(f)
+    paths = [f.controller._session_dir(f.sid) / "state.json", f.controller._scope_path(f.sid)]
+    before = [path.read_bytes() for path in paths]
+    replace = f.controller._migration_replace
+    failures = []
+    def fail_once(path, raw):
+        if path == paths[1] and not failures:
+            failures.append(path)
+            raise OSError("injected scope write failure")
+        replace(path, raw)
+    monkeypatch.setattr(f.controller, "_migration_replace", fail_once)
+    result = f.invoke("--apply", expected=2)
+    assert "MIGRATION_APPLY_FAILED_ROLLED_BACK" in result["error"]
+    assert [path.read_bytes() for path in paths] == before
+    assert f.plan.exists()
+    receipt = json.loads(f.plan.with_name(f.plan.stem + ".receipt.json").read_text())
+    assert receipt["status"] == "MIGRATION_APPLY_FAILED_ROLLED_BACK"
+
+
+def test_workspace_migration_rollback_keeps_later_work_and_rejects_tampered_plan(migration_lane):
+    f = migration_lane
+    prepare_migration(f)
+    f.invoke("--apply")
+    state = f.controller._load_state(f.target, f.sid)
+    state["current_episode"] = "Work after migration"
+    f.controller._write_state(f.target, state, f.sid)
+    path = f.controller._session_dir(f.sid) / "state.json"
+    before = path.read_bytes()
+    assert "MIGRATION_ROLLBACK_CONFLICT" in f.invoke("--rollback", expected=2)["error"]
+    assert path.read_bytes() == before
+    plan = json.loads(f.plan.read_text(encoding="utf-8"))
+    plan["before"]["state"] += " "
+    f.plan.write_text(json.dumps(plan), encoding="utf-8")
+    assert "MIGRATION_ROLLBACK_RECEIPT_MISMATCH" in f.invoke("--rollback", expected=2)["error"]
+    assert path.read_bytes() == before
+
+
+def test_native_task_lock_prevents_concurrent_cli_mutation(lane, plain_repo):
+    sid = "locked-task"
+    activate(plain_repo, sid, "Retained intent")
+    path = lane._session_dir(sid) / "state.json"
+    before = path.read_bytes()
+    with lane._session_lock(sid):
+        result = subprocess.run([sys.executable, str(shared.PLUGIN_CLI), "--root", str(plain_repo),
+                                 "--native-cwd", str(plain_repo), "--session-id", sid, "off"],
+                                capture_output=True, timeout=10)
+    assert result.returncode == 2 and "SESSION_BUSY" in result.stdout.decode("utf-8")
+    assert path.read_bytes() == before
+
+
+def test_operator_migration_requires_fresh_idle_observation_and_keeps_operator_state(migration_lane, capsys, tmp_path):
+    f = migration_lane
+    actor = "migration-operator"
+    activate(f.source, actor, "Independent operator goal")
+    own = f.controller._session_dir(actor) / "state.json"
+    own_before = own.read_bytes()
+    plan = own.parent / "workspace-migration-peer.json"
+    base = ["--root", str(f.source), "--native-cwd", str(f.source), "--session-id", actor,
+            "migrate-workspace", "--plan", str(plan), "--target-session-id", f.sid]
+    assert f.controller.main(base + ["--to", str(f.target), "--target-native-cwd", str(f.target),
+                                    "--reference", "fixture:Owner-authorized-operator"]) == 0
+    capsys.readouterr()
+    assert f.controller.main(base + ["--apply"]) == 2
+    assert "MIGRATION_FRESH_IDLE_OBSERVATION_REQUIRED" in capsys.readouterr().out
+    observation = tmp_path / "observation.json"
+    import time
+    observed = {"source": "mcp__codex_app.read_thread", "observed_at_epoch": time.time(),
+                "response": {"thread": {"id": f.sid, "cwd": str(f.target), "status": {"activeFlags": []}},
+                             "turns": [{"status": "inProgress"}]}}
+    observation.write_text(json.dumps(observed))
+    assert f.controller.main(base + ["--apply", "--observation", str(observation)]) == 2
+    assert "MIGRATION_TARGET_NOT_VERIFIED_IDLE" in capsys.readouterr().out
+    observed["response"]["turns"][0]["status"] = "completed"
+    observation.write_text(json.dumps(observed))
+    assert f.controller.main(base + ["--apply", "--observation", str(observation)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["actor_session_id"] == actor and result["target_session_id"] == f.sid
+    assert own.read_bytes() == own_before
+    assert f.controller._load_state(f.target, f.sid)["activation_id"] == f.state["activation_id"]
+
+
+@pytest.mark.parametrize("change", ["missing_marker", "invalid_marker", "missing_identity"])
+def test_workspace_migration_rejects_malformed_plan_without_traceback(migration_lane, change):
+    f = migration_lane
+    prepare_migration(f)
+    plan = json.loads(f.plan.read_text(encoding="utf-8"))
+    if change == "missing_marker":
+        del plan["source_marker"]
+    elif change == "invalid_marker":
+        plan["target_marker"] = None
+    else:
+        del plan["target_identity"]
+    f.plan.write_text(json.dumps(plan), encoding="utf-8")
+    assert "MIGRATION_PLAN_INVALID" in f.invoke("--apply", expected=2)["error"]
+    assert f.controller._load_state(f.source, f.sid)["activation_id"] == f.state["activation_id"]
+
+
+def test_workspace_migration_can_rollback_from_original_native_workspace(migration_lane, capsys):
+    f = migration_lane
+    paths = [f.controller._session_dir(f.sid) / "state.json", f.controller._scope_path(f.sid)]
+    before = [path.read_bytes() for path in paths]
+    prepare_migration(f)
+    f.invoke("--apply")
+    assert f.controller.main(["--root", str(f.source), "--native-cwd", str(f.source),
+                              "--session-id", f.sid, "migrate-workspace", "--plan", str(f.plan),
+                              "--rollback"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "MIGRATION_ROLLED_BACK"
+    assert [path.read_bytes() for path in paths] == before
+
+
+def test_workspace_migration_failure_never_overwrites_unknown_concurrent_state(migration_lane, monkeypatch):
+    f = migration_lane
+    prepare_migration(f)
+    state_path = f.controller._session_dir(f.sid) / "state.json"
+    scope_path = f.controller._scope_path(f.sid)
+    scope_before = scope_path.read_bytes()
+    replace = f.controller._migration_replace
+    concurrent = []
+
+    def fail_after_external_write(path, raw):
+        if path == scope_path:
+            value = json.loads(state_path.read_text(encoding="utf-8"))
+            value["current_episode"] = "Concurrent external work must survive"
+            state_path.write_text(json.dumps(value), encoding="utf-8")
+            concurrent.append(state_path.read_bytes())
+            raise OSError("injected competing writer during scope failure")
+        replace(path, raw)
+
+    monkeypatch.setattr(f.controller, "_migration_replace", fail_after_external_write)
+    assert "MIGRATION_RECOVERY_REQUIRED" in f.invoke("--apply", expected=2)["error"]
+    assert state_path.read_bytes() == concurrent[0] and scope_path.read_bytes() == scope_before
+    assert "MIGRATION_ROLLBACK_CONFLICT" in f.invoke("--rollback", expected=2)["error"]
+    assert state_path.read_bytes() == concurrent[0] and scope_path.read_bytes() == scope_before
