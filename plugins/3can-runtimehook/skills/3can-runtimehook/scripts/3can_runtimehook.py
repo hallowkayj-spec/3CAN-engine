@@ -77,6 +77,30 @@ JEV_REQUIRED_TEXT = (
 class RuntimeHookError(ValueError):
     """The local RuntimeHook state or requested transition is unavailable."""
 
+    def __init__(self, message: str, *, context: dict[str, str | None] | None = None):
+        self.context = context
+        self.recovery = None
+        if context is not None:
+            action, hint = {
+                "native_host": ("verify_host_binding",
+                    "核实实际宿主目录；仅宿主锚点变化且开发目标未变时，由当前任务 bind-scope 更新观察关系。"),
+                "workspace": ("workspace_migration_required",
+                    "目标工作区已变化；bind-scope 不迁移已初始化状态，保留原记录并核实工作区迁移。"),
+                "state_workspace": ("workspace_migration_required",
+                    "同一任务的状态仍属于原工作区；不得覆盖或重新初始化来掩盖迁移，先保留并核实原记录。"),
+                "workspace_marker": ("verify_workspace_identity",
+                    "核实工作区 Git 标记的真实变化及归属；不得自动覆盖已登记身份。"),
+            }[context["mismatch"]]
+            self.recovery = {"action": action, "automatic": False, "hint": hint}
+            message += (
+                f"；登记工作区={context['registered_workspace']}；请求工作区={context['requested_workspace']}"
+                f"；登记宿主={context.get('registered_native_cwd') or '未提供'}"
+                f"；当前宿主={context.get('observed_native_cwd') or '未提供'}。"
+                "此拒绝影响当前任务的 RuntimeHook；独立安全工作可继续，其他操作仍遵守各自授权与安全边界。"
+                + hint
+            )
+        super().__init__(message)
+
 
 def _configure_utf8_stdio() -> None:
     os.environ["PYTHONUTF8"] = "1"
@@ -452,8 +476,15 @@ def _load_state(root: Path, session_id: str) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeHookError("无法读取 RuntimeHook 状态") from exc
     if (not isinstance(value, dict) or value.get("schema") != SESSION_STATE_SCHEMA
-            or value.get("session_id") != session_id or value.get("workspace") != str(root)):
+            or value.get("session_id") != session_id
+            or not isinstance(value.get("workspace"), str) or not Path(value["workspace"]).is_absolute()):
         raise RuntimeHookError("CONTEXT_MISMATCH：会话状态身份或工作区不匹配；不继承其他任务")
+    if value["workspace"] != str(root):
+        raise RuntimeHookError(
+            "CONTEXT_MISMATCH：同一任务的已初始化工作区与当前请求不一致",
+            context={"mismatch": "state_workspace", "registered_workspace": value["workspace"],
+                     "requested_workspace": str(root)},
+        )
     return _validate_state(_with_boundary(root, _validate_state(value)))
 
 
@@ -1248,7 +1279,7 @@ def _hook_error(message: str) -> int:
             {
                 "systemMessage": (
                     f"RuntimeHook 语义上下文不可用 UNAVAILABLE：{message}。"
-                    "可继续安全的本地工作；独立项目与 PR15 证据门禁仍然有效。"
+                    "可继续安全的本地工作；其他操作仍遵守各自授权与安全边界。"
                 )
             },
             ensure_ascii=False,
@@ -1347,7 +1378,11 @@ def _check_scope(payload: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     if not host_matches or _scope_marker(expected) != binding.get("git_marker"):
         raise RuntimeHookError(
             f"CONTEXT_MISMATCH：宿主锚点或开发工作树已变化；已登记开发工作树 {expected}。"
-            "不得使用其他任务状态；报告不匹配并继续不受影响的安全工作"
+            "不得使用其他任务状态；报告不匹配并继续不受影响的安全工作",
+            context={"mismatch": "native_host" if not host_matches else "workspace_marker",
+                     "registered_workspace": str(expected), "requested_workspace": str(expected),
+                     "registered_native_cwd": binding.get("native_cwd", str(expected)),
+                     "observed_native_cwd": str(Path(payload["cwd"]).resolve(strict=True))},
         )
     return expected, binding
 
@@ -1492,7 +1527,7 @@ def _scope_feedback(event: str, message: str, *, orientation: bool = False) -> i
     text = (
         f"RuntimeHook 任务范围不可用 UNAVAILABLE：{message}。未使用或修改语义状态。"
         "报告此状态即可，不因此结束整项任务；继续独立安全工作。不得关闭其他任务钩子或绕过独立安全门禁。"
-        "新任务或已核实交接可依据宿主实际 cwd 使用 bind-scope；它不改变宿主目录。"
+        "bind-scope 可记录已核实的宿主锚点关系；它不改变宿主目录，也不迁移已初始化的开发工作区。"
     )
     if event in {"SessionStart", "SubagentStart", "UserPromptSubmit"}:
         print(json.dumps({"hookSpecificOutput": {
@@ -1843,7 +1878,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command != "bind-scope" and args.session_id and _scope_path(args.session_id).exists():
             binding = _read_scope(args.session_id)
             if Path(binding["worktree"]) != args.root.resolve():
-                raise RuntimeHookError("CONTEXT_MISMATCH：本地命令目录与当前任务的已登记绑定不一致")
+                raise RuntimeHookError(
+                    "CONTEXT_MISMATCH：本地命令目录与当前任务的已登记绑定不一致",
+                    context={"mismatch": "workspace", "registered_workspace": binding["worktree"],
+                             "requested_workspace": str(args.root),
+                             "registered_native_cwd": binding.get("native_cwd"),
+                             "observed_native_cwd": str(args.native_cwd) if args.native_cwd else None},
+                )
             observed_cwd = str(args.native_cwd or binding.get("native_cwd") or args.root)
             root, _ = _check_scope({"cwd": observed_cwd, "session_id": args.session_id})
             _migrate_legacy(root, args.session_id, binding)
@@ -1899,6 +1940,10 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = 0 if output.get("ok", True) else 2
     except (RuntimeHookError, writeback_adapter.WritebackError, writeback_adapter.notes_adapter.NotesError, checkpoints.jev.JevError, OSError, subprocess.SubprocessError) as exc:
         output = {"ok": False, "status": "UNAVAILABLE", "error": str(exc)}
+        if isinstance(exc, RuntimeHookError) and exc.context is not None:
+            output.update({"error_code": "CONTEXT_MISMATCH", "component": "3can-runtimehook",
+                           "operation": args.command, "local_work_blocked": False,
+                           "context": exc.context, "recovery": exc.recovery})
         exit_code = 2
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return exit_code

@@ -244,3 +244,85 @@ def test_checkpoint_and_jev_receipt_belong_to_one_session(lane, monkeypatch, pla
     assert not (lane._session_dir("review-two") / "jev-observation.json").exists()
     if projectless:
         assert lane._load_state(root, "review-one")["semantic_review"]["reviewed_git_head"] is None
+
+
+@pytest.mark.parametrize("cli", [shared.PLUGIN_CLI, shared.PROJECT_KIT_CLI])
+@pytest.mark.parametrize("change", ["workspace", "native_host", "state_workspace", "workspace_marker"])
+def test_scope_refusal_names_its_owner_and_exact_context_without_mutation(
+    lane, plain_repo, tmp_path, cli, change,
+):
+    sid = "scope-diagnostics"
+    activate(plain_repo, sid, "Keep my verified intent")
+    peer = tmp_path / "new-workspace"
+    peer.mkdir()
+    state_path = lane._session_dir(sid) / "state.json"
+    scope_path = lane._scope_path(sid)
+    if change == "state_workspace":
+        scope_path.unlink()
+    elif change == "workspace_marker":
+        binding = lane._read_scope(sid)
+        binding["git_marker"][1] += 1
+        lane._save_scope(binding)
+    before = state_path.read_bytes()
+    scope_before = scope_path.read_bytes() if scope_path.exists() else None
+    root = plain_repo if change in {"native_host", "workspace_marker"} else peer
+    native = plain_repo if change == "workspace_marker" else peer
+    completed = subprocess.run(
+        [sys.executable, str(cli), "--root", str(root), "--native-cwd", str(native),
+         "--session-id", sid, "status"], capture_output=True, timeout=30,
+    )
+    result = json.loads(completed.stdout.decode("utf-8"))
+    assert completed.returncode == 2
+    assert result["status"] == "UNAVAILABLE"
+    assert result["error_code"] == "CONTEXT_MISMATCH"
+    assert result["component"] == "3can-runtimehook" and result["operation"] == "status"
+    assert result["local_work_blocked"] is False
+    assert result["context"]["registered_workspace"] == str(plain_repo)
+    assert result["context"]["requested_workspace"] == str(root)
+    assert result["context"]["mismatch"] == change
+    assert result["recovery"]["automatic"] is False
+    assert result["recovery"]["action"] == {
+        "native_host": "verify_host_binding", "workspace_marker": "verify_workspace_identity",
+        "workspace": "workspace_migration_required", "state_workspace": "workspace_migration_required",
+    }[change]
+    assert str(plain_repo) in result["error"] and str(native) in result["error"]
+    assert "Keep my verified intent" not in json.dumps(result)
+    assert state_path.read_bytes() == before
+    assert (scope_path.read_bytes() if scope_path.exists() else None) == scope_before
+
+
+def test_native_scope_message_names_both_paths_and_never_blocks_other_work(
+    lane, monkeypatch, capsys, plain_repo, tmp_path,
+):
+    activate(plain_repo, "native-scope-diagnostics", "Keep original intent")
+    peer = tmp_path / "moved-native-host"
+    peer.mkdir()
+    result = hook(lane, monkeypatch, capsys, peer, "native-scope-diagnostics")
+    message = result["hookSpecificOutput"]["additionalContext"]
+    assert str(plain_repo) in message and str(peer) in message
+    assert "当前任务的 RuntimeHook" in message and "独立安全工作" in message
+    assert "decision" not in result
+
+
+def test_foreign_state_identity_is_not_exposed_as_workspace_recovery(lane, plain_repo):
+    sid = "foreign-state-diagnostics"
+    activate(plain_repo, sid, "Own intent")
+    state_path = lane._session_dir(sid) / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["session_id"] = "another-task"
+    state["workspace"] = "foreign-private-workspace"
+    state["run_intent"]["goal"] = "Foreign private intent"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = state_path.read_bytes()
+    completed = subprocess.run(
+        [sys.executable, str(shared.PLUGIN_CLI), "--root", str(plain_repo),
+         "--native-cwd", str(plain_repo), "--session-id", sid, "status"],
+        capture_output=True, timeout=30,
+    )
+    assert completed.returncode == 2
+    result = json.loads(completed.stdout.decode("utf-8"))
+    assert "CONTEXT_MISMATCH" in result["error"]
+    assert "context" not in result and "recovery" not in result
+    assert "foreign-private-workspace" not in json.dumps(result)
+    assert "Foreign private intent" not in json.dumps(result)
+    assert state_path.read_bytes() == before
