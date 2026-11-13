@@ -1,0 +1,292 @@
+{
+  "verification": {
+    "base_url": "http://127.0.0.1:50865",
+    "min_nodes": 10,
+    "checks": {
+      "liveness": {
+        "ok": true,
+        "error": null
+      },
+      "stats": {
+        "ok": true,
+        "total_nodes": 16,
+        "total_edges": 12,
+        "error": null
+      },
+      "readiness": {
+        "ok": true,
+        "status": "DEVELOPMENT_ONLY",
+        "mode": "development",
+        "production_ready": false,
+        "development_ready": true,
+        "verification_state": "development",
+        "reasons": [
+          {
+            "code": "development_mode_not_production"
+          }
+        ]
+      },
+      "route": {
+        "ok": true,
+        "node_count": 4,
+        "first_node": "INTF-3can-route-api",
+        "confidence": "medium",
+        "error": null
+      },
+      "owner_intent": {
+        "ok": true,
+        "status": "APPLIED",
+        "digest": "sha256:52afdb42d5698654e33f628235f3f1881d44b6e2ff773b29dcfc1db4862b1ca9"
+      },
+      "exact_read": {
+        "ok": true,
+        "node_id": "INTF-3can-route-api",
+        "error": null
+      },
+      "token_usage": {
+        "ok": true,
+        "auto_importer": {
+          "enabled": false,
+          "interval_sec": 60,
+          "max_files": 3,
+          "max_events": 1000,
+          "running": false,
+          "last_run_at": null,
+          "last_ok": null,
+          "last_imported_events": 0,
+          "last_skipped_duplicates": 0,
+          "last_error": "",
+          "latest_snapshot": null
+        },
+        "error": null
+      }
+    },
+    "ok": true
+  },
+  "route": {
+    "timestamp": "2026-11-14T01:39:23",
+    "total_queries": 46,
+    "MRR": 0.9783,
+    "Recall@1": 0.8261,
+    "Recall@3": 1.0,
+    "Hit@3": 1.0,
+    "Precision@3": 0.5145,
+    "nDCG@3": 0.9818,
+    "latency_p50_ms": 10,
+    "latency_p95_ms": 31,
+    "grep_fallback_rate": 0.0,
+    "verdict": "coordination",
+    "grep_replacement_ratio": 1.0,
+    "cross_session_continuity": null,
+    "gap_to_learn_latency_h": null,
+    "age_bucket_mrr": {
+      "current_<1d": null,
+      "recent_1-7d": null,
+      "archive_>7d": null,
+      "unknown": 0.9783
+    }
+  },
+  "route_stdout": "3CAN Route Benchmark v1.0 — 46 queries\n======================================================================\n\n  A01  [HIT ] MRR=1.00 | top1=DOC-3can-quickstart (0.037) | 9ms | 3CAN quickstart\n  A02  [HIT ] MRR=1.00 | top1=INTF-3can-route-api (0.037) | 9ms | route API\n  A03  [HIT ] MRR=1.00 | top1=DEC-3can-project-graph-isolation (0.037) | 9ms | project graph isolation\n  A04  [HIT ] MRR=1.00 | top1=PROC-3can-session-bootstrap (0.037) | 8ms | session bootstrap\n  A05  [HIT ] MRR=1.00 | top1=PROC-3can-standing-orders (0.037) | 9ms | standing orders\n  A06  [HIT ] MRR=1.00 | top1=SKILL-3can-context-router (0.037) | 10ms | context router skill\n  B01  [HIT ] MRR=1.00 | top1=ERR-3can-no-secret-values (0.037) | 26ms | error secret value stored in graph\n  B02  [HIT ] MRR=1.00 | top1=ERR-3can-local-path-rebinding (0.037) | 10ms | failure local absolute path leaked in re\n  B03  [HIT ] MRR=1.00 | top1=ERR-3can-loop-detection (0.037) | 10ms | error repeated identical failure loop\n  B04  [HIT ] MRR=1.00 | top1=ERR-20260508-github-pr-local-rest-f (0.037) | 12ms | error GitHub PR command unavailable fall\n  B05  [HIT ] MRR=1.00 | top1=ERR-3can-no-secret-values (0.037) | 12ms | credential password token safety error\n  B06  [HIT ] MRR=1.00 | top1=ERR-3can-local-path-rebinding (0.037) | 13ms | release path rebinding failure\n  B07  [HIT ] MRR=1.00 | top1=ERR-3can-loop-detection (0.037) | 11ms | blind retry repeated error stop and diag\n  C01  [HIT ] MRR=1.00 | top1=INTF-3can-route-api (0.037) | 11ms | POST api route contract\n  C02  [top3] MRR=0.50 | top1=INTF-3can-route-api (0.037) | 9ms | activity writeback API contract\n  C03  [HIT ] MRR=1.00 | top1=INTF-3can-token-usage-api (0.037) | 11ms | token usage API endpoints\n  C04  [HIT ] MRR=1.00 | top1=INTF-3can-admin-health (0.037) | 11ms | admin health stats endpoint\n  C05  [HIT ] MRR=1.00 | top1=INTF-3can-route-api (0.037) | 12ms | read node after route API\n  C06  [HIT ] MRR=1.00 | top1=INTF-3can-writeback-api (0.037) | 12ms | record decision error and handoff API\n  D01  [HIT ] MRR=1.00 | top1=DEC-3can-project-graph-isolation (0.037) | 12ms | isolate graph directory and port for eve\n  D02  [top3] MRR=1.00 | top1=INTF-3can-route-api (0.037) | 31ms | route a small context before reading lon\n  D03  [HIT ] MRR=1.00 | top1=PROC-3can-standing-orders (0.037) | 29ms | require approval gates for high risk act\n  D04  [HIT ] MRR=1.00 | top1=PROC-3can-research-gate (0.043) | 9ms | research latest facts from official sour\n  D05  [HIT ] MRR=1.00 | top1=INTF-3can-admin-health (0.037) | 9ms | new project should use a project specifi\n  D06  [HIT ] MRR=1.00 | top1=SEC-3can-secret-reference-policy (0.037) | 8ms | store references to credentials instead \n  E01  [HIT ] MRR=1.00 | top1=PROC-3can-project-bootstrap (0.037) | 10ms | bootstrap a new repository with a dry ru\n  E02  [top3] MRR=1.00 | top1=INTF-3can-admin-health (0.037) | 25ms | start an agent session and check health\n  E03  [HIT ] MRR=1.00 | top1=PROC-3can-standing-orders (0.037) | 11ms | preflight before editing and write back \n  E04  [HIT ] MRR=1.00 | top1=INTF-3can-writeback-api (0.037) | 33ms | record durable verified work instead of \n  E05  [HIT ] MRR=1.00 | top1=PROC-3can-research-gate (0.037) | 31ms | prepare a source ledger for external res\n  E06  [HIT ] MRR=1.00 | top1=ERR-20260508-github-pr-local-rest-f (0.037) | 9ms | error create pull request without comman\n  F01  [HIT ] MRR=1.00 | top1=SEC-3can-secret-reference-policy (0.037) | 9ms | secret environment variable reference po\n  F02  [HIT ] MRR=1.00 | top1=DEC-3can-project-graph-isolation (0.037) | 12ms | configure a separate graph directory and\n  F03  [top3] MRR=1.00 | top1=DEC-3can-project-graph-isolation (0.037) | 31ms | token ledger must remain project local\n  G01  [HIT ] MRR=1.00 | top1=DOC-3can-quickstart (0.043) | 10ms | how to verify a fresh 3CAN installation\n  G02  [HIT ] MRR=1.00 | top1=SKILL-3can-context-router (0.037) | 8ms | how compact task context routing works\n  G03  [HIT ] MRR=1.00 | top1=INTF-3can-token-usage-api (0.037) | 9ms | where token dashboard telemetry is expos\n  G04  [HIT ] MRR=1.00 | top1=INTF-3can-admin-health (0.037) | 9ms | why an HTTP response alone is not enough\n  G05  [HIT ] MRR=1.00 | top1=PROC-3can-project-bootstrap (0.037) | 9ms | project bootstrap apply after reviewing \n  G06  [HIT ] MRR=1.00 | top1=PROC-3can-research-gate (0.037) | 11ms | deep research source ledger and official\n  G07  [HIT ] MRR=1.00 | top1=INTF-3can-writeback-api (0.037) | 10ms | durable writeback for decisions and hand\n  H01  [top3] MRR=1.00 | top1=INTF-3can-route-api (0.037) | 10ms | route before a change then record the ve\n  H02  [top3] MRR=1.00 | top1=INTF-3can-admin-health (0.037) | 10ms | initialize an isolated project graph and\n  H03  [top3] MRR=1.00 | top1=DEC-3can-project-graph-isolation (0.037) | 10ms | audit token telemetry for one project si\n  H04  [HIT ] MRR=1.00 | top1=ERR-3can-loop-detection (0.037) | 10ms | error repeated failure requires diagnosi\n  H05  [top3] MRR=0.50 | top1=SEC-3can-secret-reference-policy (0.036) | 10ms | error release package contains local pat\n\n======================================================================\nOVERALL (46 queries)\n======================================================================\n  MRR:            0.9783  [PASS]\n  Recall@1:       0.8261  (top1 exact match)\n  Recall@3:       1.0000  [PASS]\n  Precision@3:    0.5145\n  nDCG@3:         0.9818\n  Latency P50:    10ms\n  Latency P95:    31ms\n  Grep fallback:  0/46 (0.0%)  [PASS]\n\nV2 METRICS:\n  grep_replacement_ratio:   1.0000  (1 - grep_fallback)\n  cross_session_continuity: N/A  (无 archive 节点测试用例)\n  gap_to_learn_latency_h:   N/A  (activity_log 无足够对齐数据)\n  age buckets MRR:  current_<1d: - (n=0) | recent_1-7d: - (n=0) | archive_>7d: - (n=0) | unknown: 0.978 (n=46)\n\n  VERDICT: COORDINATION LAYER ESTABLISHED [PASS]\n\nBY CATEGORY:\n  config-secret        n= 3  MRR=1.000  R@1=0.667\n  cross-cluster        n= 5  MRR=0.900  R@1=0.200\n  error-debug          n= 7  MRR=1.000  R@1=1.000\n  interface            n= 6  MRR=0.917  R@1=0.833\n  knowledge            n= 7  MRR=1.000  R@1=1.000\n  project-mgmt         n= 6  MRR=1.000  R@1=0.833\n  short-code           n= 6  MRR=1.000  R@1=1.000\n  strategy             n= 6  MRR=1.000  R@1=0.833\n\nBY DIFFICULTY:\n  Difficulty 1       n=18  MRR=0.972  R@1=0.889\n  Difficulty 2       n=23  MRR=1.000  R@1=0.913\n  Difficulty 3       n= 5  MRR=0.900  R@1=0.200\n\nResults saved to <task-output>\\route.json\n",
+  "substrate": {
+    "ts": "2026-11-14T01:39:23",
+    "n_cases": 10,
+    "top1_accuracy": 1.0,
+    "top3_recall_mean": 0.8167,
+    "by_dimension_top1": {
+      "intf-precision": 1.0,
+      "err-proactive": 1.0,
+      "module-identity": 1.0,
+      "fresh-graph-health": 1.0,
+      "cross-session-decision": 1.0,
+      "rule-precision": 1.0
+    },
+    "err_proactive_rate_at_top3": 1.0,
+    "confidence_distribution": {
+      "medium": 10
+    },
+    "latency_p50_ms": 12,
+    "latency_p95_ms": 13,
+    "results": [
+      {
+        "top1_match": true,
+        "top3_hits": 2,
+        "top3_expected": 2,
+        "top3_recall": 1.0,
+        "err_in_top3": false,
+        "id": "sbench-d1-01",
+        "dimension": "cross-session-decision",
+        "confidence": "medium",
+        "latency_ms": 12,
+        "top5_ids": [
+          "DEC-3can-project-graph-isolation",
+          "INTF-3can-writeback-api",
+          "PROC-3can-project-bootstrap",
+          "PROC-3can-standing-orders",
+          "INTF-3can-admin-health"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 1,
+        "top3_expected": 2,
+        "top3_recall": 0.5,
+        "err_in_top3": false,
+        "id": "sbench-d1-02",
+        "dimension": "cross-session-decision",
+        "confidence": "medium",
+        "latency_ms": 13,
+        "top5_ids": [
+          "PROC-3can-session-bootstrap",
+          "INTF-3can-route-api",
+          "DEC-3can-project-graph-isolation",
+          "DOC-3can-quickstart",
+          "INTF-3can-admin-health"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 1,
+        "top3_expected": 2,
+        "top3_recall": 0.5,
+        "err_in_top3": false,
+        "id": "sbench-d2-01",
+        "dimension": "intf-precision",
+        "confidence": "medium",
+        "latency_ms": 11,
+        "top5_ids": [
+          "INTF-3can-route-api",
+          "DEC-3can-project-graph-isolation",
+          "INTF-3can-writeback-api",
+          "INTF-3can-admin-health",
+          "PROC-3can-project-bootstrap"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 1,
+        "top3_expected": 2,
+        "top3_recall": 0.5,
+        "err_in_top3": false,
+        "id": "sbench-d2-02",
+        "dimension": "intf-precision",
+        "confidence": "medium",
+        "latency_ms": 12,
+        "top5_ids": [
+          "INTF-3can-writeback-api",
+          "INTF-3can-route-api",
+          "DEC-3can-project-graph-isolation",
+          "PROC-3can-standing-orders",
+          "INTF-3can-token-usage-api"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 1,
+        "top3_expected": 1,
+        "top3_recall": 1.0,
+        "err_in_top3": true,
+        "id": "sbench-d3-01",
+        "dimension": "err-proactive",
+        "confidence": "medium",
+        "latency_ms": 12,
+        "top5_ids": [
+          "ERR-3can-no-secret-values",
+          "SEC-3can-secret-reference-policy",
+          "ERR-20260508-github-pr-local-rest-fallback-required",
+          "ERR-3can-loop-detection",
+          "DEC-3can-project-graph-isolation"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 1,
+        "top3_expected": 1,
+        "top3_recall": 1.0,
+        "err_in_top3": true,
+        "id": "sbench-d3-02",
+        "dimension": "err-proactive",
+        "confidence": "medium",
+        "latency_ms": 10,
+        "top5_ids": [
+          "ERR-3can-loop-detection",
+          "ERR-20260508-github-pr-local-rest-fallback-required",
+          "ERR-3can-local-path-rebinding",
+          "PROC-3can-session-bootstrap",
+          "INTF-3can-admin-health"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 2,
+        "top3_expected": 2,
+        "top3_recall": 1.0,
+        "err_in_top3": false,
+        "id": "sbench-d4-01",
+        "dimension": "rule-precision",
+        "confidence": "medium",
+        "latency_ms": 11,
+        "top5_ids": [
+          "PROC-3can-standing-orders",
+          "PROC-3can-session-bootstrap",
+          "PROC-3can-project-bootstrap",
+          "SEC-3can-secret-reference-policy",
+          "PROC-3can-research-gate"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 2,
+        "top3_expected": 2,
+        "top3_recall": 1.0,
+        "err_in_top3": false,
+        "id": "sbench-d4-02",
+        "dimension": "rule-precision",
+        "confidence": "medium",
+        "latency_ms": 12,
+        "top5_ids": [
+          "PROC-3can-research-gate",
+          "PROC-3can-standing-orders",
+          "DEC-3can-project-graph-isolation",
+          "INTF-3can-admin-health",
+          "PROC-3can-session-bootstrap"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 2,
+        "top3_expected": 2,
+        "top3_recall": 1.0,
+        "err_in_top3": false,
+        "id": "sbench-d5-01",
+        "dimension": "module-identity",
+        "confidence": "medium",
+        "latency_ms": 11,
+        "top5_ids": [
+          "PROC-3can-project-bootstrap",
+          "DEC-3can-project-graph-isolation",
+          "DOC-3can-quickstart",
+          "INTF-3can-token-usage-api",
+          "PROC-3can-session-bootstrap"
+        ]
+      },
+      {
+        "top1_match": true,
+        "top3_hits": 2,
+        "top3_expected": 3,
+        "top3_recall": 0.667,
+        "err_in_top3": false,
+        "id": "sbench-d6-01",
+        "dimension": "fresh-graph-health",
+        "confidence": "medium",
+        "latency_ms": 12,
+        "top5_ids": [
+          "INTF-3can-admin-health",
+          "DEC-3can-project-graph-isolation",
+          "INTF-3can-route-api",
+          "PROC-3can-session-bootstrap",
+          "INTF-3can-token-usage-api"
+        ]
+      }
+    ]
+  }
+}

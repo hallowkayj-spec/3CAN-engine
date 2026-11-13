@@ -10,6 +10,7 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import re
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -2339,19 +2341,44 @@ def _target_root_for(path: Path, roots: list[Path]) -> Path | None:
     )
 
 
-def _git_value(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
-    if result.returncode:
-        raise ValueError("git_identity_unavailable")
-    return result.stdout.strip()
+def _git_value(
+    repo: Path, *args: str, diagnostic: dict[str, Any] | None = None,
+) -> str:
+    if diagnostic is not None:
+        diagnostic.clear()
+    started = time.monotonic()
+    result = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if result.returncode:
+            raise ValueError("git_identity_unavailable")
+        return result.stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        if diagnostic is not None:
+            diagnostic.update(
+                reason=(
+                    "git_timeout" if isinstance(exc, subprocess.TimeoutExpired)
+                    else "git_os_error" if isinstance(exc, OSError)
+                    else "git_nonzero" if result is not None and result.returncode
+                    else "git_process_error"
+                ),
+                git_operation={
+                    ("rev-parse", "--show-toplevel"): "worktree_root",
+                    ("remote", "get-url", "origin"): "origin_remote",
+                    ("rev-parse", "--path-format=absolute", "--git-common-dir"): "git_common_dir",
+                }.get(args, "other"),
+                git_elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+                git_exit_code=result.returncode if result is not None else None,
+            )
+        raise
 
 
 def _repository_key(remote: str) -> str:
@@ -2409,8 +2436,11 @@ def _verified_project_target_root(
     probe = target if target.is_dir() else target.parent
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
+    diagnostic: dict[str, Any] = {}
     try:
-        root = Path(_git_value(probe, "rev-parse", "--show-toplevel")).resolve()
+        root = Path(_git_value(
+            probe, "rev-parse", "--show-toplevel", diagnostic=diagnostic,
+        )).resolve()
         if target != root and root not in target.parents:
             raise ValueError("target_not_in_worktree")
         capsule_path = root / ".agents" / "project.json"
@@ -2437,7 +2467,7 @@ def _verified_project_target_root(
             raise ValueError("project_root_mismatch")
         expected_repository = str(capsule.get("git_repository") or "").strip().casefold()
         actual_repository = _repository_key(
-            _git_value(root, "remote", "get-url", "origin")
+            _git_value(root, "remote", "get-url", "origin", diagnostic=diagnostic)
         )
         if not expected_repository or expected_repository != actual_repository:
             raise ValueError("git_repository_mismatch")
@@ -2447,6 +2477,7 @@ def _verified_project_target_root(
                 "rev-parse",
                 "--path-format=absolute",
                 "--git-common-dir",
+                diagnostic=diagnostic,
             )
         )
         if not common_dir.is_absolute():
@@ -2459,6 +2490,30 @@ def _verified_project_target_root(
             raise ValueError("workspace_id_mismatch")
         return root
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        if not diagnostic:
+            code = str(exc)
+            reason = (
+                "capsule_json_invalid" if isinstance(exc, json.JSONDecodeError)
+                else "filesystem_unavailable" if isinstance(exc, OSError)
+                else code if code in {
+                    "target_not_in_worktree", "project_capsule_invalid",
+                    "project_id_mismatch", "project_namespace_mismatch",
+                    "project_root_mismatch", "git_repository_mismatch",
+                    "git_remote_invalid", "workspace_id_mismatch",
+                }
+                else "identity_validation_failed"
+            )
+            diagnostic = {
+                "reason": reason, "git_operation": "none",
+                "git_elapsed_ms": None, "git_exit_code": None,
+            }
+        diagnostic["correlation"] = hashlib.sha256(
+            _canonical_physical_path(target).encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        # Only fixed categories, numbers and a digest; never exception text/traceback.
+        logging.getLogger(__name__).warning(
+            "project_target_identity_unverified %s", json.dumps(diagnostic, sort_keys=True),
+        )
         raise HTTPException(
             403,
             detail={"error": "project_target_identity_unverified"},

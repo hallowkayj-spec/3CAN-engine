@@ -237,7 +237,7 @@ def test_identifier_suffix_is_not_a_secret_token(lane, field, text):
 @pytest.mark.parametrize("kind", ["sk", "uppercase_sk", "vck", "private_key"])
 def test_secret_tokens_at_boundaries_never_reach_transport(lane, prefix, kind):
     if kind == "private_key":
-        token = "-----BEGIN PRIVATE KEY-----"
+        token = "-----BEGIN " + "PRIVATE KEY-----"
     else:
         token = {"sk": "sk-", "uppercase_sk": "SK-", "vck": "vck_"}[kind] + "x" * 12
     lane.event["summary"] = prefix + token

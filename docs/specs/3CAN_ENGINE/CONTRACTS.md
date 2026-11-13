@@ -57,6 +57,47 @@ Agent check-in、route、ticket 与 writeback 复用同一解析结果。已有 
 制造一个历史 Workorder。Endpoint 由 `THREECAN_URL` 等运行环境配置提供，
 不写入 tracked project capsule。
 
+### 2.1.1 Target identity refusal diagnostics
+
+The backend owns target verification in `_git_value` and
+`_verified_project_target_root`. A failed verification retains HTTP 403 with
+`project_target_identity_unverified`, the original exception cause, and the
+existing checks before ticket issuance or consumption. Diagnostics do not
+authorize a retry, change identity, cache success, or extend the Git timeout.
+
+The server WARNING uses that error code as its prefix and includes
+only `reason`, `git_operation`, `git_elapsed_ms`, `git_exit_code`, and
+`correlation`. Reasons and operation names are allowlisted; correlation is a
+SHA256 of the normalized target path, not a ticket/request identifier or an
+authentication claim. Git timing measures the individual failed subprocess,
+not cumulative verification time. Non-Git failures leave Git timing and exit
+code null. Raw exception text, traceback, argv, stdout/stderr, remote URL,
+absolute target paths, credentials, and ticket payloads MUST NOT be logged.
+
+Implementation uses standard-library logging and a per-verification diagnostic
+dictionary. The existing HTTP error observer and canonical ErrorCase lifecycle
+remain separate. No new API, dependency, cache, retry path, or persistent schema
+is introduced. Rollback removes the diagnostics without migrating the ledger.
+
+Bounded implementation/TDD checklist:
+
+- [x] Establish the existing observability gap with synthetic failure fixtures;
+  baseline refusal and ledger assertions pass while diagnostic assertions fail.
+- [x] Integrate the reviewed helper-only change and dedicated tests.
+- [x] Verify project/namespace/workspace mismatch, Git timeout/OS error/nonzero,
+  and unreadable/invalid JSON capsules at both issue and consume boundaries.
+  Every failure must retain 403 and leave ticket content, consume count,
+  ledger events, and Activity unchanged.
+- [x] Verify normal issuance/reuse/consume/idempotent replay, all three Git
+  operation categories, the existing timeout, and sensitive-data canaries.
+- [x] Run the complete applicable ticket and error-path regression suite:
+  127 passed, including the dedicated diagnostics cases. CI evidence is bound
+  to the exact PR commit and must be checked before installation review.
+
+An isolated test or reviewed patch does not establish the cause of a historical
+failure or production recovery. Installation remains a separate canonical
+Supervisor operation with immutable release hashes and an exact rollback plan.
+
 ## 2.2 当前现实、历史与 supersession
 
 - current/canonical/owner/path 查询优先 durable semantic families，并后置
