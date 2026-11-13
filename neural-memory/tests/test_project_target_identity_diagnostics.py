@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from test_ticket_lifecycle import FakeEngine, load_app
 
 
-SECRET = "TEST_ONLY_PRIVATE_VALUE_73c9"
+CANARY = "TEST_ONLY_PRIVATE_VALUE_73c9"
 PREFIX = "project_target_identity_unverified "
 GIT_OPS = {
     ("rev-parse", "--show-toplevel"): "worktree_root",
@@ -40,7 +40,7 @@ FAULTS = [
 def identity_runtime(tmp_path, monkeypatch):
     app = load_app()
     fake = FakeEngine(app)
-    repo = tmp_path / SECRET
+    repo = tmp_path / CANARY
     (repo / ".agents").mkdir(parents=True)
     target = repo / "target.txt"
     target.write_text("public fixture\n", encoding="utf-8")
@@ -73,15 +73,15 @@ def identity_runtime(tmp_path, monkeypatch):
         if operation == state["operation"]:
             if state["fault"] == "git_timeout":
                 raise subprocess.TimeoutExpired(
-                    command, 10, output=SECRET, stderr=SECRET,
+                    command, 10, output=CANARY, stderr=CANARY,
                 )
             if state["fault"] == "git_spawn":
-                raise FileNotFoundError(errno.ENOENT, SECRET, str(repo / SECRET))
+                raise FileNotFoundError(errno.ENOENT, CANARY, str(repo / CANARY))
             if state["fault"] == "git_nonzero":
-                return subprocess.CompletedProcess(command, 128, SECRET, SECRET)
+                return subprocess.CompletedProcess(command, 128, CANARY, CANARY)
         values = {
             "worktree_root": str(repo),
-            "origin_remote": f"https://user:{SECRET}@example.invalid/public/repository.git",
+            "origin_remote": f"https://user:{CANARY}@example.invalid/public/repository.git",
             "git_common_dir": str(repo / ("foreign.git" if state["fault"] == "workspace" else ".git")),
         }
         return subprocess.CompletedProcess(command, 0, values[operation] + "\n", "")
@@ -91,9 +91,9 @@ def identity_runtime(tmp_path, monkeypatch):
     def capsule_read(path, *args, **kwargs):
         if path == capsule_path:
             if state["fault"] == "capsule_permission":
-                raise PermissionError(errno.EACCES, SECRET, str(path))
+                raise PermissionError(errno.EACCES, CANARY, str(path))
             if state["fault"] == "capsule_json":
-                return '{"secret":"' + SECRET
+                return '{"secret":"' + CANARY
             if state["fault"] in {"project", "namespace"}:
                 changed = dict(capsule)
                 key = "project_id" if state["fault"] == "project" else "project_namespace"
@@ -162,7 +162,7 @@ def assert_diagnostic(caplog, runtime, reason):
         assert data["git_exit_code"] is None
     assert record.exc_info is None
     rendered = record.getMessage() + str(record.args)
-    for private in [SECRET, str(runtime.repo), str(runtime.target), *runtime.context.values()]:
+    for private in [CANARY, str(runtime.repo), str(runtime.target), *runtime.context.values()]:
         assert private not in rendered
     return data
 
@@ -232,7 +232,7 @@ def test_unrecognized_exception_text_is_not_logged(identity_runtime, monkeypatch
     runtime = identity_runtime
 
     def invalid_remote(_remote):
-        raise ValueError(SECRET)
+        raise ValueError(CANARY)
 
     monkeypatch.setattr(runtime.app, "_repository_key", invalid_remote)
     caplog.set_level(logging.WARNING)
