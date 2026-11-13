@@ -65,7 +65,7 @@ The backend owns target verification in `_git_value` and
 existing checks before ticket issuance or consumption. Diagnostics do not
 authorize a retry, change identity, cache success, or extend the Git timeout.
 
-The planned server WARNING uses that error code as its prefix and includes
+The server WARNING uses that error code as its prefix and includes
 only `reason`, `git_operation`, `git_elapsed_ms`, `git_exit_code`, and
 `correlation`. Reasons and operation names are allowlisted; correlation is a
 SHA256 of the normalized target path, not a ticket/request identifier or an
@@ -83,15 +83,16 @@ Bounded implementation/TDD checklist:
 
 - [x] Establish the existing observability gap with synthetic failure fixtures;
   baseline refusal and ledger assertions pass while diagnostic assertions fail.
-- [ ] Integrate the reviewed helper-only change and dedicated tests.
-- [ ] Verify project/namespace/workspace mismatch, Git timeout/OS error/nonzero,
+- [x] Integrate the reviewed helper-only change and dedicated tests.
+- [x] Verify project/namespace/workspace mismatch, Git timeout/OS error/nonzero,
   and unreadable/invalid JSON capsules at both issue and consume boundaries.
   Every failure must retain 403 and leave ticket content, consume count,
   ledger events, and Activity unchanged.
-- [ ] Verify normal issuance/reuse/consume/idempotent replay, all three Git
+- [x] Verify normal issuance/reuse/consume/idempotent replay, all three Git
   operation categories, the existing timeout, and sensitive-data canaries.
-- [ ] Run the complete applicable ticket and error-path regression suite and
-  record the exact source commit plus CI evidence before installation review.
+- [x] Run the complete applicable ticket and error-path regression suite:
+  127 passed, including the dedicated diagnostics cases. CI evidence is bound
+  to the exact PR commit and must be checked before installation review.
 
 An isolated test or reviewed patch does not establish the cause of a historical
 failure or production recovery. Installation remains a separate canonical
