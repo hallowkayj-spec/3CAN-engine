@@ -9,7 +9,7 @@
     "reproducible_from_release_package": true,
     "requires_excluded_runtime_graph": false,
     "raw_result_receipt_included": true,
-    "result_receipt": "docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json",
+    "result_receipt": "docs/evidence/SEED_GRAPH_BENCHMARK_20261114.json",
     "historical_pilot_score_reproducible": false
   },
   "graph_binding": {

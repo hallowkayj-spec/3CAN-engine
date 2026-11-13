@@ -1,0 +1,183 @@
+{
+  "schema_version": "3can.benchmark-receipt/v1",
+  "status": "VERIFIED_CANDIDATE",
+  "observed_at_utc": "2026-11-13T17:39:24.598444+00:00",
+  "scope": "fresh isolated public release seed graph; hashing backend; development readiness",
+  "source_commit": "58e97c32c0b896c764dca03474661e1e572cdbe1",
+  "source_sha256": {
+    "3CAN.md": "52afdb42d5698654e33f628235f3f1881d44b6e2ff773b29dcfc1db4862b1ca9",
+    "neural-memory/backend/app.py": "ebd3d6cf0ce8afb8b955a06fe5e68c5a1e9d540c4654dd5e66b475a64da3f13a",
+    "neural-memory/backend/graph_engine.py": "8c00a59fedb1560eb88e87507004aa741bd5b74229035a4129f27b45dead34b1",
+    "neural-memory/backend/models.py": "77049ee3c2914654ffbc61d6cdf74d67d739292ee54fc64dcc26188e906631c6",
+    "neural-memory/backend/owner_intent.py": "9a4fe56a1416b34f3819e896df88b05fe70f4054ce9276a6e152cd87696733f5",
+    "neural-memory/backend/query_expander.py": "3cd31b0dd03715973ffbcb610554222d01cd18644fb5c76b0f6b3b1593124b60",
+    "neural-memory/backend/seed_nodes.py": "12e6696421852c44b9eee1465f1d46d1e684c1386e86d508d0df34a188686fab",
+    "scripts/verify_project.py": "efcf5b0344c5802965c2172a4a5df0fda34f35dde5289479eff6d416bf233756",
+    "neural-memory/benchmark/route_benchmark_v1.json": "b68f8c08f13947706ce7d4a05f7d6c53fac531cf2565950ef729527250f6343c",
+    "neural-memory/benchmark/run_benchmark.py": "1e5a0a57cb8e1dca65489973cc6306defef719bae5ecc9e6556974f82439f0d0",
+    "neural-memory/benchmark/substrate_bench_v1.json": "697bef98f9b7659123e54981af164c2d818ee17164f3c3498587a4fd78e68cbe",
+    "neural-memory/benchmark/substrate_bench_runner.py": "fd3253cb3a95659f137fd3f1ef7c235f734c63b26c04be769174c819cbc34169"
+  },
+  "supersedes": {
+    "path": "docs/evidence/SEED_GRAPH_BENCHMARK_20260809.json",
+    "sha256": "4d231e4fc303cf8c563431181fceb8349bd13b37e4779351cb9dbbc2071ac436",
+    "old_evidence_retained": true
+  },
+  "raw_result": "docs/evidence/SEED_GRAPH_BENCHMARK_20261114.raw.json",
+  "raw_result_sha256": "738e709e95ff8798c2f6af9acb6bb051c5ca677937e589879fdbd32e03305321",
+  "commands": [
+    [
+      "neural-memory/backend/seed_nodes.py"
+    ],
+    [
+      "scripts/verify_project.py",
+      "--base-url",
+      "http://127.0.0.1:50865",
+      "--min-nodes",
+      "10",
+      "--project-id",
+      "public-rc",
+      "--project-namespace",
+      "public-scope",
+      "--json"
+    ],
+    [
+      "neural-memory/benchmark/run_benchmark.py",
+      "--base-url",
+      "http://127.0.0.1:50865",
+      "--verbose",
+      "--output",
+      "<task-output>\\route.json"
+    ],
+    [
+      "neural-memory/benchmark/substrate_bench_runner.py",
+      "--port",
+      "50865",
+      "--output-dir",
+      "<task-output>"
+    ]
+  ],
+  "runtime": {
+    "python": "3.14.0",
+    "embedding_backend": "hashing-blake2b-char-ngram-v1",
+    "readiness_mode": "development",
+    "nodes": 16,
+    "edges": 12
+  },
+  "verification": {
+    "liveness": {
+      "ok": true,
+      "error": null
+    },
+    "stats": {
+      "ok": true,
+      "total_nodes": 16,
+      "total_edges": 12,
+      "error": null
+    },
+    "readiness": {
+      "ok": true,
+      "status": "DEVELOPMENT_ONLY",
+      "mode": "development",
+      "production_ready": false,
+      "development_ready": true,
+      "verification_state": "development",
+      "reasons": [
+        {
+          "code": "development_mode_not_production"
+        }
+      ]
+    },
+    "route": {
+      "ok": true,
+      "node_count": 4,
+      "first_node": "INTF-3can-route-api",
+      "confidence": "medium",
+      "error": null
+    },
+    "owner_intent": {
+      "ok": true,
+      "status": "APPLIED",
+      "digest": "sha256:52afdb42d5698654e33f628235f3f1881d44b6e2ff773b29dcfc1db4862b1ca9"
+    },
+    "exact_read": {
+      "ok": true,
+      "node_id": "INTF-3can-route-api",
+      "error": null
+    },
+    "token_usage": {
+      "ok": true,
+      "auto_importer": {
+        "enabled": false,
+        "interval_sec": 60,
+        "max_files": 3,
+        "max_events": 1000,
+        "running": false,
+        "last_run_at": null,
+        "last_ok": null,
+        "last_imported_events": 0,
+        "last_skipped_duplicates": 0,
+        "last_error": "",
+        "latest_snapshot": null
+      },
+      "error": null
+    }
+  },
+  "route_benchmark": {
+    "queries": 46,
+    "timestamp": "2026-11-14T01:39:23",
+    "total_queries": 46,
+    "MRR": 0.9783,
+    "Recall@1": 0.8261,
+    "Recall@3": 1.0,
+    "Hit@3": 1.0,
+    "Precision@3": 0.5145,
+    "nDCG@3": 0.9818,
+    "latency_p50_ms": 10,
+    "latency_p95_ms": 31,
+    "grep_fallback_rate": 0.0,
+    "verdict": "coordination",
+    "grep_replacement_ratio": 1.0,
+    "cross_session_continuity": null,
+    "gap_to_learn_latency_h": null,
+    "age_bucket_mrr": {
+      "current_<1d": null,
+      "recent_1-7d": null,
+      "archive_>7d": null,
+      "unknown": 0.9783
+    }
+  },
+  "substrate_benchmark": {
+    "cases": 10,
+    "ts": "2026-11-14T01:39:23",
+    "n_cases": 10,
+    "top1_accuracy": 1.0,
+    "top3_recall_mean": 0.8167,
+    "by_dimension_top1": {
+      "intf-precision": 1.0,
+      "err-proactive": 1.0,
+      "module-identity": 1.0,
+      "fresh-graph-health": 1.0,
+      "cross-session-decision": 1.0,
+      "rule-precision": 1.0
+    },
+    "err_proactive_rate_at_top3": 1.0,
+    "confidence_distribution": {
+      "medium": 10
+    },
+    "latency_p50_ms": 12,
+    "latency_p95_ms": 13
+  },
+  "cleanup_postcheck": {
+    "benchmark_process_absent": true,
+    "isolated_port_unbound": true,
+    "production_selector_unchanged": true
+  },
+  "limitations": [
+    "Synthetic seed evidence only; no production or original release acceptance.",
+    "Latency is one local observation.",
+    "Original source commit plus exact source hashes; only fixture receipt pointers were uncommitted at run time.",
+    "No dependencies installed, external provider calls, model downloads, or production lifecycle operations."
+  ],
+  "raw_result_encoding": "UTF-8 with LF newlines"
+}
